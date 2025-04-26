@@ -1,44 +1,58 @@
 """
-Utility functions for the drug discovery pipeline.
-This package contains various modules for ligand generation, energy minimization,
-pose evaluation, redocking, and medicinal chemistry filtering.
+Utility modules for drug discovery pipeline.
+
+This package contains various utilities for different stages of the drug discovery pipeline:
+- Ligand generation
+- Retrosynthesis
+- MedChem filtering
+- Redocking
+- Energy minimization ## Deprecated
+- Pose evaluation ## Deprecated
+- Molecule processing
+- Tracking and reporting
+- Logging
 """
 
-from .ligand_generation import run_ligand_generation
-from .energy_minimization_module import split_sdf_file, optimize_ligand, concatenate_sdf_files_sorted
-from .pose_evaluation import run_posebuster, extract_valid_ligands
-from .redocking import redock_compound, vfu_dir
-from .medchem_filter import generative_filter, filter_compounds
-from .retrosynformer import run_retrosynthesis, process_redocking_results
-from .dock_synformer_compounds import dock_synformer_compounds
+# Import main utilities
+from utils.ligand_generation import run_ligand_generation, combine_pocket2mol_outputs
+from utils.redocking import redock_compound, vfu_dir, vfu_wrapper_script
+from utils.retrosynformer import run_retrosynthesis
+from utils.medchem_filter import filter_by_pass_count, apply_medchem_filtering_to_variants
+from utils.energy_minimization import optimize_ligand_in_pocket
+from utils.pose_evaluation import run_posebuster
+from utils.vfu_subprocess_wrapper import run_vfu_from_wrapper
 
-__version__ = "1.0.0"
+# Import new utilities
+from utils.molecule_processing import extract_smiles_from_sdf, smiles_to_sdf, extract_best_pose_and_score
+from utils.retro_utils import extract_variants_from_retrosynthesis, run_retrosynthesis_with_timeout
+from utils.tracking import generate_tracking_report, update_tracking_report
+from utils.logging_utils import setup_logging, ThreadSafeRotatingFileHandler
 
 __all__ = [
     # Ligand generation
-    'run_ligand_generation',
-    
-    # Energy minimization
-    'split_sdf_file',
-    'optimize_ligand',
-    'concatenate_sdf_files_sorted',
-    
-    # Pose evaluation
-    'run_posebuster',
-    'extract_valid_ligands',
+    'run_ligand_generation', 'combine_pocket2mol_outputs',
     
     # Redocking
-    'redock_compound',
-    'vfu_dir',
-    
-    # MedChem filtering
-    'generative_filter',
-    'filter_compounds',
+    'redock_compound', 'vfu_dir', 'vfu_wrapper_script', 'run_vfu_from_wrapper',
     
     # Retrosynthesis
-    'run_retrosynthesis',
-    'process_redocking_results',
+    'run_retrosynthesis', 'extract_variants_from_retrosynthesis', 'run_retrosynthesis_with_timeout',
     
-    # Docking
-    'dock_synformer_compounds',
+    # MedChem filtering
+    'filter_by_pass_count', 'apply_medchem_filtering_to_variants',
+    
+    # Energy minimization ## DEPRECATED
+    'optimize_ligand_in_pocket',
+    
+    # Pose evaluation ## DEPRECATED 
+    'evaluate_poses',
+    
+    # Molecule processing
+    'extract_smiles_from_sdf', 'smiles_to_sdf', 'extract_best_pose_and_score',
+    
+    # Tracking and reporting
+    'generate_tracking_report', 'update_tracking_report',
+    
+    # Logging
+    'setup_logging', 'ThreadSafeRotatingFileHandler'
 ] 

@@ -34,6 +34,13 @@ st.markdown("""
     .st-emotion-cache-1v0mbdj {
         width: 100%;
     }
+    .model-card {
+        background-color: #f5f5f5;
+        border-radius: 10px;
+        padding: 20px;
+        margin-bottom: 20px;
+        border-left: 5px solid #4287f5;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -57,16 +64,54 @@ st.markdown("""
     - Visualize existing results from previous runs
 """)
 
+# Models information
+st.header("Available AI Models")
+st.markdown("""
+    Our pipeline supports two state-of-the-art AI models for molecule generation:
+""")
 
-# We don't need custom navigation as Streamlit multipage apps have built-in navigation
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown("""
+        <div class="model-card">
+            <h3>🧩 DiffSBDD</h3>
+            <p><strong>Diffusion-based Structure-Based Drug Design</strong></p>
+            <p>DiffSBDD uses residue information to generate molecules that bind to specific protein residues. 
+            It's ideal when you want to target specific binding site residues.</p>
+            <p><strong>Key parameters:</strong></p>
+            <ul>
+                <li>Residue list</li>
+                <li>PDB file</li>
+                <li>Docking box dimensions</li>
+            </ul>
+        </div>
+    """, unsafe_allow_html=True)
+
+with col2:
+    st.markdown("""
+        <div class="model-card">
+            <h3>📦 Pocket2Mol</h3>
+            <p><strong>Molecule Generation for Protein Pockets</strong></p>
+            <p>Pocket2Mol generates molecules that fit into protein pockets based on 3D coordinates. 
+            It's excellent for generating molecules that fill a specific binding pocket volume.</p>
+            <p><strong>Key parameters:</strong></p>
+            <ul>
+                <li>Center coordinates</li>
+                <li>Bounding box size</li>
+                <li>PDB file</li>
+            </ul>
+        </div>
+    """, unsafe_allow_html=True)
 
 # Quick start guide
 st.header("Quick Start Guide")
 with st.expander("How to use this application"):
     st.markdown("""
         1. **Configuration Page**
-           - Upload required files (PDB, checkpoint)
-           - Set pipeline parameters
+           - Select an AI model (DiffSBDD or Pocket2Mol)
+           - Upload required files (PDB, receptor)
+           - Set model-specific parameters
            - Validate inputs
         
         2. **Execution Page**

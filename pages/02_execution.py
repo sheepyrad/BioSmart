@@ -222,35 +222,51 @@ def run_pipeline(config, status_dict, stop_event):
         # Check for receptor file
         if "receptor" not in config or not config["receptor"]:
             logger.warning("No receptor file provided. Docking steps will be skipped or may fail.")
-            # You could either set a default receptor or handle this in the pipeline
             
-        # Run the pipeline with stop check
-        pipeline_main(
-            out_dir=config["out_dir"],
-            checkpoint=config["checkpoint"],
-            pdbfile=config["pdbfile"],
-            resi_list=config["resi_list"],
-            n_samples=config["n_samples"],
-            sanitize=config["sanitize"],
-            receptor=config.get("receptor"),
-            program_choice=config["program_choice"],
-            scoring_function=config["scoring_function"],
-            center=config["center"],
-            box_size=config["box_size"],
-            exhaustiveness=config["exhaustiveness"],
-            is_selfies=config["is_selfies"],
-            is_peptide=config["is_peptide"],
-            top_n=config["top_n"],
-            max_variants=config["max_variants"],
-            num_rounds=config["num_rounds"],
-            stop_flag=status_dict  # Pass the status dict for stop checking
-        )
+        # Determine which model is being used
+        model_choice = config.get("model", "diffsbdd").lower()
+        
+        # Base parameters for both models
+        pipeline_params = {
+            "out_dir": config["out_dir"],
+            "model_choice": model_choice,
+            "pdbfile": config["pdbfile"],
+            "n_samples": config["n_samples"],
+            "center": config["center"],
+            "receptor": config.get("receptor"),
+            "program_choice": config["program_choice"],
+            "scoring_function": config["scoring_function"],
+            "exhaustiveness": config["exhaustiveness"],
+            "is_selfies": config["is_selfies"],
+            "is_peptide": config["is_peptide"],
+            "top_n": config["top_n"],
+            "max_variants": config["max_variants"],
+            "num_rounds": config["num_rounds"],
+            "stop_flag": status_dict  # Pass the status dict for stop checking
+        }
+        
+        # Add model-specific parameters
+        if model_choice == "diffsbdd":
+            pipeline_params.update({
+                "checkpoint": config["checkpoint"],
+                "resi_list": config["resi_list"],
+                "sanitize": config.get("sanitize", True),
+                "box_size": config.get("box_size", [40, 40, 40])
+            })
+        else:  # pocket2mol
+            pipeline_params.update({
+                "bbox_size": config.get("bbox_size", 23.0),
+                "box_size": config.get("box_size", [40, 40, 40])  # Still needed for docking
+            })
+        
+        # Run the pipeline with appropriate parameters
+        pipeline_main(**pipeline_params)
         
         status_dict["running"] = False
         status_dict["progress"] = 100
         
     except Exception as e:
-        logger.error(f"Pipeline execution failed: {str(e)}")
+        logger.error(f"Pipeline error: {str(e)}")
         status_dict["running"] = False
         status_dict["error"] = str(e)
     finally:

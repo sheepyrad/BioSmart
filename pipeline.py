@@ -41,7 +41,7 @@ from utils.ligand_generation import run_ligand_generation
 from utils.energy_minimization_module import split_sdf_file, optimize_ligand, concatenate_sdf_files_sorted
 from utils.pose_evaluation import run_posebuster, extract_valid_ligands
 from utils.redocking import redock_compound, vfu_dir
-from utils.medchem_filter import generative_filter  # uses the SDF filename as input
+from utils.medchem_filter import filter_by_pass_count
 from utils.dock_synformer_compounds import dock_synformer_compounds
 
 def main(out_dir, rounds, checkpoint, pdbfile, resi_list, n_samples, sanitize,
@@ -132,23 +132,40 @@ def main(out_dir, rounds, checkpoint, pdbfile, resi_list, n_samples, sanitize,
 
         # Step 4: Optional Generative Filtering
         if apply_filters:
-            logger.info("Selecting compounds that pass at least one generative filter for redocking...")
+            logger.info("Selecting compounds that pass medchem filtering for redocking...")
             try:
-                df_for_redock = generative_filter(valid_sdf, output_folder=medchem_dir / f"round_{round_no+1}")
-                if df_for_redock.empty:
-                    logger.warning("No compounds passed the generative filter for redocking.")
+                # Convert valid SDFs to a list of dictionaries with SMILES
+                valid_compounds = []
+                supplier = Chem.SDMolSupplier(str(valid_sdf))
+                for idx, mol in enumerate(supplier):
+                    if mol is not None:
+                        compound_id = mol.GetProp("_Name") if mol.HasProp("_Name") else f"compound_{idx+1}"
+                        smiles = Chem.MolToSmiles(mol)
+                        valid_compounds.append({"compound_id": compound_id, "smiles": smiles})
+                
+                # Apply pass-count filtering
+                filtered_compounds = filter_by_pass_count(
+                    input_variants=valid_compounds,
+                    rule_threshold=13,  # Default thresholds, adjust as needed
+                    structural_threshold=27
+                )
+                
+                if not filtered_compounds:
+                    logger.warning("No compounds passed the medchem filtering for redocking.")
                     logger.info("Falling back to using all valid compounds without filtering...")
                     # Fall back to using all valid compounds
                     df_for_redock = None
                 else:
-                    logger.info(f"After generative filtering, {len(df_for_redock)} compounds remain for redocking.")
+                    # Convert to DataFrame for backward compatibility
+                    df_for_redock = pd.DataFrame(filtered_compounds)
+                    logger.info(f"After medchem filtering, {len(df_for_redock)} compounds remain for redocking.")
             except OSError as e:
                 if "Too many open files" in str(e):
-                    logger.error(f"Generative filtering failed due to file descriptor limits: {e}")
+                    logger.error(f"Medchem filtering failed due to file descriptor limits: {e}")
                     logger.info("Falling back to using all valid compounds without filtering...")
                     df_for_redock = None
                 else:
-                    logger.error(f"Generative filtering failed with OSError: {e}")
+                    logger.error(f"Medchem filtering failed with OSError: {e}")
                     if round_no == rounds - 1:
                         logger.info("This is the final round. Exiting pipeline.")
                         sys.exit(1)
@@ -156,7 +173,7 @@ def main(out_dir, rounds, checkpoint, pdbfile, resi_list, n_samples, sanitize,
                         logger.info("Skipping redocking for this round.")
                         continue
             except Exception as e:
-                logger.error(f"Generative filtering failed: {e}")
+                logger.error(f"Medchem filtering failed: {e}")
                 logger.info("Falling back to using all valid compounds without filtering...")
                 df_for_redock = None
         else:
