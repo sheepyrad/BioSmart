@@ -11,13 +11,14 @@ This package contains various utilities for different stages of the drug discove
 - Molecule processing
 - Tracking and reporting
 - Logging
+- Protenix filtering
 """
 
 # Import main utilities
 from utils.ligand_generation import run_ligand_generation, combine_pocket2mol_outputs
 from utils.redocking import redock_compound, vfu_dir, vfu_wrapper_script
 from utils.retrosynformer import run_retrosynthesis
-from utils.medchem_filter import filter_by_pass_count, apply_medchem_filtering_to_variants
+from utils.medchem_filter import filter_by_pass_count, generate_filter_plots
 from utils.energy_minimization import optimize_ligand_in_pocket
 from utils.pose_evaluation import run_posebuster
 from utils.vfu_subprocess_wrapper import run_vfu_from_wrapper
@@ -27,6 +28,7 @@ from utils.molecule_processing import extract_smiles_from_sdf, smiles_to_sdf, ex
 from utils.retro_utils import extract_variants_from_retrosynthesis, run_retrosynthesis_with_timeout
 from utils.tracking import generate_tracking_report, update_tracking_report
 from utils.logging_utils import setup_logging, ThreadSafeRotatingFileHandler
+from utils.protenix_filter import protenix_filter_variants
 
 __all__ = [
     # Ligand generation
@@ -39,7 +41,7 @@ __all__ = [
     'run_retrosynthesis', 'extract_variants_from_retrosynthesis', 'run_retrosynthesis_with_timeout',
     
     # MedChem filtering
-    'filter_by_pass_count', 'apply_medchem_filtering_to_variants',
+    'filter_by_pass_count', 'generate_filter_plots',
     
     # Energy minimization ## DEPRECATED
     'optimize_ligand_in_pocket',
@@ -54,5 +56,8 @@ __all__ = [
     'generate_tracking_report', 'update_tracking_report',
     
     # Logging
-    'setup_logging', 'ThreadSafeRotatingFileHandler'
+    'setup_logging', 'ThreadSafeRotatingFileHandler',
+    
+    # Protenix filtering
+    'protenix_filter_variants'
 ] 

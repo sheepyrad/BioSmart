@@ -11,6 +11,7 @@ import glob
 from pathlib import Path
 import shutil
 import yaml  # Add yaml import
+import random # Import random module for seed generation
 from rdkit import Chem
 
 # Define a timeout for the subprocess (e.g., 2 hours)
@@ -41,11 +42,18 @@ def run_pocket2mol(pdbfile, center, bbox_size, out_dir, n_samples, log_callback=
     # Make sure output directory exists
     os.makedirs(out_dir_path, exist_ok=True)
     
-    # Change to the directory containing Pocket2Mol
-    pocket2mol_dir = os.path.join(current_dir, "src", "Pocket2Mol")
+    # Find Pocket2Mol directory relative to this script
+    current_script_dir = Path(__file__).parent
+    utils_dir = current_script_dir
+    root_dir = utils_dir.parent
+    pocket2mol_dir = root_dir / "src" / "Pocket2Mol"
+    if not pocket2mol_dir.exists():
+        if log_callback:
+            log_callback(f"Error: Pocket2Mol directory not found at {pocket2mol_dir}")
+        raise FileNotFoundError(f"Pocket2Mol directory not found at {pocket2mol_dir}")
     
     # Format center coordinates as a comma-separated string
-    center_str = f"{center[0]},{center[1]},{center[2]}"
+    center_str = ",".join(map(str, center))
     
     # Define config file paths
     config_path = os.path.join(pocket2mol_dir, "configs", "sample_for_pdb.yml")
@@ -58,18 +66,23 @@ def run_pocket2mol(pdbfile, center, bbox_size, out_dir, n_samples, log_callback=
         with open(config_path, 'r') as f:
             config_data = yaml.safe_load(f)
         
-        # Check if modification is needed in the correct location (avoids unnecessary writes)
-        # Ensure the 'sample' key exists and 'num_samples' within it needs updating
-        if 'sample' in config_data and config_data['sample'].get('num_samples') != n_samples:
-            config_data['sample']['num_samples'] = n_samples
-            with open(temp_config_path, 'w') as f:
-                yaml.dump(config_data, f, default_flow_style=False)
-            final_config_to_use = temp_config_path # Use the modified temp config
-            if log_callback:
-                log_callback(f"Using temporary config {temp_config_path} with num_samples set to {n_samples}")
-        else:
-             if log_callback:
-                log_callback(f"Using original config {config_path} (num_samples already {n_samples})")
+        # Generate a random seed for this run
+        run_seed = random.randint(0, 2**16 - 1)
+        if log_callback:
+            log_callback(f"Generated random seed for Pocket2Mol run: {run_seed}")
+            
+        # Update seed and num_samples in the config data
+        if 'sample' not in config_data:
+            config_data['sample'] = {} # Ensure sample key exists
+        config_data['sample']['seed'] = run_seed
+        config_data['sample']['num_samples'] = n_samples
+
+        # Always write the temp config file with the new seed and correct n_samples
+        with open(temp_config_path, 'w') as f:
+            yaml.dump(config_data, f, default_flow_style=False)
+        final_config_to_use = temp_config_path # Use the modified temp config
+        if log_callback:
+            log_callback(f"Using temporary config {temp_config_path} with seed={run_seed}, num_samples={n_samples}")
 
     except Exception as e:
         if log_callback:
@@ -83,12 +96,15 @@ def run_pocket2mol(pdbfile, center, bbox_size, out_dir, n_samples, log_callback=
             except OSError:
                 pass # Ignore error if removal fails
 
-    # Construct the command using the final config path
-    # Removed explicit conda activate - assuming parent environment is correct
+    # ---- Always format the center argument with leading space and quotes ----
+    center_arg = f'--center " {center_str}" '
+    # ---- End center argument formatting ----
+
+    # Construct the command using the final config path and formatted center argument
     command = (
         f"cd {pocket2mol_dir} && python sample_for_pdb.py "
         f"--pdb_path {pdbfile_path} "
-        f"--center {center_str} "
+        f"{center_arg}"  # Use the formatted center argument
         f"--bbox_size {bbox_size} "
         f"--config {final_config_to_use} "  # Use the determined config path
         f"--outdir {out_dir_path}"
@@ -141,12 +157,12 @@ def run_pocket2mol(pdbfile, center, bbox_size, out_dir, n_samples, log_callback=
                     safe_log(f"Pocket2Mol process finished with exit code: {exit_code}")
                 except subprocess.TimeoutExpired:
                     safe_log(f"Pocket2Mol process timed out after {SUBPROCESS_TIMEOUT} seconds. Terminating...")
-                    process.terminate() # Ask nicely first
+                    process.terminate()
                     try:
-                        process.wait(timeout=30) # Wait a bit for termination
+                        process.wait(timeout=30) 
                     except subprocess.TimeoutExpired:
                         safe_log("Process did not terminate gracefully. Killing...")
-                        process.kill() # Force kill
+                        process.kill() 
                     exit_code = -1 # Indicate timeout/termination
                     safe_log("Pocket2Mol process terminated due to timeout.")
                 

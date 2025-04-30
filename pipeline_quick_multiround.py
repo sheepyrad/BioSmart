@@ -41,7 +41,8 @@ logger = logging.getLogger(__name__)
 from utils.ligand_generation import run_ligand_generation, combine_pocket2mol_outputs
 from utils.redocking import redock_compound, vfu_dir
 from utils.retrosynformer import run_retrosynthesis
-from utils.medchem_filter import filter_by_pass_count, apply_medchem_filtering_to_variants
+from utils.medchem_filter import filter_by_pass_count, generate_filter_plots
+from utils.protenix_filter import protenix_filter_variants
 
 # Import helper functions moved to dedicated utility modules
 from utils.molecule_processing import extract_smiles_from_sdf, smiles_to_sdf, extract_best_pose_and_score
@@ -256,41 +257,74 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
              logger.warning(f"Round {round_num}: No variants generated from retrosynthesis. Skipping filtering and subsequent steps for this round.")
              continue # Skip to next round
 
-        filtered_variants = filter_by_pass_count(
+        # Call filter_by_pass_count and capture both return values
+        filtered_variants, filter_results_df = filter_by_pass_count(
             input_variants=all_variants,
             rule_threshold=rule_threshold,
             structural_threshold=struct_threshold,
             smiles_key='smiles' # Ensure this matches the key used in variant dictionaries
         )
-
+        
+        # Generate plots using the returned DataFrame
+        plots_dir = filter_dir / "plots"
+        generate_filter_plots(filter_results_df, plots_dir)
+        
+        # Now, continue using the filtered_variants list for subsequent steps
         if not filtered_variants:
             logger.warning(f"Round {round_num}: No variants passed MedChem filtering. Skipping docking and decoy generation for this round.")
             continue # Skip to next round
 
         logger.info(f"Round {round_num}: After MedChem filtering, {len(filtered_variants)} variants remain")
 
-        # Save filtered variants to SDF for reference
+        # Update tracking for variants that passed MedChem filter
+        for variant in filtered_variants:
+            variant["status"] = "PASSFILTER"
+            update_tracking_report(round_report, variant, "variant_status_update")
+            update_tracking_report(master_report, variant, "variant_status_update")
+
+        # ------------------------------------------------------------------
+        # Step 5: Protenix blind-docking filter (open-source AlphaFold3 alt.)
+        # ------------------------------------------------------------------
+        logger.info(
+            f"Round {round_num}: Running Protenix blind-docking filter on {len(filtered_variants)} variants"
+        )
+
+        passed_variants, failed_variants = protenix_filter_variants(
+            variants=filtered_variants,
+            pdb_file=pdbfile,
+            round_dir=round_dir,
+            center=center,
+            box_size=box_size,
+            log_callback=logger.info,
+        )
+
+        # Update tracking for all variants processed by Protenix
+        for variant in (passed_variants + failed_variants):
+            update_tracking_report(round_report, variant, "variant_status_update")
+            update_tracking_report(master_report, variant, "variant_status_update")
+
+        if not passed_variants:
+            logger.warning(
+                f"Round {round_num}: No variants passed Protenix blind-docking filter. Skipping docking for this round."
+            )
+            continue  # Proceed to next round directly
+
+        # Replace filtered_variants with the subset that passed Protenix for docking
+        filtered_variants = passed_variants
+
+        logger.info(
+            f"Round {round_num}: After Protenix filter, {len(filtered_variants)} variants remain for docking"
+        )
+
+        # Save variants that passed both MedChem and Protenix filters to SDF for reference
         filtered_sdf = filter_dir / f"round_{round_num}_filtered_variants.sdf"
         smiles_to_sdf(filtered_variants, filtered_sdf)
-
-        # Update tracking for filtered variants
-        logger.info("Updating tracking reports for variants that passed filters...")
-        for variant in filtered_variants:
-            variant["status"] = "PASSFILTER" # Update status in the dict for later use
-            # Prepare minimal dict for update function
-            update_data = {
-                 'barcode': variant.get('barcode'),
-                 'status': 'PASSFILTER'
-            }
-            # Assuming update_tracking_report can handle updating based on barcode
-            update_tracking_report(round_report, update_data, "variant_status_update")
-            update_tracking_report(master_report, update_data, "variant_status_update")
 
         # Check stop flag before batch filtering
         if stop_flag and not stop_flag.get("running", True):
             break
             
-        # Step 5: Sequential docking
+        # Step 6: Sequential docking
         logger.info(f"Round {round_num}: Starting docking of {len(filtered_variants)} filtered variants")
         
         # Prepare docking parameters

@@ -35,11 +35,11 @@ st.markdown("""
         width: 100%;
     }
     .model-card {
-        background-color: #f5f5f5;
+        background-color: #262730; /* Dark grey background */
+        color: #FAFAFA; /* Light grey text */
         border-radius: 10px;
         padding: 20px;
         margin-bottom: 20px;
-        border-left: 5px solid #4287f5;
     }
     </style>
 """, unsafe_allow_html=True)

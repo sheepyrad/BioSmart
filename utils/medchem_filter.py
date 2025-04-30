@@ -12,6 +12,11 @@ import time
 import datamol as dm
 import warnings
 from typing import List, Dict, Any
+# Add plotting imports
+import matplotlib
+matplotlib.use('Agg') # Use Agg backend for non-interactive plotting
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # Suppress RDKit warnings for cleaner output
 RDLogger.DisableLog('rdApp.*')
@@ -26,7 +31,7 @@ def filter_by_pass_count(
     rule_threshold: int = 13,
     structural_threshold: int = 27,
     smiles_key: str = 'smiles'
-) -> List[Dict[str, Any]]:
+) -> tuple[List[Dict[str, Any]], pd.DataFrame | None]: # Modified return type hint
     """
     Filters a list of compounds based on the number of MedChem rules and structural alerts passed.
     
@@ -38,12 +43,14 @@ def filter_by_pass_count(
         smiles_key: The key in the input dictionaries corresponding to the SMILES string.
         
     Returns:
-        A list containing the dictionaries of the variants that passed the filtering criteria.
-        Returns an empty list if input is empty or no compounds pass.
+        A tuple containing:
+          - List: The dictionaries of the variants that passed the filtering criteria.
+          - DataFrame or None: A DataFrame containing all filter results and pass counts for
+                                valid input molecules, or None if processing failed early.
     """
     if not input_variants:
-        logger.warning("Received empty list for filtering. Returning empty list.")
-        return []
+        logger.warning("Received empty list for filtering. Returning empty list and None DataFrame.")
+        return [], None
 
     logger.info(f"Starting MedChem filtering for {len(input_variants)} input compounds...")
     logger.info(f"Rule threshold >= {rule_threshold}, Structural threshold >= {structural_threshold}")
@@ -53,7 +60,7 @@ def filter_by_pass_count(
     if not all(smiles_list):
         logger.error(f"Missing SMILES string for one or more input variants using key '{smiles_key}'. Cannot proceed.")
         # Optionally, filter out invalid entries and continue, but safer to stop.
-        return [] # Or raise ValueError
+        return [], None # Or raise ValueError
 
     temp_df = pd.DataFrame({smiles_key: smiles_list})
 
@@ -66,8 +73,9 @@ def filter_by_pass_count(
         logger.warning(f"Dropped {original_len - len(temp_df)} compounds due to SMILES parsing errors.")
 
     if temp_df.empty:
-        logger.warning("No valid molecules remaining after parsing. Returning empty list.")
-        return []
+        logger.warning("No valid molecules remaining after parsing. Returning empty list and empty DataFrame.")
+        # Return empty dataframe matching potential structure but no rows
+        return [], pd.DataFrame(columns=[smiles_key, 'mol', 'n_rules_pass', 'n_structural_pass']) 
 
     mols_list = temp_df["mol"].tolist()
     valid_smiles = temp_df[smiles_key].tolist() # Keep track of SMILES that were successfully parsed
@@ -198,101 +206,165 @@ def filter_by_pass_count(
         item for item in input_variants if item.get(smiles_key) in passing_smiles_set
     ]
 
-    logger.info(f"Returning {len(filtered_variants_output)} filtered variant dictionaries.")
-    return filtered_variants_output
+    logger.info(f"Returning {len(filtered_variants_output)} filtered variant dictionaries and the results DataFrame.")
+    # Return both the filtered list and the full results dataframe
+    return filtered_variants_output, temp_df # Modified return statement
 
-def filter_compounds(
-    input_variants: List[Dict[str, Any]],
-    rule_threshold: int = 13,
-    structural_threshold: int = 27,
-    smiles_key: str = 'smiles'
-    ) -> List[Dict[str, Any]]:
-    """
-    Wrapper function to filter compounds based on pass counts.
-    This provides a consistent entry point if needed.
-    """
-    logger.info("Using filter_compounds wrapper -> calling filter_by_pass_count.")
-    return filter_by_pass_count(
-        input_variants=input_variants,
-        rule_threshold=rule_threshold,
-        structural_threshold=structural_threshold,
-        smiles_key=smiles_key
-    )
 
-def apply_medchem_filtering_to_variants(variants, output_dir):
+def generate_filter_plots(results_df: pd.DataFrame, plots_dir: Path):
     """
-    Apply medchem filtering to variant SMILES.
-    
+    Generates and saves heatmap and histograms for MedChem filter results.
+
     Args:
-        variants: List of variant dictionaries with SMILES
-        output_dir: Directory to save temporary files and results
-        
-    Returns:
-        List of filtered variants
+        results_df: DataFrame containing filter results (True/False) and pass counts
+                    ('n_rules_pass', 'n_structural_pass'). Index should represent compounds.
+        plots_dir: Path object for the directory where plots will be saved.
     """
-    if not variants:
-        logger.warning("No variants provided for filtering")
-        return []
+    if results_df is None or results_df.empty:
+        logger.warning("Received empty or None DataFrame for plotting. Skipping plot generation.")
+        return
+        
+    logger.info(f"Generating filter plots in {plots_dir}...")
+    plots_dir.mkdir(parents=True, exist_ok=True)
 
-    try:
-        # Import required functions
-        from utils.molecule_processing import smiles_to_sdf
-        from pathlib import Path
-        
-        # Create a temporary SDF file with all variants
-        temp_sdf = Path(output_dir) / "temp_variants_for_filtering.sdf"
-        if not smiles_to_sdf(variants, temp_sdf):
-            logger.error("Failed to create temporary SDF file for filtering")
-            return []
-        
-        # Apply MedChem filtering
-        logger.info(f"Applying MedChem filtering to {len(variants)} variants...")
-        filtered_df = filter_by_pass_count(temp_sdf, output_folder=output_dir)
-        
-        if filtered_df is None or filtered_df.empty:
-            logger.warning("No variants passed MedChem filtering")
-            return []
-        
-        # Create a mapping of SMILES to original variant data
-        smiles_to_variant = {v['smiles']: v for v in variants}
-        
-        # Create a list for filtered variants
-        filtered_variants = []
-        
-        # Check if SMILES column exists in filtered results
-        smiles_col = None
-        for possible_col in ['SMILES', 'smiles', 'canonical_smiles']:
-            if possible_col in filtered_df.columns:
-                smiles_col = possible_col
-                break
-        
-        if not smiles_col:
-            logger.error(f"Could not find SMILES column in filtered results. Available columns: {filtered_df.columns.tolist()}")
-            return []
-        
-        # Match filtered compounds back to original variants
-        for _, row in filtered_df.iterrows():
-            smiles = row[smiles_col]
-            if smiles in smiles_to_variant:
-                variant = smiles_to_variant[smiles]
-                # Add any additional properties from filtering if needed
-                if 'filter_score' in row:
-                    variant['filter_score'] = row['filter_score']
-                filtered_variants.append(variant)
-                logger.debug(f"Matched filtered variant: {variant.get('variant_id', 'unknown')} (Barcode: {variant.get('barcode', 'unknown')})")
-        
-        logger.info(f"MedChem filtering complete: {len(filtered_variants)} variants passed filtering out of {len(variants)}")
-        return filtered_variants
-    
-    except Exception as e:
-        logger.error(f"Error during MedChem filtering: {e}")
-        return []
-    
-    finally:
-        # Clean up temporary files
-        if 'temp_sdf' in locals() and temp_sdf.exists():
-            try:
-                temp_sdf.unlink()
-            except Exception as e:
-                logger.warning(f"Failed to delete temporary SDF file: {e}")
+    # Identify rule and structural columns present in the DataFrame
+    # These should match the categorization in filter_by_pass_count
+    all_cols = set(results_df.columns)
+    rules_to_apply = [ # Copy from filter_by_pass_count
+        "rule_of_five", "rule_of_ghose", "rule_of_veber", "rule_of_reos",
+        "rule_of_chemaxon_druglikeness", "rule_of_egan", "rule_of_pfizer_3_75",
+        "rule_of_gsk_4_400", "rule_of_oprea", "rule_of_xu", "rule_of_zinc",
+        "rule_of_leadlike_soft", "rule_of_druglike_soft",
+        "rule_of_generative_design", "rule_of_generative_design_strict"
+    ]
+    # Structural cols are everything else that isn't smiles, mol, or pass counts
+    structural_cols = list(all_cols - set(rules_to_apply) - {'smiles', 'mol', 'n_rules_pass', 'n_structural_pass'})
+    rule_cols = [col for col in rules_to_apply if col in all_cols]
+
+    all_filter_cols = sorted(rule_cols + structural_cols) # Combine and sort for heatmap
+
+    if not all_filter_cols:
+        logger.warning("No filter result columns found in DataFrame. Skipping heatmap generation.")
+    else:
+        # --- Generate Heatmap ---
+        try:
+            logger.info("Generating filter heatmap...")
+            # Prepare data for heatmap (transpose)
+            # Ensure boolean type for heatmap
+            heatmap_data = results_df[all_filter_cols].astype(bool).T 
+
+            # Adjust figsize dynamically - make wider if many filters, taller if many compounds
+            fig_width = max(12, len(results_df)*0.01) # Ensure minimum width
+            fig_height = max(8, len(all_filter_cols)*0.3) # Taller based on number of filters
+            
+            f_h, ax_h = plt.subplots(figsize=(fig_width, fig_height ), constrained_layout=True)
+            cmap = matplotlib.colors.ListedColormap(["#EF6262", "#1D5B79"], None) # Red=Fail, Blue=Pass
+
+            sns.heatmap(
+                heatmap_data,
+                annot=False,
+                ax=ax_h,
+                xticklabels=False,  # Hide compound labels on x-axis (can be too many)
+                yticklabels=True,
+                cbar=True,
+                cmap=cmap,
+                linewidths=0.1, # Add small lines between cells
+                linecolor='lightgray',
+                cbar_kws={'ticks': [0.25, 0.75]} # Center ticks in color segments
+            )
+
+            # Configure color bar
+            cbar = ax_h.collections[0].colorbar
+            cbar.set_ticklabels(["Fail", "Pass"])
+
+            # Add percentage labels to y-axis (filters)
+            new_ylabels = []
+            for t in ax_h.get_yticklabels():
+                filter_name = t.get_text()
+                if filter_name in results_df.columns:
+                    # Ensure boolean conversion before sum for safety
+                    perc = results_df[filter_name].astype(bool).sum() / len(results_df) * 100
+                    new_ylabels.append(f"{filter_name} ({perc:.0f}%)")
+                else:
+                    new_ylabels.append(filter_name) # Should not happen if cols are correct
+            ax_h.set_yticklabels(new_ylabels)
+
+            ax_h.set_xlabel(f"Compounds (n={len(results_df)})", fontsize=12)
+            ax_h.set_ylabel("MedChem Filters & Rules", fontsize=14)
+            ax_h.set_title("MedChem Filter Pass/Fail Heatmap", fontsize=16)
+            
+            # Ensure plot elements fit
+            # plt.tight_layout() # Removed - constrained_layout=True handles this
+
+            heatmap_path = plots_dir / "filter_heatmap.png"
+            plt.savefig(heatmap_path, dpi=150, bbox_inches='tight')
+            plt.close(f_h) # Close figure to free memory
+            logger.info(f"Saved heatmap to {heatmap_path}")
+            # Explicitly delete large objects and collect garbage
+            del heatmap_data, f_h, ax_h, cbar
+            gc.collect()
+
+        except Exception as e:
+            logger.error(f"Failed to generate heatmap: {e}", exc_info=True)
+            if 'f_h' in locals() and plt.fignum_exists(f_h.number): plt.close(f_h) # Ensure plot is closed on error
+            gc.collect()
+
+
+    # --- Generate Histograms ---
+    # Rules Pass Count Histogram
+    if 'n_rules_pass' in results_df.columns and not results_df['n_rules_pass'].empty:
+        try:
+            logger.info("Generating rules pass count histogram...")
+            f_r, ax_r = plt.subplots(figsize=(10, 6))
+            sns.histplot(data=results_df, x='n_rules_pass', discrete=True, ax=ax_r, stat="count") # Explicitly use count
+            max_rules = len(rule_cols) if rule_cols else results_df['n_rules_pass'].max()
+            ax_r.set_xticks(np.arange(0, max_rules + 1, step=max(1, max_rules // 10))) # Adjust ticks
+            ax_r.set_title('Distribution of Passed MedChem Rules')
+            ax_r.set_xlabel(f'Number of Rules Passed (out of {max_rules})')
+            ax_r.set_ylabel('Number of Compounds')
+            plt.tight_layout()
+            rules_hist_path = plots_dir / "rules_pass_histogram.png"
+            plt.savefig(rules_hist_path, dpi=100, bbox_inches='tight')
+            plt.close(f_r)
+            logger.info(f"Saved rules histogram to {rules_hist_path}")
+            del f_r, ax_r
+            gc.collect()
+        except Exception as e:
+            logger.error(f"Failed to generate rules histogram: {e}", exc_info=True)
+            if 'f_r' in locals() and plt.fignum_exists(f_r.number): plt.close(f_r)
+            gc.collect()
+    else:
+        logger.warning("Column 'n_rules_pass' not found or empty. Skipping rules histogram.")
+
+    # Structural Pass Count Histogram
+    if 'n_structural_pass' in results_df.columns and not results_df['n_structural_pass'].empty:
+        try:
+            logger.info("Generating structural/functional pass count histogram...")
+            f_s, ax_s = plt.subplots(figsize=(10, 6))
+            sns.histplot(data=results_df, x='n_structural_pass', discrete=True, ax=ax_s, stat="count") # Explicitly use count
+            max_struct = len(structural_cols) if structural_cols else results_df['n_structural_pass'].max()
+            ax_s.set_xticks(np.arange(0, max_struct + 1, step=max(1, max_struct // 10))) # Adjust ticks
+            ax_s.set_title('Distribution of Passed Structural/Functional Filters')
+            ax_s.set_xlabel(f'Number of Filters Passed (out of {max_struct})')
+            ax_s.set_ylabel('Number of Compounds')
+            plt.tight_layout()
+            struct_hist_path = plots_dir / "structural_pass_histogram.png"
+            plt.savefig(struct_hist_path, dpi=100, bbox_inches='tight')
+            plt.close(f_s)
+            logger.info(f"Saved structural histogram to {struct_hist_path}")
+            del f_s, ax_s
+            gc.collect()
+        except Exception as e:
+            logger.error(f"Failed to generate structural histogram: {e}", exc_info=True)
+            if 'f_s' in locals() and plt.fignum_exists(f_s.number): plt.close(f_s)
+            gc.collect()
+    else:
+         logger.warning("Column 'n_structural_pass' not found or empty. Skipping structural histogram.")
+
+    logger.info("Finished generating filter plots.")
+
+# Delete the old filter_compounds function and apply_medchem_filtering_to_variants
+# As they are replaced by the updated filter_by_pass_count and direct calling from pipeline
+
+# Keep filter_by_pass_count and generate_filter_plots defined above
 
