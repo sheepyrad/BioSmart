@@ -16,20 +16,27 @@ A web-based interface for running and monitoring the drug discovery pipeline, bu
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/drug_pipeline_app.git
-cd drug_pipeline_app
+git clone https://github.com/sheepyrad/AI_drug_discovery.git
+cd drug_pipeline
 ```
+2. Run the setup.sh
 
-2. Create a virtual environment (recommended):
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+./setup.sh
 ```
+3. Activate the conda environment
 
-3. Install dependencies:
 ```bash
-pip install -r requirements.txt
+conda activate drug_pipeline
 ```
+4. Setup Protenix
+This step is to download the checkpoints and ccd_cache for Protenix
+
+```bash
+cd src/Protenix
+protenix predict --input examples/example.json --out_dir  ./output --seeds 101
+```
+After it finishes, the /output directory should contain predictions of Protenix
 
 ## Usage
 

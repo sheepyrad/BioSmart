@@ -180,16 +180,6 @@ if [ -d "src/Pocket2Mol/ckpt" ]; then
 else
     echo "Warning: Directory src/Pocket2Mol/ckpt not found. Skipping Pocket2Mol setup."
 fi
-
-# Setup Protenix
-echo_step "Setting up Protenix"
-if [ -d "src/Protenix" ]; then
-    cd src/Protenix
-    echo "Changed directory to $(pwd)"
-
-    # 11. Install Protenix
-    echo "Installing Protenix  into $CONDA_ENV_NAME environment"
-
 echo "----------------------------------------"
 echo "Setup script finished."
 echo "IMPORTANT: Activate the environment by running: conda activate $CONDA_ENV_NAME"
