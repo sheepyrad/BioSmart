@@ -1,0 +1,8 @@
+compound_id	barcode	generation	round	smiles
+round_6_mols_gen_mol_46_retrosyn_variant_4_score0.386	R6-R6-GEN-0046-V-04	7	6	CC(C)(C)OC1(C(=O)O)CCc2ccccc21
+round_7_mols_gen_mol_23_retrosyn_variant_1_score0.800	R7-R7-GEN-0023-V-01	8	7	O=C([O-])CCC(CNC(=O)C1CC1)Oc1ccccn1
+round_7_mols_gen_mol_23_retrosyn_variant_5_score0.736	R7-R7-GEN-0023-V-05	8	7	O=C([O-])CCC(CNC(=O)C1CCC1)Oc1ccccn1
+round_7_mols_gen_mol_25_retrosyn_variant_6_score0.254	R7-R7-GEN-0025-V-05	8	7	OCC[C@H](O)COc1cccc(COC2COCOC2)c1
+round_8_mols_gen_mol_68_retrosyn_variant_4_score0.224	R8-R8-GEN-0068-V-04	9	8	CCN1C[C@@H](C)N(C(=O)NC23CC(C)(C2)OC3CO)[C@@H](C)C1
+Tamiflu (Control)	CONTROL-1	NA	NA	CCC(CC)O[C@@H]1C=C(C[C@@H]([C@H]1NC(=O)C)N)C(=O)O
+Zanamivir (Control)	CONTROL-2	NA	NA	[H][C@]1(OC(=C[C@H](N=C(N)N)[C@H]1NC(C)=O)C(O)=O)[C@H](O)[C@H](O)CO

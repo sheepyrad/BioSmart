@@ -1,10 +1,12 @@
-name: sbdd_env
+name: drug_pipeline
 channels:
   - pytorch
   - nvidia
   - bioconda
   - conda-forge
   - defaults
+  - pyg
+  - esri
 dependencies:
   - python=3.10
   - pytorch >=2.0
@@ -12,7 +14,6 @@ dependencies:
   - torchvision
   - torchaudio
   - pytorch-lightning >=2.0
-  - pytorch_scatter
   - scikit-learn >=1.0
   - pandas >=2.0
   - numpy >=1.22
@@ -25,17 +26,23 @@ dependencies:
   - ipywidgets
   - openmm >=8.0
   - ambertools >=23
+  - openff-toolkit
+  - openmmforcefields
   - parmed
   - mdtraj
   - pdbfixer
   - openbabel
-  - biopython=1.79 # Needs to be pinned to 1.79 
+  - biopython=1.79 
   - tqdm
   - requests
   - pyyaml
   - imageio
   - omegaconf
   - einops
+  - python-lmdb
+  - easydict
+  - pyg=*=*cu*
+  - gemmi
   - pip
   - pip:
     - posebusters >=0.3
@@ -50,4 +57,9 @@ dependencies:
     - pathlib>=1.0.1
     - pillow>=10.0.0
     - matplotlib>=3.7.0
-    - scikit-learn>=1.3.0 
+    - scikit-learn>=1.3.0
+    - protenix
+    - pdbeccdutils
+    - https://data.pyg.org/whl/torch-2.3.0%2Bcu121/torch_cluster-1.6.3%2Bpt23cu121-cp310-cp310-linux_x86_64.whl
+    - https://data.pyg.org/whl/torch-2.3.0%2Bcu121/torch_scatter-2.1.2%2Bpt23cu121-cp310-cp310-linux_x86_64.whl
+    - https://data.pyg.org/whl/torch-2.3.0%2Bcu121/torch_sparse-0.6.18%2Bpt23cu121-cp310-cp310-linux_x86_64.whl

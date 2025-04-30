@@ -6,7 +6,7 @@ size_x=40
 size_y=40
 size_z=40
 exhaustiveness=32
-smi=COCC(C)C(C)C(=O)N1CC2(CN(CC(=O)OC)C(=O)O2)C1
+smi=CCCNC(=O)c1cn(C)nc1C(=O)O
 is_selfies=False
 is_peptide=False
 receptor=./config/NS5_test.pdbqt
