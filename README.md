@@ -7,10 +7,9 @@ A web-based interface for running and monitoring the drug discovery pipeline, bu
 - **Interactive Configuration**: Easy-to-use interface for setting up pipeline parameters
 - **Real-time Monitoring**: Track pipeline progress and view logs in real-time
 - **Results Visualization**: 
-  - 2D and 3D molecular structure visualization
   - Interactive plots and charts
   - Comprehensive results dashboard
-- **Data Export**: Export results in various formats (CSV, statistics)
+- **Data Export**
 
 ## Installation
 
@@ -50,7 +49,7 @@ streamlit run app.py
 3. Follow these steps in the application:
 
    a. **Configuration**:
-      - Upload required files (PDB, checkpoint)
+      - Upload required files (PDB, PDBQT)
       - Set pipeline parameters
       - Configure docking settings
 
@@ -78,58 +77,6 @@ drug_pipeline_app/
 └── README.md             # This file
 ```
 
-## Requirements
-
-- Python 3.8+
-- CUDA-capable GPU (recommended for optimal performance)
-- Dependencies listed in requirements.txt
-
-## Environment Variables
-
-The following environment variables can be set:
-
-- `CUDA_VISIBLE_DEVICES`: GPU device indices to use
-- `STREAMLIT_SERVER_PORT`: Custom port for the Streamlit server
-- `STREAMLIT_SERVER_ADDRESS`: Custom address for the Streamlit server
-
-## Troubleshooting
-
-Common issues and solutions:
-
-1. **GPU Not Detected**:
-   - Ensure CUDA drivers are installed
-   - Check CUDA_VISIBLE_DEVICES environment variable
-
-2. **Memory Issues**:
-   - Reduce the number of samples
-   - Lower the exhaustiveness parameter
-   - Clear browser cache
-
-3. **File Upload Issues**:
-   - Check file size limits
-   - Verify file formats
-   - Ensure proper file permissions
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
-
-## Citation
-
-If you use this software in your research, please cite:
-
-```bibtex
-@software{drug_pipeline_app,
-  author = {Your Name},
-  title = {Drug Discovery Pipeline Application},
-  year = {2024},
-  url = {https://github.com/yourusername/drug_pipeline_app}
-}
-```
 
 ## Contact
 
