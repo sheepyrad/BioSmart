@@ -30,7 +30,7 @@ cd drug_pipeline
 conda activate drug_pipeline
 ```
 4. Setup Protenix
-This step is to download the checkpoints and ccd_cache for Protenix
+(This step is to download the checkpoints and ccd_cache for Protenix)
 
 ```bash
 cd src/Protenix
