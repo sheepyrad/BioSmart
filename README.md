@@ -33,8 +33,6 @@ cd drug_pipeline
 ```bash
 conda activate drug_pipeline
 ```
-4. Setup Protenix
-This step is to download the checkpoints and ccd_cache for Protenix
 
 ```bash
 cd src/Protenix
@@ -50,56 +48,92 @@ After it finishes, the /output directory should contain predictions of Protenix
 streamlit run app.py
 ```
 
-This opens the web interface in your browser (usually at **[http://localhost:8501](http://localhost:8501)**).
+2. Open your web browser and navigate to the URL shown in the terminal (usually http://localhost:8501)
 
-**Pipeline workflow via the UI:**
+3. Follow these steps in the application:
 
-1. **Configuration:** On the "Basic Configuration" tab, upload your target protein structure (`.pdb`). *(Optional:* also upload a prepared receptor in `.pdbqt` format for docking, otherwise provide the PDBQT path if available). Specify the binding site either by listing key residues or by setting the grid box on the "Box Settings" tab (center coordinates and dimensions). Choose the molecule generation model (DiffSBDD or Pocket2Mol) and number of compounds to generate. Adjust any other parameters as needed (e.g., docking program, scoring function, number of rounds for iterative optimization).
-2. **Run Pipeline:** Switch to the "Execution" page and start the run. The app will display live logs of each stage – generation, filtering, docking, etc. – with color-coded messages (INFO, WARNING, ERROR). You can monitor progress and stop the run early if needed.
-3. **Results:** Once complete, go to the "Results" page. Here you can:
+   a. **Configuration**:
+      - Upload required files (PDB, checkpoint)
+      - Set pipeline parameters
+      - Configure docking settings
 
-   * View a summary table of all docked compounds with their scores.
-   * Click on a compound to inspect details: a 2D structure image and its 3D pose in the binding site (visualized with py3Dmol) are shown, along with properties like SMILES, filters passed, etc..
-   * See distribution plots (e.g., score histograms) and filtering reports (how many rules each compound passed).
-   * Download the results (CSV of scores, SDF of top poses, etc.) for offline analysis.
+   b. **Execution**:
+      - Start the pipeline
+      - Monitor progress
+      - View real-time logs
 
-For a quick start, you can test the pipeline with the provided example protein (Dengue virus NS5 polymerase in `input/NS5.pdb`) and default settings – just upload the PDB, set a small number of samples (e.g., 10), and run. Example output files will be saved under `outputs/<your_run_name>/` for review.
+   c. **Results**:
+      - View generated compounds
+      - Analyze docking results
+      - Export data
 
-## Repository Layout
+## Application Structure
 
-```bash
-Drug_pipeline/
-├── app.py               # Streamlit app main script
-├── pages/               # UI subpages for Streamlit
-│   ├── 01_configuration.py   # File upload & parameter inputs
-│   ├── 02_execution.py       # Pipeline execution and live log display
-│   └── 03_results.py         # Visualization of results (tables, 3D viewer, etc.)
-├── pipeline.py          # Full pipeline script (single-round, with PoseBuster & energy minimization)
-├── pipeline_quick_multiround.py  # Quick iterative pipeline script (multi-round, faster, uses Protenix)
-├── utils/               # Custom pipeline modules
-│   ├── ligand_generation.py    # Calls DiffSBDD or Pocket2Mol for molecule gen.
-│   ├── medchem_filter.py      # Medicinal chemistry filtering logic:contentReference[oaicite:234]{index=234}
-│   ├── redocking.py           # Docking wrapper (calls VirtualFlow Unity):contentReference[oaicite:235]{index=235}
-│   ├── pose_evaluation.py     # PoseBuster integration
-│   ├── retrosynformer.py      # Runs Synformer retrosynthesis and processes outputs:contentReference[oaicite:236]{index=236}
-│   ├── protenix_filter.py     # Uses Protenix ML model to filter poses:contentReference[oaicite:237]{index=237}
-│   └── ... (other helpers: energy_minimization, logging, etc.)
-├── src/                # External dependencies (treated as read-only)
-│   ├── DiffSBDD/        # Diffusion model for SBDD (external code + checkpoints)
-│   ├── Pocket2Mol/      # Pocket2Mol model (external)
-│   ├── synformer/       # Synformer retrosynthesis model (external + data) 
-│   ├── VFU/             # Virtual Flow Unity (docking executables and config scripts)
-│   └── LUDe_v2/         # Decoy generation utility (to be integrated)
-├── tests/              # Unit tests for critical functions (e.g., docking):contentReference[oaicite:238]{index=238}
-├── environment.yml     # Conda environment definition (packages and channels):contentReference[oaicite:239]{index=239}
-├── requirements.txt    # Python package requirements (for pip-based install):contentReference[oaicite:240]{index=240}
-├── setup.sh            # Setup script to configure environment and download models:contentReference[oaicite:241]{index=241}:contentReference[oaicite:242]{index=242}
-├── README.md           # User guide (this file)
-└── CODING_GUIDELINES.md # Contribution and code style guidelines
+```
+drug_pipeline_app/
+├── app.py                 # Main application file
+├── pages/                 # Streamlit pages
+│   ├── 01_configuration.py
+│   ├── 02_execution.py
+│   ├── 03_results.py
+├── pipeline_quick_multiround.py  # Pipeline implementation
+├── requirements.txt       # Python dependencies
+└── README.md             # This file
 ```
 
-## Contributing and Support
+## Requirements
 
-Contributions are welcome! If you’d like to add features or improvements, please follow the style and structure outlined in **CODING\_GUIDELINES.md**. Notably, avoid modifying code under `src/` (external libraries); instead, extend or wrap functionality in the `utils/` modules.
+- Python 3.8+
+- CUDA-capable GPU (recommended for optimal performance)
+- Dependencies listed in requirements.txt
 
-For support or to report issues/bugs, please open an issue in this repository. You can also reach out via email (see Contact in README) for specific inquiries. We aim to respond and address issues promptly to make this pipeline robust and useful for the community.
+## Environment Variables
+
+The following environment variables can be set:
+
+- `CUDA_VISIBLE_DEVICES`: GPU device indices to use
+- `STREAMLIT_SERVER_PORT`: Custom port for the Streamlit server
+- `STREAMLIT_SERVER_ADDRESS`: Custom address for the Streamlit server
+
+## Troubleshooting
+
+Common issues and solutions:
+
+1. **GPU Not Detected**:
+   - Ensure CUDA drivers are installed
+   - Check CUDA_VISIBLE_DEVICES environment variable
+
+2. **Memory Issues**:
+   - Reduce the number of samples
+   - Lower the exhaustiveness parameter
+   - Clear browser cache
+
+3. **File Upload Issues**:
+   - Check file size limits
+   - Verify file formats
+   - Ensure proper file permissions
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a Pull Request
+
+## Citation
+
+If you use this software in your research, please cite:
+
+```bibtex
+@software{drug_pipeline_app,
+  author = {Your Name},
+  title = {Drug Discovery Pipeline Application},
+  year = {2024},
+  url = {https://github.com/yourusername/drug_pipeline_app}
+}
+```
+
+## Contact
+
+For support or questions, please open an issue on the GitHub repository or contact [your@email.com]. 

@@ -7,6 +7,7 @@ The `src/` directory contains external packages that are essential dependencies 
 - DiffSBDD (Diffusion-based generative model)
 - Synformer (Retrosynthesis analysis)
 - VFU (Virtual Flow Unity for docking)
+- LUDe_v2 (For Decoy Generation)
 
 ⚠️ **IMPORTANT**: Never modify any files in the `src/` directory. These are external dependencies that:
 - Are maintained by their respective teams
@@ -17,7 +18,6 @@ The `src/` directory contains external packages that are essential dependencies 
 If you need to modify functionality from these packages:
 1. Create wrapper functions in the `utils/` directory
 2. Use inheritance or composition patterns
-3. Submit issues/pull requests to the original repositories for bugs
 
 ### Utility Functions (`utils/`)
 The `utils/` directory is where all custom code should be placed:
@@ -29,7 +29,6 @@ The `utils/` directory is where all custom code should be placed:
 
 ### Python Version
 - Use Python 3.10+ features
-- Maintain compatibility with Ubuntu 20.04+
 
 ### Imports
 Follow this import order:
@@ -46,7 +45,7 @@ from rdkit import Chem
 
 # 3. Local imports
 from utils.ligand_generation import run_ligand_generation
-from utils.medchem_filter import generative_filter
+from utils.medchem_filter import filter_by_pass_count
 ```
 
 ### Formatting
@@ -148,7 +147,7 @@ def process_compound(compound_id: str) -> None:
 ### Unit Tests
 - Write tests for all new functionality
 - Use pytest as the testing framework
-- Place tests in a `tests/` directory
+- Place tests in a `unit_tests/` directory
 - Name test files with `test_` prefix
 
 ```python
@@ -207,7 +206,6 @@ Fixes #123
 - Monitor memory usage in long-running processes
 
 ### Parallel Processing
-- Use multiprocessing for CPU-intensive tasks
 - Use threading for I/O-bound operations
 - Implement proper resource locking
 - Handle process termination gracefully
@@ -222,6 +220,5 @@ Fixes #123
 
 ### Code Security
 - Keep dependencies updated
-- Review security advisories
-- Implement proper input validation
+- Review security advisories- Implement proper input validation
 - Use secure file operations 

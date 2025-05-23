@@ -159,7 +159,29 @@ else
     echo "Warning: Directory src/VFU not found. Skipping VFU setup."
 fi
 
+# Setup Pocket2Mol
+echo_step "Setting up Pocket2Mol"
+if [ -d "src/Pocket2Mol/ckpt" ]; then
+    cd src/Pocket2Mol/ckpt
+    echo "Changed directory to $(pwd)"
+
+    # 10. Download the model checkpoint
+    echo "Downloading Pocket2Mol checkpoint to $(pwd)"
+
+    POCKET2MOL_CKPT_FILE="pretrained_Pocket2Mol.pt"
+    if [ -f "$POCKET2MOL_CKPT_FILE" ]; then
+        echo "Pocket2Mol checkpoint already exists. Skipping download."
+    else
+        gdown --id 1WaoEj9RDG4VEcyHEmgsjbh958txm1W6x
+    fi
+
+    cd ../../.. # Go back to the root of the repo
+    echo "Changed directory back to $(pwd)"
+else
+    echo "Warning: Directory src/Pocket2Mol/ckpt not found. Skipping Pocket2Mol setup."
+fi
 echo "----------------------------------------"
 echo "Setup script finished."
+echo "Please refer to README.md for next steps"
 echo "IMPORTANT: Activate the environment by running: conda activate $CONDA_ENV_NAME"
 echo "----------------------------------------" 

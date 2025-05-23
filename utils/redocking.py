@@ -5,220 +5,240 @@ from pathlib import Path
 import shutil
 import logging
 import traceback
+import subprocess
+import threading
+import time
+import json
 
 # Determine the absolute path to the VFU folder relative to this file
 vfu_dir = Path(__file__).parent.parent / "src" / "VFU"
 vfu_config_dir = vfu_dir / "config"
-vfu_inputs_dir = vfu_dir / "inputs"
-vfu_outputs_dir = vfu_dir / "outputs"
 input_dir = Path(__file__).parent.parent / "input"
+vfu_wrapper_script = Path(__file__).parent / "vfu_subprocess_wrapper.py"
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
 
+# Define a timeout for the VFU subprocess (e.g., 2 hours)
+VFU_SUBPROCESS_TIMEOUT = 7200
+
+def _run_vfu_subprocess(command, timeout, log_callback, result_storage):
+    """Internal function to run the VFU wrapper script in a subprocess."""
+    start_time = time.time()
+    process = None
+    results = {"pose_pred_out": None, "re_scored_values": None, "error": None, "stdout": "", "stderr": ""}
+
+    # Ensure result_storage is updated even if exceptions occur early
+    result_storage["data"] = results
+    result_storage["status"] = "starting"
+
+    try:
+        log_callback(f"Executing VFU wrapper command: {' '.join(command)} in CWD={vfu_dir}")
+        # Use a context manager for Popen
+        with subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8', # Be explicit about encoding
+            errors='replace',  # Handle potential decoding errors
+            cwd=str(vfu_dir) # Set the current working directory for the subprocess
+        ) as process:
+            try:
+                stdout_data, stderr_data = process.communicate(timeout=timeout)
+                results["stdout"] = stdout_data
+                results["stderr"] = stderr_data
+                exit_code = process.returncode
+                log_callback(f"VFU wrapper process finished with exit code: {exit_code}")
+
+                if exit_code == 0:
+                    try:
+                        parsed_output = json.loads(stdout_data)
+                        results["pose_pred_out"] = parsed_output.get("pose_pred_out")
+                        results["re_scored_values"] = parsed_output.get("re_scored_values")
+                        # Check for errors reported within the JSON output
+                        if parsed_output.get("error"):
+                            results["error"] = f"Error reported by VFU wrapper: {parsed_output['error']}"
+                            log_callback(results["error"])
+                            result_storage["status"] = "error"
+                        else:
+                            log_callback("VFU wrapper executed successfully and results parsed.")
+                            result_storage["status"] = "success"
+                    except json.JSONDecodeError as json_err:
+                        results["error"] = f"Failed to parse JSON output from VFU wrapper: {json_err}. stdout: {stdout_data[:500]}..."
+                        log_callback(results["error"])
+                        result_storage["status"] = "error"
+                    except Exception as parse_err: # Catch other potential parsing issues
+                        results["error"] = f"Error processing VFU wrapper output: {parse_err}"
+                        log_callback(results["error"])
+                        result_storage["status"] = "error"
+                else:
+                    results["error"] = f"VFU wrapper process failed with exit code {exit_code}. stderr: {stderr_data[:500]}..."
+                    log_callback(results["error"])
+                    result_storage["status"] = "error"
+
+            except subprocess.TimeoutExpired:
+                log_callback(f"VFU wrapper process timed out after {timeout} seconds. Terminating...")
+                process.terminate()
+                try:
+                    stdout_data, stderr_data = process.communicate(timeout=30) # Wait a bit
+                except subprocess.TimeoutExpired:
+                    log_callback("VFU wrapper did not terminate gracefully. Killing...")
+                    process.kill()
+                    stdout_data, stderr_data = process.communicate()
+
+                results["stdout"] = stdout_data
+                results["stderr"] = stderr_data
+                results["error"] = f"VFU wrapper process timed out after {timeout} seconds."
+                log_callback(results["error"])
+                result_storage["status"] = "error"
+
+    except FileNotFoundError:
+        results["error"] = f"Error: Could not find python interpreter or wrapper script '{vfu_wrapper_script}'."
+        log_callback(results["error"])
+        result_storage["status"] = "error"
+    except Exception as e:
+        # Catch broader errors during subprocess setup/execution
+        error_traceback = traceback.format_exc()
+        results["error"] = f"Error running VFU subprocess: {e}. Traceback: {error_traceback}"
+        log_callback(results["error"])
+        result_storage["status"] = "error"
+        # Ensure process is terminated if started and an exception occurred
+        if process and process.poll() is None:
+            try: process.kill() # Kill directly if setup failed badly
+            except Exception: pass
+    finally:
+        elapsed_time = time.time() - start_time
+        log_callback(f"VFU subprocess execution attempt finished in {elapsed_time:.2f} seconds. Final status: {result_storage['status']}")
+        # Update the central storage dictionary with the final results
+        result_storage["data"] = results
+        # Ensure status reflects final state
+        if results["error"] and result_storage["status"] != "error":
+             result_storage["status"] = "error"
+        elif not results["error"] and result_storage["status"] == "starting": # Handle case where process finished instantly without error/success path
+             result_storage["status"] = "success" # Assume success if no error logged
+
 def redock_compound(compound_id, smiles, redock_params, receptor=None, log_callback=print):
     """
-    Redock a compound using VF Unity.
-    
+    Redock a compound using VF Unity by running a wrapper script in a subprocess.
+
     Args:
         compound_id: ID of the compound
         smiles: SMILES string of the compound
         redock_params: Tuple of redocking parameters
         receptor: Filename of the receptor file (should be in ./input directory)
         log_callback: Function to call for logging
-    
+
     Returns:
-        Tuple of (pose_pred_out, re_scored_values)
+        Tuple of (threading.Thread, dict): The thread running the VFU subprocess
+                                           and a dictionary to store results asynchronously.
+                                           The dict structure: {"status": "starting"|"success"|"error",
+                                                              "data": {"pose_pred_out": ..., "re_scored_values": ..., "error": ...}}
     """
     if log_callback is None:
         log_callback = print
-    
-    log_callback(f"Starting redocking process for {compound_id}")
-    
-    # Check if VFU directory exists
+
+    log_callback(f"Preparing asynchronous redocking process for {compound_id}.")
+
+    # Create a dictionary to store results asynchronously
+    # Initialize status and data structure
+    result_storage = {"status": "pending", "data": None}
+
+    # --- VFU Path and Setup Checks ---
     if not vfu_dir.exists():
         error_msg = f"VFU directory not found at {vfu_dir}. Please ensure it exists."
         log_callback(error_msg)
-        return None, None
-        
-    # Ensure VFU directories exist
+        result_storage["status"] = "error"
+        result_storage["data"] = {"error": error_msg}
+        return None, result_storage # Return None for thread if setup fails
+
+    if not vfu_wrapper_script.exists():
+        error_msg = f"VFU wrapper script not found at {vfu_wrapper_script}."
+        log_callback(error_msg)
+        result_storage["status"] = "error"
+        result_storage["data"] = {"error": error_msg}
+        return None, result_storage
+
+    # Ensure VFU config directory exists
     vfu_config_dir.mkdir(parents=True, exist_ok=True)
-    vfu_inputs_dir.mkdir(parents=True, exist_ok=True)
-    vfu_outputs_dir.mkdir(parents=True, exist_ok=True)
-    
-    log_callback(f"VFU directories initialized: config={vfu_config_dir.exists()}, inputs={vfu_inputs_dir.exists()}, outputs={vfu_outputs_dir.exists()}")
-        
+
     (program_choice, scoring_function, center_x, center_y, center_z,
      size_x, size_y, size_z, exhaustiveness, is_selfies, is_peptide) = redock_params
 
-    # Get just the filename from the receptor path if provided
-    receptor_filename = None
+    # --- Receptor Handling ---
+    absolute_receptor_path_in_vfu_config = None
     if receptor:
-        receptor_filename = os.path.basename(receptor)
-        
-        # Expected location in input directory
+        receptor_filename = Path(receptor).name # Use Path for robustness
         receptor_in_input = input_dir / receptor_filename
-        
-        # Final path where the receptor should be in VFU/config
         receptor_in_vfu_config = vfu_config_dir / receptor_filename
-        
-        log_callback(f"Redocking {compound_id} with SMILES: {smiles}")
-        log_callback(f"Looking for receptor file: {receptor_filename} in input directory")
-    
-        # Check if receptor exists in input directory
+        absolute_receptor_path_in_vfu_config = str(receptor_in_vfu_config.resolve())
+
+        log_callback(f"Looking for receptor file: {receptor_filename} in input directory {input_dir}")
+
         if not receptor_in_input.exists():
             error_msg = f"Receptor file '{receptor_filename}' not found in input directory at {receptor_in_input}. Please place it there."
             log_callback(error_msg)
-            return None, None
-    
-        # Copy receptor from input to VFU/config if needed
-        if not receptor_in_vfu_config.exists():
-            log_callback(f"Copying receptor from {receptor_in_input} to {receptor_in_vfu_config}")
-            try:
+            result_storage["status"] = "error"
+            result_storage["data"] = {"error": error_msg}
+            return None, result_storage
+
+        try:
+            # Copy receptor from input to VFU/config if needed
+            if not receptor_in_vfu_config.exists() or receptor_in_input.stat().st_mtime > receptor_in_vfu_config.stat().st_mtime:
+                log_callback(f"Copying receptor from {receptor_in_input} to {receptor_in_vfu_config}")
                 shutil.copy2(receptor_in_input, receptor_in_vfu_config)
-                log_callback(f"Receptor copied successfully. File exists: {receptor_in_vfu_config.exists()}")
-            except Exception as e:
-                log_callback(f"Error copying receptor file: {e}")
-                return None, None
-
-    # Instead of changing directory, we'll modify the config.txt file in the VFU directory
-    # and run a custom function that mimics the behavior of run_vf_unity.main
-    
-    # Create a custom config file
-    config_file = vfu_dir / "config.txt"
-    log_callback(f"Creating custom config file at {config_file}")
-    
-    try:
-        with open(config_file, 'w') as f:
-            f.write(f"program_choice={program_choice}\n")
-            f.write(f"center_x={center_x}\n")
-            f.write(f"center_y={center_y}\n")
-            f.write(f"center_z={center_z}\n")
-            f.write(f"size_x={size_x}\n")
-            f.write(f"size_y={size_y}\n")
-            f.write(f"size_z={size_z}\n")
-            f.write(f"exhaustiveness={exhaustiveness}\n")
-            f.write(f"smi={smiles}\n")
-            f.write(f"is_selfies={str(is_selfies)}\n")
-            f.write(f"is_peptide={str(is_peptide)}\n")
-            
-            # Set receptor path relative to VFU directory
-            if receptor_filename:
-                f.write(f"receptor=./config/{receptor_filename}\n")
+                log_callback(f"Receptor copied successfully.")
             else:
-                f.write("receptor=\n")
-                
-        log_callback(f"Config file created successfully")
-    except Exception as e:
-        log_callback(f"Error creating config file: {e}")
-        return None, None
-    
-    # Create a wrapper script in the VFU directory
-    wrapper_script = vfu_dir / "run_docking.py"
-    log_callback(f"Creating wrapper script at {wrapper_script}")
-    
-    try:
-        with open(wrapper_script, 'w') as f:
-            f.write("""#!/usr/bin/env python3
-import os
-import sys
-import json
-from run_vf_unity import main, read_config_file
+                log_callback(f"Receptor already present in {receptor_in_vfu_config}")
+        except Exception as e:
+            error_msg = f"Error copying receptor file: {e}"
+            log_callback(error_msg)
+            result_storage["status"] = "error"
+            result_storage["data"] = {"error": error_msg}
+            return None, result_storage
 
-if __name__ == "__main__":
-    # Read configuration parameters
-    program_choice, center_x, center_y, center_z, size_x, size_y, size_z, exhaustiveness, smi, is_selfies, is_peptide, receptor = read_config_file()
-    
-    # Handle scoring function
-    scoring_function = ""
+    # --- Prepare Subprocess Command ---
+    # Ensure scoring function is separated if passed like 'qvina+nnscore2'
+    actual_program_choice = program_choice
+    actual_scoring_function = scoring_function
     if '+' in program_choice:
-        program_choice, scoring_function = program_choice.split('+')[0], program_choice.split('+')[1]
-    
-    # Run the main function
-    pose_pred_out, re_scored_values = main(
-        program_choice,
-        scoring_function,
-        center_x,
-        center_y,
-        center_z,
-        size_x,
-        size_y,
-        size_z,
-        exhaustiveness,
-        smi,
-        is_selfies,
-        is_peptide,
-        receptor
+        parts = program_choice.split('+')
+        actual_program_choice = parts[0]
+        if len(parts) > 1:
+            actual_scoring_function = parts[1]
+
+    command = [
+        sys.executable, # Use the current Python interpreter
+        str(vfu_wrapper_script.resolve()),
+        "--vfu_dir", str(vfu_dir.resolve()),
+        "--program_choice", actual_program_choice,
+        "--scoring_function", actual_scoring_function,
+        "--center_x", str(center_x),
+        "--center_y", str(center_y),
+        "--center_z", str(center_z),
+        "--size_x", str(size_x),
+        "--size_y", str(size_y),
+        "--size_z", str(size_z),
+        "--exhaustiveness", str(exhaustiveness),
+        "--smiles", smiles,
+        "--is_selfies", str(is_selfies), # Pass booleans as strings
+        "--is_peptide", str(is_peptide)
+    ]
+    if absolute_receptor_path_in_vfu_config:
+        command.extend(["--receptor_path", absolute_receptor_path_in_vfu_config])
+
+    # --- Start Thread ---
+    log_callback(f"Starting VFU subprocess thread for {compound_id}...")
+    thread = threading.Thread(
+        target=_run_vfu_subprocess,
+        args=(command, VFU_SUBPROCESS_TIMEOUT, log_callback, result_storage)
     )
-    
-    # Output results in a format that can be captured
-    result = {
-        "pose_pred_out": pose_pred_out,
-        "re_scored_values": re_scored_values
-    }
-    print("RESULT_JSON_START")
-    print(json.dumps(result))
-    print("RESULT_JSON_END")
-""")
-        log_callback(f"Wrapper script created successfully")
-    except Exception as e:
-        log_callback(f"Error creating wrapper script: {e}")
-        return None, None
-    
-    # Run the wrapper script from the VFU directory without changing our working directory
-    import subprocess
-    import json
-    
-    try:
-        log_callback(f"Running docking script...")
-        # Run the script with Python - use the same Python executable that's running this code
-        python_exec = sys.executable
-        cmd = [python_exec, str(wrapper_script)]
-        
-        # Set the working directory in the subprocess call
-        result = subprocess.run(
-            cmd, 
-            cwd=str(vfu_dir),
-            capture_output=True,
-            text=True
-        )
-        
-        if result.returncode != 0:
-            log_callback(f"Docking failed with error code {result.returncode}")
-            log_callback(f"STDOUT: {result.stdout}")
-            log_callback(f"STDERR: {result.stderr}")
-            return None, None
-        
-        # Parse the output to extract the JSON results
-        stdout = result.stdout
-        log_callback(f"Docking completed, parsing results...")
-        
-        # Extract JSON results
-        start_marker = "RESULT_JSON_START"
-        end_marker = "RESULT_JSON_END"
-        
-        if start_marker in stdout and end_marker in stdout:
-            json_start = stdout.find(start_marker) + len(start_marker)
-            json_end = stdout.find(end_marker)
-            json_str = stdout[json_start:json_end].strip()
-            
-            try:
-                docking_results = json.loads(json_str)
-                pose_pred_out = docking_results.get("pose_pred_out")
-                re_scored_values = docking_results.get("re_scored_values")
-                
-                log_callback(f"Docking results parsed successfully")
-                return pose_pred_out, re_scored_values
-            except json.JSONDecodeError as e:
-                log_callback(f"Error parsing JSON results: {e}")
-                log_callback(f"Raw JSON string: {json_str}")
-                return None, None
-        else:
-            log_callback(f"Couldn't find result markers in output")
-            log_callback(f"STDOUT: {stdout}")
-            return None, None
-            
-    except Exception as e:
-        log_callback(f"Error executing docking script: {str(e)}")
-        log_callback(f"Traceback: {traceback.format_exc()}")
-        return None, None
+    thread.daemon = True # Allow main program to exit even if thread hangs (though timeout should prevent)
+    thread.start()
+
+    log_callback(f"VFU subprocess thread for {compound_id} started.")
+
+    # Return the thread and the dictionary where results will be stored
+    return thread, result_storage
+
+# --- Removed old direct call logic ---
