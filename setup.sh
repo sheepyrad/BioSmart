@@ -182,5 +182,6 @@ else
 fi
 echo "----------------------------------------"
 echo "Setup script finished."
+echo "Please refer to README.md for next steps"
 echo "IMPORTANT: Activate the environment by running: conda activate $CONDA_ENV_NAME"
 echo "----------------------------------------" 
