@@ -33,12 +33,12 @@ cd drug_pipeline
 ```bash
 conda activate drug_pipeline
 ```
-
+4. Pre-built the ProteinX ccd cache
 ```bash
 cd src/Protenix
 protenix predict --input examples/example.json --out_dir  ./output --seeds 101
 ```
-After it finishes, the /output directory should contain predictions of Protenix
+After it finishes, the src/Protenix/output directory should contain predictions of Protenix
 
 ## Usage
 
@@ -112,28 +112,3 @@ Common issues and solutions:
    - Check file size limits
    - Verify file formats
    - Ensure proper file permissions
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
-
-## Citation
-
-If you use this software in your research, please cite:
-
-```bibtex
-@software{drug_pipeline_app,
-  author = {Your Name},
-  title = {Drug Discovery Pipeline Application},
-  year = {2024},
-  url = {https://github.com/yourusername/drug_pipeline_app}
-}
-```
-
-## Contact
-
-For support or questions, please open an issue on the GitHub repository or contact [your@email.com]. 
