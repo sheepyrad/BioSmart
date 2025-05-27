@@ -10,7 +10,7 @@
 * **Automated Pipeline Steps:**
   ➔ *MedChem Filtering:* Applies medicinal chemistry rules and structural alerts to filter out undesirable compounds (e.g., PAINS, Lipinski’s rule of 5).
   ➔ *Pose Filtering:* (Full pipeline mode) Uses PoseBuster to eliminate chemically implausible ligand poses before docking.
-  ➔ *Blind Docking Filter:* (Quick mode) Optional Protenix ML filter to predict if a ligand can bind the target; removes compounds unlikely to fit the pocket.
+  ➔ *Blind Docking Filter:* Boltz-1x filter to predict if a ligand can bind the target; removes compounds unlikely to fit the pocket.
   ➔ *Molecular Docking:* Automatically docks filtered compounds into the protein’s binding site using QuickVina 2 (AutoDock Vina) with NNScore2 rescoring. Captures best pose and binding score for each compound.
   ➔ *Retrosynthesis Analysis:* For top hits, generates potential synthetic routes or analogs via Synformer (Transformer-based retrosynthesis model) and can optionally re-dock those analogs to evaluate improvements.
 * **Results Visualization:** After docking, view interactive plots and tables of results. The app displays each top compound’s structure (2D image and 3D pose), docking scores, and other properties. Users can expand details for each molecule (SMILES string, rule passes, etc.) and compare compounds.
@@ -20,7 +20,7 @@
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/sheepyrad/AI_drug_discovery.git
+git clone https://github.com/sheepyrad/Drug_pipeline.git
 cd drug_pipeline
 ```
 2. Run the setup.sh
@@ -33,12 +33,20 @@ cd drug_pipeline
 ```bash
 conda activate drug_pipeline
 ```
-4. Pre-built the ProteinX ccd cache
+4. Install pytorch
+
 ```bash
-cd src/Protenix
-protenix predict --input examples/example.json --out_dir  ./output --seeds 101
+pip install torch==2.6.0+cu126 torchvision==0.21.0+cu126 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu126
+pip install pyg-lib torch-scatter torch-sparse torch-cluster torch-spline-conv -f https://data.pyg.org/whl/torch-2.6.0+cu126.html
+pip install torch-geometric
 ```
-After it finishes, the src/Protenix/output directory should contain predictions of Protenix
+
+5. Install synformer
+
+```bash
+cd src/synformer
+pip install --no-deps -e .
+```
 
 ## Usage
 

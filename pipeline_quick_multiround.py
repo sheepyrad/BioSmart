@@ -42,7 +42,7 @@ from utils.ligand_generation import run_ligand_generation, combine_pocket2mol_ou
 from utils.redocking import redock_compound, vfu_dir
 from utils.retrosynformer import run_retrosynthesis
 from utils.medchem_filter import filter_by_pass_count, generate_filter_plots
-from utils.protenix_filter import protenix_filter_variants
+from utils.boltz_filter import boltz_filter_variants
 
 # Import helper functions moved to dedicated utility modules
 from utils.molecule_processing import extract_smiles_from_sdf, smiles_to_sdf, extract_best_pose_and_score
@@ -283,13 +283,13 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             update_tracking_report(master_report, variant, "variant_status_update")
 
         # ------------------------------------------------------------------
-        # Step 5: Protenix blind-docking filter (open-source AlphaFold3 alt.)
+        # Step 5: Boltz-1x blind-docking filter
         # ------------------------------------------------------------------
         logger.info(
-            f"Round {round_num}: Running Protenix blind-docking filter on {len(filtered_variants)} variants"
+            f"Round {round_num}: Running Boltz-1x blind-docking filter on {len(filtered_variants)} variants"
         )
 
-        passed_variants, failed_variants = protenix_filter_variants(
+        passed_variants, failed_variants = boltz_filter_variants(
             variants=filtered_variants,
             pdb_file=pdbfile,
             round_dir=round_dir,
@@ -298,25 +298,25 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             log_callback=logger.info,
         )
 
-        # Update tracking for all variants processed by Protenix
+        # Update tracking for all variants processed by Boltz-1x
         for variant in (passed_variants + failed_variants):
             update_tracking_report(round_report, variant, "variant_status_update")
             update_tracking_report(master_report, variant, "variant_status_update")
 
         if not passed_variants:
             logger.warning(
-                f"Round {round_num}: No variants passed Protenix blind-docking filter. Skipping docking for this round."
+                f"Round {round_num}: No variants passed Boltz-1x blind-docking filter. Skipping docking for this round."
             )
             continue  # Proceed to next round directly
 
-        # Replace filtered_variants with the subset that passed Protenix for docking
+        # Replace filtered_variants with the subset that passed Boltz-1x for docking
         filtered_variants = passed_variants
 
         logger.info(
-            f"Round {round_num}: After Protenix filter, {len(filtered_variants)} variants remain for docking"
+            f"Round {round_num}: After Boltz-1x filter, {len(filtered_variants)} variants remain for docking"
         )
 
-        # Save variants that passed both MedChem and Protenix filters to SDF for reference
+        # Save variants that passed both MedChem and Boltz-1x filters to SDF for reference
         filtered_sdf = filter_dir / f"round_{round_num}_filtered_variants.sdf"
         smiles_to_sdf(filtered_variants, filtered_sdf)
 
