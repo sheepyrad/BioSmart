@@ -11,7 +11,7 @@ This package contains various utilities for different stages of the drug discove
 - Molecule processing
 - Tracking and reporting
 - Logging
-- Protenix filtering
+- Boltz-1x filtering
 """
 
 # Import main utilities
@@ -28,7 +28,7 @@ from utils.molecule_processing import extract_smiles_from_sdf, smiles_to_sdf, ex
 from utils.retro_utils import extract_variants_from_retrosynthesis, run_retrosynthesis_with_timeout
 from utils.tracking import generate_tracking_report, update_tracking_report
 from utils.logging_utils import setup_logging, ThreadSafeRotatingFileHandler
-from utils.protenix_filter import protenix_filter_variants
+from utils.boltz_filter import boltz_filter_variants
 
 __all__ = [
     # Ligand generation
@@ -58,6 +58,6 @@ __all__ = [
     # Logging
     'setup_logging', 'ThreadSafeRotatingFileHandler',
     
-    # Protenix filtering
-    'protenix_filter_variants'
+    # Boltz-1x filtering
+    'boltz_filter_variants'
 ] 

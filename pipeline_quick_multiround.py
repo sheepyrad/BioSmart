@@ -42,7 +42,7 @@ from utils.ligand_generation import run_ligand_generation, combine_pocket2mol_ou
 from utils.redocking import redock_compound, vfu_dir
 from utils.retrosynformer import run_retrosynthesis
 from utils.medchem_filter import filter_by_pass_count, generate_filter_plots
-from utils.protenix_filter import protenix_filter_variants
+from utils.boltz_filter import boltz_filter_variants
 
 # Import helper functions moved to dedicated utility modules
 from utils.molecule_processing import extract_smiles_from_sdf, smiles_to_sdf, extract_best_pose_and_score
@@ -54,7 +54,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
          n_samples=200, sanitize=True, center=(114.817, 75.602, 82.416), box_size=(38, 70, 58),
          bbox_size=23.0, receptor=None, program_choice="qvina", scoring_function="nnscore2",
          exhaustiveness=10, is_selfies=False, is_peptide=False, 
-         top_n=5, max_variants=5, num_rounds=1, stop_flag=None):
+         top_n=5, max_variants=5, num_rounds=1, boltz_evaluation_method="combined", stop_flag=None):
     """
     Multi-round quick pipeline main function with batch filtering optimization.
     
@@ -78,6 +78,8 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         top_n: Number of top compounds to process
         max_variants: Maximum number of variants per compound
         num_rounds: Number of rounds to run
+        boltz_evaluation_method: Boltz-1x evaluation method ("any_atom", "geometric_center", 
+                                "majority_atoms", "bounding_box_overlap", or "combined")
         stop_flag: Dictionary containing status information for stopping the pipeline
     """
     # Set up output directories
@@ -283,40 +285,41 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             update_tracking_report(master_report, variant, "variant_status_update")
 
         # ------------------------------------------------------------------
-        # Step 5: Protenix blind-docking filter (open-source AlphaFold3 alt.)
+        # Step 5: Boltz-1x blind-docking filter
         # ------------------------------------------------------------------
         logger.info(
-            f"Round {round_num}: Running Protenix blind-docking filter on {len(filtered_variants)} variants"
+            f"Round {round_num}: Running Boltz-1x blind-docking filter on {len(filtered_variants)} variants using '{boltz_evaluation_method}' evaluation method"
         )
 
-        passed_variants, failed_variants = protenix_filter_variants(
+        passed_variants, failed_variants = boltz_filter_variants(
             variants=filtered_variants,
             pdb_file=pdbfile,
             round_dir=round_dir,
             center=center,
             box_size=box_size,
             log_callback=logger.info,
+            evaluation_method=boltz_evaluation_method,
         )
 
-        # Update tracking for all variants processed by Protenix
+        # Update tracking for all variants processed by Boltz-1x
         for variant in (passed_variants + failed_variants):
             update_tracking_report(round_report, variant, "variant_status_update")
             update_tracking_report(master_report, variant, "variant_status_update")
 
         if not passed_variants:
             logger.warning(
-                f"Round {round_num}: No variants passed Protenix blind-docking filter. Skipping docking for this round."
+                f"Round {round_num}: No variants passed Boltz-1x blind-docking filter. Skipping docking for this round."
             )
             continue  # Proceed to next round directly
 
-        # Replace filtered_variants with the subset that passed Protenix for docking
+        # Replace filtered_variants with the subset that passed Boltz-1x for docking
         filtered_variants = passed_variants
 
         logger.info(
-            f"Round {round_num}: After Protenix filter, {len(filtered_variants)} variants remain for docking"
+            f"Round {round_num}: After Boltz-1x filter, {len(filtered_variants)} variants remain for docking"
         )
 
-        # Save variants that passed both MedChem and Protenix filters to SDF for reference
+        # Save variants that passed both MedChem and Boltz-1x filters to SDF for reference
         filtered_sdf = filter_dir / f"round_{round_num}_filtered_variants.sdf"
         smiles_to_sdf(filtered_variants, filtered_sdf)
 
@@ -533,6 +536,8 @@ if __name__ == "__main__":
                         help="Maximum number of variants per compound")
     parser.add_argument("--num_rounds", type=int, default=1,
                         help="Number of rounds to run the pipeline")
+    parser.add_argument("--boltz_evaluation_method", type=str, choices=["any_atom", "geometric_center", "majority_atoms", "bounding_box_overlap", "combined"], default="combined",
+                        help="Boltz-1x evaluation method")
     
     args = parser.parse_args()
     
@@ -555,5 +560,6 @@ if __name__ == "__main__":
         is_peptide=args.is_peptide,
         top_n=args.top_n,
         max_variants=args.max_variants,
-        num_rounds=args.num_rounds
+        num_rounds=args.num_rounds,
+        boltz_evaluation_method=args.boltz_evaluation_method
     )

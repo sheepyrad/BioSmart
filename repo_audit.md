@@ -10,7 +10,7 @@
 * **Automated Pipeline Steps:**
   ➔ *MedChem Filtering:* Applies medicinal chemistry rules and structural alerts to filter out undesirable compounds (e.g., PAINS, Lipinski’s rule of 5).
   ➔ *Pose Filtering:* (Full pipeline mode) Uses PoseBuster to eliminate chemically implausible ligand poses before docking.
-  ➔ *Blind Docking Filter:* (Quick mode) Optional Protenix ML filter to predict if a ligand can bind the target; removes compounds unlikely to fit the pocket.
+  ➔ *Blind Docking Filter:* (Quick mode) Boltz-1x ML filter to predict if a ligand can bind the target; removes compounds unlikely to fit the pocket.
   ➔ *Molecular Docking:* Automatically docks filtered compounds into the protein’s binding site using QuickVina 2 (AutoDock Vina) with NNScore2 rescoring. Captures best pose and binding score for each compound.
   ➔ *Retrosynthesis Analysis:* For top hits, generates potential synthetic routes or analogs via Synformer (Transformer-based retrosynthesis model) and can optionally re-dock those analogs to evaluate improvements.
 * **Results Visualization:** After docking, view interactive plots and tables of results. The app displays each top compound’s structure (2D image and 3D pose), docking scores, and other properties. Users can expand details for each molecule (SMILES string, rule passes, etc.) and compare compounds.
@@ -83,7 +83,7 @@ Drug_pipeline/
 │   ├── redocking.py           # Docking wrapper (calls VirtualFlow Unity):contentReference[oaicite:235]{index=235}
 │   ├── pose_evaluation.py     # PoseBuster integration
 │   ├── retrosynformer.py      # Runs Synformer retrosynthesis and processes outputs:contentReference[oaicite:236]{index=236}
-│   ├── protenix_filter.py     # Uses Protenix ML model to filter poses:contentReference[oaicite:237]{index=237}
+│   ├── boltz_filter.py        # Uses Boltz-1x ML model to filter poses:contentReference[oaicite:237]{index=237}
 │   └── ... (other helpers: energy_minimization, logging, etc.)
 ├── src/                # External dependencies (treated as read-only)
 │   ├── DiffSBDD/        # Diffusion model for SBDD (external code + checkpoints)

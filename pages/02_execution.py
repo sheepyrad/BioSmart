@@ -242,6 +242,7 @@ def run_pipeline(config, status_dict, stop_event):
             "top_n": config["top_n"],
             "max_variants": config["max_variants"],
             "num_rounds": config["num_rounds"],
+            "boltz_evaluation_method": config.get("boltz_evaluation_method", "combined"),
             "stop_flag": status_dict  # Pass the status dict for stop checking
         }
         
