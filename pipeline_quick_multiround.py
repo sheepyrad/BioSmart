@@ -54,7 +54,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
          n_samples=200, sanitize=True, center=(114.817, 75.602, 82.416), box_size=(38, 70, 58),
          bbox_size=23.0, receptor=None, program_choice="qvina", scoring_function="nnscore2",
          exhaustiveness=10, is_selfies=False, is_peptide=False, 
-         top_n=5, max_variants=5, num_rounds=1, stop_flag=None):
+         top_n=5, max_variants=5, num_rounds=1, boltz_evaluation_method="combined", stop_flag=None):
     """
     Multi-round quick pipeline main function with batch filtering optimization.
     
@@ -78,6 +78,8 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         top_n: Number of top compounds to process
         max_variants: Maximum number of variants per compound
         num_rounds: Number of rounds to run
+        boltz_evaluation_method: Boltz-1x evaluation method ("any_atom", "geometric_center", 
+                                "majority_atoms", "bounding_box_overlap", or "combined")
         stop_flag: Dictionary containing status information for stopping the pipeline
     """
     # Set up output directories
@@ -286,7 +288,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         # Step 5: Boltz-1x blind-docking filter
         # ------------------------------------------------------------------
         logger.info(
-            f"Round {round_num}: Running Boltz-1x blind-docking filter on {len(filtered_variants)} variants"
+            f"Round {round_num}: Running Boltz-1x blind-docking filter on {len(filtered_variants)} variants using '{boltz_evaluation_method}' evaluation method"
         )
 
         passed_variants, failed_variants = boltz_filter_variants(
@@ -296,6 +298,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             center=center,
             box_size=box_size,
             log_callback=logger.info,
+            evaluation_method=boltz_evaluation_method,
         )
 
         # Update tracking for all variants processed by Boltz-1x
@@ -533,6 +536,8 @@ if __name__ == "__main__":
                         help="Maximum number of variants per compound")
     parser.add_argument("--num_rounds", type=int, default=1,
                         help="Number of rounds to run the pipeline")
+    parser.add_argument("--boltz_evaluation_method", type=str, choices=["any_atom", "geometric_center", "majority_atoms", "bounding_box_overlap", "combined"], default="combined",
+                        help="Boltz-1x evaluation method")
     
     args = parser.parse_args()
     
@@ -555,5 +560,6 @@ if __name__ == "__main__":
         is_peptide=args.is_peptide,
         top_n=args.top_n,
         max_variants=args.max_variants,
-        num_rounds=args.num_rounds
+        num_rounds=args.num_rounds,
+        boltz_evaluation_method=args.boltz_evaluation_method
     )

@@ -3,9 +3,10 @@ import json
 import logging
 from pathlib import Path
 from typing import List, Tuple, Callable, Union
+import numpy as np
 
 from Bio.PDB import PDBParser, MMCIFParser  
-from Bio.PDB.Superimposer import Superimposer
+from Bio.PDB.cealign import CEAligner
 
 # -----------------------------------------------------------------------------
 # Helper functions
@@ -82,6 +83,56 @@ def _pdb_to_fasta(pdb_file: Path, output_fasta: Path, log_cb: Callable[[str], No
         if log_cb:
             log_cb(f"[Boltz-1x] Unexpected error in pdb_tofasta: {exc}")
         return False
+
+
+def _fix_protein_fasta_format(fasta_path: Path, log_cb: Callable[[str], None] | None = None) -> None:
+    """Fix the protein FASTA format to match Boltz-1x requirements.
+    
+    Changes >PDB|A to >A|protein| and removes whitespace from sequence lines.
+    
+    Args:
+        fasta_path: Path to the FASTA file to fix.
+        log_cb: Optional logging callback.
+    """
+    if not fasta_path.exists():
+        raise FileNotFoundError(f"FASTA file not found: {fasta_path}")
+    
+    # Read the original content
+    with fasta_path.open("r", encoding="utf-8") as fh:
+        lines = fh.readlines()
+    
+    # Process the lines
+    fixed_lines = []
+    current_sequence = []
+    
+    for line in lines:
+        line = line.strip()
+        if line.startswith(">"):
+            # If we have accumulated sequence lines, join them
+            if current_sequence:
+                fixed_lines.append("".join(current_sequence) + "\n")
+                current_sequence = []
+            
+            # Fix the header format
+            if line.startswith(">PDB|A"):
+                fixed_lines.append(">A|protein|\n")
+            else:
+                fixed_lines.append(line + "\n")
+        else:
+            # Accumulate sequence lines (remove any whitespace)
+            if line:
+                current_sequence.append(line.replace(" ", ""))
+    
+    # Don't forget the last sequence if file doesn't end with newline
+    if current_sequence:
+        fixed_lines.append("".join(current_sequence) + "\n")
+    
+    # Write back the fixed content
+    with fasta_path.open("w", encoding="utf-8") as fh:
+        fh.writelines(fixed_lines)
+    
+    if log_cb:
+        log_cb(f"[Boltz-1x] Fixed protein FASTA format: {fasta_path}")
 
 
 def _add_ligand_to_fasta(fasta_path: Path, smiles: str, log_cb: Callable[[str], None] | None = None) -> None:
@@ -175,47 +226,10 @@ def _parse_boltz_cif(
             pdb_parser = PDBParser(QUIET=True)
             ref_structure = pdb_parser.get_structure("ref", str(reference_pdb))
 
-            # Extract CA atoms from both structures for alignment
-            ref_ca_atoms = []
-            moving_ca_atoms = []
-            
-            # Get CA atoms from reference structure (first model, first chain)
-            ref_model = list(ref_structure)[0]
-            ref_chain = list(ref_model)[0]
-            for residue in ref_chain:
-                if residue.has_id('CA'):
-                    ref_ca_atoms.append(residue['CA'])
-            
-            # Get CA atoms from moving structure (first model, first chain that's not the ligand chain)
-            moving_model = list(structure)[0]
-            for chain in moving_model:
-                if chain.id != "B":  # Skip ligand chain (B)
-                    for residue in chain:
-                        if residue.has_id('CA'):
-                            moving_ca_atoms.append(residue['CA'])
-                    break  # Only use first protein chain
-            
-            # Ensure we have the same number of CA atoms for alignment
-            min_length = min(len(ref_ca_atoms), len(moving_ca_atoms))
-            if min_length < 3:
-                raise ValueError("Insufficient CA atoms for alignment")
-            
-            ref_ca_atoms = ref_ca_atoms[:min_length]
-            moving_ca_atoms = moving_ca_atoms[:min_length]
-            
-            # Perform superimposition
-            superimposer = Superimposer()
-            superimposer.set_atoms(ref_ca_atoms, moving_ca_atoms)
-            
-            # Apply transformation to all atoms in the structure
-            all_atoms = []
-            for model in structure:
-                for chain in model:
-                    for residue in chain:
-                        for atom in residue:
-                            all_atoms.append(atom)
-            
-            superimposer.apply(all_atoms)
+            aligner = CEAligner()
+            # The CEAligner aligns backbone atoms (Cα) and transforms *structure* in place
+            aligner.set_reference(ref_structure)
+            aligner.align(structure, transform=True)
             
         except Exception as exc:  # pragma: no cover – alignment failures shouldn't crash
             logging.warning(
@@ -235,6 +249,175 @@ def _parse_boltz_cif(
     return coords
 
 
+def _calculate_geometric_center(coords: List[Tuple[float, float, float]]) -> Tuple[float, float, float]:
+    """Calculate the geometric center (centroid) of a set of coordinates.
+    
+    Args:
+        coords: List of (x, y, z) coordinate tuples.
+        
+    Returns:
+        (x, y, z) tuple representing the geometric center.
+    """
+    if not coords:
+        raise ValueError("Cannot calculate center of empty coordinate list")
+    
+    coords_array = np.array(coords)
+    center = np.mean(coords_array, axis=0)
+    return tuple(center)
+
+
+def _calculate_bounding_box(coords: List[Tuple[float, float, float]]) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    """Calculate the bounding box of a set of coordinates.
+    
+    Args:
+        coords: List of (x, y, z) coordinate tuples.
+        
+    Returns:
+        Tuple of (min_coords, max_coords) where each is an (x, y, z) tuple.
+    """
+    if not coords:
+        raise ValueError("Cannot calculate bounding box of empty coordinate list")
+    
+    coords_array = np.array(coords)
+    min_coords = tuple(np.min(coords_array, axis=0))
+    max_coords = tuple(np.max(coords_array, axis=0))
+    return min_coords, max_coords
+
+
+def _fraction_atoms_in_box(coords: List[Tuple[float, float, float]], center: Tuple[float, float, float], box: Tuple[float, float, float]) -> float:
+    """Calculate the fraction of atoms that are inside the docking box.
+    
+    Args:
+        coords: List of (x, y, z) coordinate tuples.
+        center: Center of the docking box (x, y, z).
+        box: Dimensions of the docking box (x, y, z).
+        
+    Returns:
+        Fraction of atoms inside the box (0.0 to 1.0).
+    """
+    if not coords:
+        return 0.0
+    
+    atoms_inside = sum(1 for coord in coords if _coords_within_box(coord, center, box))
+    return atoms_inside / len(coords)
+
+
+def _bounding_box_overlap(coords: List[Tuple[float, float, float]], center: Tuple[float, float, float], box: Tuple[float, float, float]) -> float:
+    """Calculate the overlap between ligand bounding box and docking box.
+    
+    Args:
+        coords: List of (x, y, z) coordinate tuples.
+        center: Center of the docking box (x, y, z).
+        box: Dimensions of the docking box (x, y, z).
+        
+    Returns:
+        Overlap volume as fraction of ligand bounding box volume.
+    """
+    if not coords:
+        return 0.0
+    
+    # Calculate ligand bounding box
+    min_coords, max_coords = _calculate_bounding_box(coords)
+    
+    # Calculate docking box bounds
+    cx, cy, cz = center
+    sx, sy, sz = box
+    dock_min = (cx - sx/2, cy - sy/2, cz - sz/2)
+    dock_max = (cx + sx/2, cy + sy/2, cz + sz/2)
+    
+    # Calculate intersection
+    intersect_min = (
+        max(min_coords[0], dock_min[0]),
+        max(min_coords[1], dock_min[1]),
+        max(min_coords[2], dock_min[2])
+    )
+    intersect_max = (
+        min(max_coords[0], dock_max[0]),
+        min(max_coords[1], dock_max[1]),
+        min(max_coords[2], dock_max[2])
+    )
+    
+    # Check if there's any overlap
+    if (intersect_min[0] >= intersect_max[0] or 
+        intersect_min[1] >= intersect_max[1] or 
+        intersect_min[2] >= intersect_max[2]):
+        return 0.0
+    
+    # Calculate volumes
+    intersect_volume = ((intersect_max[0] - intersect_min[0]) * 
+                       (intersect_max[1] - intersect_min[1]) * 
+                       (intersect_max[2] - intersect_min[2]))
+    
+    ligand_volume = ((max_coords[0] - min_coords[0]) * 
+                    (max_coords[1] - min_coords[1]) * 
+                    (max_coords[2] - min_coords[2]))
+    
+    return intersect_volume / ligand_volume if ligand_volume > 0 else 0.0
+
+
+def _evaluate_ligand_position(
+    coords: List[Tuple[float, float, float]], 
+    center: Tuple[float, float, float], 
+    box: Tuple[float, float, float],
+    method: str = "geometric_center"
+) -> Tuple[bool, dict]:
+    """Evaluate if ligand is properly positioned in the docking box using various methods.
+    
+    Args:
+        coords: List of (x, y, z) coordinate tuples for the ligand.
+        center: Center of the docking box (x, y, z).
+        box: Dimensions of the docking box (x, y, z).
+        method: Evaluation method - "any_atom", "geometric_center", "majority_atoms", 
+                "bounding_box_overlap", or "combined".
+        
+    Returns:
+        Tuple of (passes_filter, metrics_dict) where metrics_dict contains
+        detailed evaluation metrics.
+    """
+    if not coords:
+        return False, {"error": "No coordinates provided"}
+    
+    # Calculate all metrics
+    metrics = {}
+    
+    # Basic metrics
+    any_atom_inside = any(_coords_within_box(coord, center, box) for coord in coords)
+    metrics["any_atom_inside"] = any_atom_inside
+    
+    geometric_center = _calculate_geometric_center(coords)
+    center_inside = _coords_within_box(geometric_center, center, box)
+    metrics["geometric_center_inside"] = center_inside
+    metrics["geometric_center"] = geometric_center
+    
+    fraction_inside = _fraction_atoms_in_box(coords, center, box)
+    metrics["fraction_atoms_inside"] = fraction_inside
+    
+    overlap_fraction = _bounding_box_overlap(coords, center, box)
+    metrics["bounding_box_overlap"] = overlap_fraction
+    
+    # Apply the selected method
+    if method == "any_atom":
+        passes = any_atom_inside
+    elif method == "geometric_center":
+        passes = center_inside
+    elif method == "majority_atoms":
+        passes = fraction_inside > 0.5
+    elif method == "bounding_box_overlap":
+        passes = overlap_fraction > 0.1  # At least 10% overlap
+    elif method == "combined":
+        # Combined approach: center inside OR significant overlap OR majority of atoms
+        passes = (center_inside or 
+                 overlap_fraction > 0.3 or 
+                 fraction_inside > 0.6)
+    else:
+        raise ValueError(f"Unknown evaluation method: {method}")
+    
+    metrics["method_used"] = method
+    metrics["passes_filter"] = passes
+    
+    return passes, metrics
+
+
 # -----------------------------------------------------------------------------
 # Public API
 # -----------------------------------------------------------------------------
@@ -247,6 +430,7 @@ def boltz_filter_variants(
     center: Tuple[float, float, float],
     box_size: Tuple[int, int, int],
     log_callback: Union[Callable[[str], None], None] = None,
+    evaluation_method: str = "combined",
 ) -> Tuple[List[dict], List[dict]]:
     """Run the Boltz-1x blind-docking filter over a list of variants.
 
@@ -262,9 +446,11 @@ def boltz_filter_variants(
         center: Docking box centre (x, y, z).
         box_size: Docking box dimensions (x, y, z).
         log_callback: Optional logger function.
+        evaluation_method: Method for evaluating ligand position - "any_atom", "geometric_center", 
+                          "majority_atoms", "bounding_box_overlap", or "combined" (default).
 
     Returns:
-        (passed_variants, failed_variants) – with updated ``status`` keys.
+        (passed_variants, failed_variants) – with updated ``status`` keys and evaluation metrics.
     """
     pdb_file = str(pdb_file)
 
@@ -281,7 +467,7 @@ def boltz_filter_variants(
             continue
 
         if log_callback:
-            log_callback(f"[Boltz-1x] Processing variant {barcode}")
+            log_callback(f"[Boltz-1x] Processing variant {barcode} using {evaluation_method} evaluation")
 
         try:
             # Prepare directories ---------------------------------------------------
@@ -295,6 +481,9 @@ def boltz_filter_variants(
                 variant["status"] = "BOLTZFAIL_TOFASTA"
                 failed.append(variant)
                 continue
+
+            # Step 1.5 – Fix protein FASTA format ----------------------------------
+            _fix_protein_fasta_format(input_fasta, log_callback)
 
             # Step 2 – Add ligand SMILES to FASTA ----------------------------------
             _add_ligand_to_fasta(input_fasta, smiles, log_callback)
@@ -353,8 +542,14 @@ def boltz_filter_variants(
                 failed.append(variant)
                 continue
 
-            # Step 5 – Evaluate coordinates ----------------------------------------
-            inside_box = any(_coords_within_box(c, center, box_size) for c in coords)
+            # Step 5 – Evaluate coordinates using improved methods ----------------
+            inside_box, metrics = _evaluate_ligand_position(coords, center, box_size, evaluation_method)
+            
+            # Store evaluation metrics in the variant
+            variant["boltz_metrics"] = metrics
+            
+            if log_callback:
+                log_callback(f"[Boltz-1x] {barcode} evaluation: {metrics}")
 
             if inside_box:
                 variant["status"] = "PASSBLINDDOCK"
@@ -370,3 +565,71 @@ def boltz_filter_variants(
             failed.append(variant)
 
     return passed, failed 
+
+
+def get_evaluation_method_info() -> dict:
+    """Get information about available ligand position evaluation methods.
+    
+    Returns:
+        Dictionary with method names as keys and descriptions as values.
+    """
+    return {
+        "any_atom": {
+            "description": "Passes if ANY ligand atom is inside the docking box",
+            "use_case": "Very permissive - good for initial screening",
+            "pros": "High sensitivity, catches partial binding",
+            "cons": "May accept ligands that are mostly outside the box"
+        },
+        "geometric_center": {
+            "description": "Passes if the geometric center of the ligand is inside the box",
+            "use_case": "Balanced approach - ligand center must be in target region",
+            "pros": "Good balance of specificity and sensitivity",
+            "cons": "May reject ligands with center outside but significant overlap"
+        },
+        "majority_atoms": {
+            "description": "Passes if >50% of ligand atoms are inside the docking box",
+            "use_case": "Ensures most of the ligand is in the target region",
+            "pros": "High specificity, ensures good binding site occupancy",
+            "cons": "May be too strict for large ligands or edge cases"
+        },
+        "bounding_box_overlap": {
+            "description": "Passes if >10% of ligand bounding box overlaps with docking box",
+            "use_case": "Good for irregularly shaped ligands or binding sites",
+            "pros": "Accounts for ligand shape and size",
+            "cons": "May be less intuitive than atom-based methods"
+        },
+        "combined": {
+            "description": "Passes if center is inside OR >30% bounding box overlap OR >60% atoms inside",
+            "use_case": "Recommended default - combines multiple criteria",
+            "pros": "Robust, handles various ligand shapes and binding modes",
+            "cons": "More complex logic, may need tuning for specific systems"
+        }
+    }
+
+
+def analyze_ligand_positioning(
+    coords: List[Tuple[float, float, float]], 
+    center: Tuple[float, float, float], 
+    box: Tuple[float, float, float]
+) -> dict:
+    """Analyze ligand positioning using all available methods for comparison.
+    
+    Args:
+        coords: List of (x, y, z) coordinate tuples for the ligand.
+        center: Center of the docking box (x, y, z).
+        box: Dimensions of the docking box (x, y, z).
+        
+    Returns:
+        Dictionary with results from all evaluation methods.
+    """
+    methods = ["any_atom", "geometric_center", "majority_atoms", "bounding_box_overlap", "combined"]
+    results = {}
+    
+    for method in methods:
+        passes, metrics = _evaluate_ligand_position(coords, center, box, method)
+        results[method] = {
+            "passes": passes,
+            "metrics": metrics
+        }
+    
+    return results 

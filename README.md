@@ -33,15 +33,26 @@ cd drug_pipeline
 ```bash
 conda activate drug_pipeline
 ```
-4. Install pytorch
+
+4. Install gmx_MMPBSA
+
+```bash
+pip install gmx_MMPBSA
+```
+
+5. Install pytorch
 
 ```bash
 pip install torch==2.6.0+cu126 torchvision==0.21.0+cu126 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu126
 pip install pyg-lib torch-scatter torch-sparse torch-cluster torch-spline-conv -f https://data.pyg.org/whl/torch-2.6.0+cu126.html
 pip install torch-geometric
 ```
+6. Install boltz
 
-5. Install synformer
+```bash
+pip install boltz
+```
+7. Install synformer
 
 ```bash
 cd src/synformer
