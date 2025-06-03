@@ -11,6 +11,9 @@ import numpy as np
 from pathlib import Path
 import logging
 
+# Import the new environment manager
+from .environment_manager import env_manager
+
 logger = logging.getLogger(__name__)
 
 def parse_vina_scores(pose_pred_out_str):
@@ -63,7 +66,7 @@ def get_top_compounds(results_csv, top_n=5):
 
 def run_retrosynthesis(smiles, output_path, model_path="./src/synformer/data/trained_weights/sf_ed_default.ckpt", timeout=300):
     """
-    Run retrosynthesis analysis on a single compound using Synformer.
+    Run retrosynthesis analysis on a single compound using Synformer with conda environment.
     
     Args:
         smiles: SMILES string of the compound
@@ -75,9 +78,6 @@ def run_retrosynthesis(smiles, output_path, model_path="./src/synformer/data/tra
         True if successful, False otherwise
     """
     try:
-        # Store the current working directory
-        original_cwd = os.getcwd()
-        
         # Make all paths absolute
         output_path = Path(output_path).absolute()
         model_path = Path(model_path).absolute()
@@ -91,7 +91,7 @@ def run_retrosynthesis(smiles, output_path, model_path="./src/synformer/data/tra
         pd.DataFrame({'smiles': [smiles]}).to_csv(temp_input_csv, index=False)
         logger.info(f"Created temporary input CSV file: {temp_input_csv}")
         
-        # Command to run - use relative paths from synformer directory
+        # Command to run using environment manager
         command = [
             "python", 
             "scripts/sample.py", 
@@ -104,39 +104,35 @@ def run_retrosynthesis(smiles, output_path, model_path="./src/synformer/data/tra
         logger.info(f"Command: {' '.join(command)}")
         
         try:
-            # Change to synformer directory
-            os.chdir(synformer_dir)
-            logger.info(f"Changed working directory to: {os.getcwd()}")
-            
-            # Run the command with timeout
-            result = subprocess.run(
-                command,
+            # Use environment manager to run Synformer with streaming output
+            result = env_manager.run_tool(
+                tool_name="synformer",
+                command=command,
+                cwd=str(synformer_dir),
+                timeout=timeout,
                 capture_output=True,
                 text=True,
-                check=True,
-                timeout=timeout  # Add timeout parameter
+                check=False,  # Don't raise exception on non-zero exit
+                log_callback=logger.info,
+                stream_output=True  # Enable real-time output streaming
             )
             
-            logger.info(f"Retrosynthesis complete. Output saved to {output_path}")
-            logger.debug(f"Synformer output: {result.stdout}")
-            return True
+            if result.returncode == 0:
+                logger.info(f"Retrosynthesis complete. Output saved to {output_path}")
+                logger.debug(f"Synformer output: {result.stdout}")
+                return True
+            else:
+                logger.error(f"Synformer failed with exit code {result.returncode}")
+                logger.error(f"Synformer stderr: {result.stderr}")
+                return False
             
         except subprocess.TimeoutExpired:
             logger.warning(f"Retrosynthesis timed out after {timeout} seconds for SMILES: {smiles}")
             return False
             
         finally:
-            # Always restore the original working directory
-            os.chdir(original_cwd)
-            logger.info(f"Restored working directory to: {os.getcwd()}")
-            
             # Clean up the temporary input file
             temp_input_csv.unlink(missing_ok=True)
-    
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Error running Synformer: {e}")
-        logger.error(f"Synformer stderr: {e.stderr}")
-        return False
     
     except Exception as e:
         logger.error(f"Unexpected error running retrosynthesis: {e}")

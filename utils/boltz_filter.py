@@ -8,13 +8,18 @@ import numpy as np
 from Bio.PDB import PDBParser, MMCIFParser  
 from Bio.PDB.cealign import CEAligner
 
+# Import the new environment manager
+from .environment_manager import env_manager
+
+logger = logging.getLogger(__name__)
+
 # -----------------------------------------------------------------------------
 # Helper functions
 # -----------------------------------------------------------------------------
 
 
 def _run_cmd(cmd: List[str], log_cb: Callable[[str], None] | None = None, timeout: int | None = None) -> bool:
-    """Run a subprocess command.
+    """Run a subprocess command using the appropriate conda environment.
 
     Args:
         cmd: Command split into a list.
@@ -26,12 +31,50 @@ def _run_cmd(cmd: List[str], log_cb: Callable[[str], None] | None = None, timeou
     """
     if log_cb:
         log_cb("[Boltz-1x] Executing: " + " ".join(cmd))
+    
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
-        return True
-    except subprocess.CalledProcessError as exc:
+        # Determine which environment to use based on the command
+        if cmd[0] == "boltz":
+            # Use Boltz environment for Boltz commands with streaming output
+            result = env_manager.run_tool(
+                tool_name="boltz",
+                command=cmd,
+                timeout=timeout,
+                capture_output=True,
+                text=True,
+                check=False,
+                log_callback=log_cb,
+                stream_output=True  # Enable real-time output streaming
+            )
+            
+            if result.returncode == 0:
+                return True
+            else:
+                if log_cb:
+                    log_cb(f"[Boltz-1x] Command failed (exit {result.returncode}): {result.stderr.strip()}")
+                return False
+        else:
+            # For other commands (like pdb_tofasta), use the main drug_pipeline environment
+            # These are typically available in the main environment
+            result = subprocess.run(
+                cmd, 
+                check=False, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                text=True, 
+                timeout=timeout
+            )
+            
+            if result.returncode == 0:
+                return True
+            else:
+                if log_cb:
+                    log_cb(f"[Boltz-1x] Command failed (exit {result.returncode}): {result.stderr.strip()}")
+                return False
+                
+    except subprocess.TimeoutExpired:
         if log_cb:
-            log_cb(f"[Boltz-1x] Command failed (exit {exc.returncode}): {exc.stderr.strip()}")
+            log_cb(f"[Boltz-1x] Command timed out after {timeout} seconds")
         return False
     except Exception as exc:  # pragma: no cover
         if log_cb:

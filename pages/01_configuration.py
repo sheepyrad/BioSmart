@@ -69,8 +69,6 @@ if "model_update_requested" not in st.session_state:
 # File Inputs (paths stored here, file objects handled temporarily)
 if "pdb_path_input" not in st.session_state:
     st.session_state.pdb_path_input = ""
-if "receptor_path_input" not in st.session_state:
-    st.session_state.receptor_path_input = ""
 
 # DiffSBDD Specific
 if "diffsbdd_resi_list" not in st.session_state:
@@ -105,16 +103,8 @@ if "center_z" not in st.session_state:
 # Common Basic/Advanced Params
 if "n_samples_input" not in st.session_state:
     st.session_state.n_samples_input = 5
-if "program_choice_input" not in st.session_state:
-    st.session_state.program_choice_input = "qvina"
-if "scoring_function_input" not in st.session_state:
-    st.session_state.scoring_function_input = "nnscore2"
-if "exhaustiveness_input" not in st.session_state:
-    st.session_state.exhaustiveness_input = 32
-if "is_selfies_input" not in st.session_state:
-    st.session_state.is_selfies_input = False
-if "is_peptide_input" not in st.session_state:
-    st.session_state.is_peptide_input = False
+if "exhaustiveness_level_input" not in st.session_state:
+    st.session_state.exhaustiveness_level_input = "balance"
 if "num_rounds_input" not in st.session_state:
     st.session_state.num_rounds_input = 1
 if "top_n_input" not in st.session_state:
@@ -148,7 +138,7 @@ if st.session_state._apply_loaded_config_on_next_run:
             current_model_loaded = st.session_state.model_selection
 
             st.session_state.pdb_path_input = pending_config.get("pdbfile", st.session_state.pdb_path_input)
-            st.session_state.receptor_path_input = pending_config.get("receptor", st.session_state.receptor_path_input)
+            # Note: receptor field in config will be the same as pdbfile, so no separate handling needed
 
             if "center" in pending_config and len(pending_config["center"]) == 3:
                 st.session_state.center_x = float(pending_config["center"][0])
@@ -156,11 +146,7 @@ if st.session_state._apply_loaded_config_on_next_run:
                 st.session_state.center_z = float(pending_config["center"][2])
 
             st.session_state.n_samples_input = int(pending_config.get("n_samples", st.session_state.n_samples_input))
-            st.session_state.program_choice_input = pending_config.get("program_choice", st.session_state.program_choice_input)
-            st.session_state.scoring_function_input = pending_config.get("scoring_function", st.session_state.scoring_function_input)
-            st.session_state.exhaustiveness_input = int(pending_config.get("exhaustiveness", st.session_state.exhaustiveness_input))
-            st.session_state.is_selfies_input = bool(pending_config.get("is_selfies", st.session_state.is_selfies_input))
-            st.session_state.is_peptide_input = bool(pending_config.get("is_peptide", st.session_state.is_peptide_input))
+            st.session_state.exhaustiveness_level_input = pending_config.get("exhaustiveness_level", st.session_state.exhaustiveness_level_input)
             st.session_state.top_n_input = int(pending_config.get("top_n", st.session_state.top_n_input))
             st.session_state.max_variants_input = int(pending_config.get("max_variants", st.session_state.max_variants_input))
             st.session_state.num_rounds_input = int(pending_config.get("num_rounds", st.session_state.num_rounds_input))
@@ -404,18 +390,20 @@ tab1, tab2, tab3 = st.tabs(["Basic Configuration", "Box Settings", "Advanced Set
 with tab1:
     st.markdown("""<div class="form-header"><h3>File Uploads and Parameters</h3></div>""", unsafe_allow_html=True)
 
+    # Single PDB file upload section
+    st.subheader("Target Protein PDB File")    
     col1, col2 = st.columns(2)
 
     with col1:
         # PDB File upload
-        st.subheader("PDB File")
-        pdb_file = st.file_uploader( # No key needed for file uploader state? Streamlit handles it.
+        pdb_file = st.file_uploader(
             "Upload PDB File",
             type=["pdb"],
             help="Upload the target protein PDB file",
-            key="pdb_file_uploader" # Keep key if used elsewhere, e.g. reading content
+            key="pdb_file_uploader"
         )
 
+    with col2:
         # PDB Path Input - uses key 'pdb_path_input'
         st.text_input(
             "OR Enter PDB File Path *",
@@ -424,27 +412,12 @@ with tab1:
             key="pdb_path_input"
         )
 
-    with col2:
-        # Receptor File upload
-        st.subheader("Receptor File")
-        receptor_file = st.file_uploader( # No key needed for file uploader state?
-            "Upload Receptor File",
-            type=["pdbqt"],
-            help="Upload the receptor file for docking (optional)",
-             key="receptor_file_uploader" # Keep key if used elsewhere
-        )
-
-        # Receptor Path Input - uses key 'receptor_path_input'
-        st.text_input(
-            "OR Enter Receptor File Path",
-            placeholder="Path to PDBQT file on server",
-            help="Specify the path to the PDBQT receptor file on the server",
-            key="receptor_path_input"
-        )
-
-    # Use widget keys directly to check state
-    if not st.session_state.get("receptor_file_uploader") and not st.session_state.receptor_path_input:
-        st.warning("⚠️ No receptor file uploaded or specified. Docking steps may be skipped or fail. Upload or specify a PDBQT receptor file if you want to perform docking.")
+    # Check if PDB file is provided (required)
+    pdb_file_state = st.session_state.get("pdb_file_uploader")
+    pdb_path_state = st.session_state.get("pdb_path_input", "")
+    
+    if not pdb_file_state and not pdb_path_state:
+        st.error("⚠️ **Required**: Please upload a PDB file or specify a PDB file path. This file will be used for both molecule generation and docking.")
 
     st.markdown("""<div class="form-header"><h3>Model Parameters</h3></div>""", unsafe_allow_html=True)
 
@@ -468,7 +441,7 @@ with tab1:
         # Display a message for Pocket2Mol
         st.info("Pocket2Mol uses 3D pocket information instead of residue lists. The bounding box settings can be configured in the 'Box Settings' tab.")
 
-    # Common parameters
+    # Common parameters - simplified since Unidock handles program choice and scoring
     col3, col4 = st.columns(2)
 
     with col3:
@@ -483,25 +456,7 @@ with tab1:
         )
 
     with col4:
-        # Docking Program Selectbox - uses key 'program_choice_input'
-        st.selectbox(
-            "Docking Program",
-            options=["qvina"],
-            # index=0, # No longer needed with key
-            help="Select the docking program to use",
-            key="program_choice_input"
-        )
-
-        # Scoring Function Selectbox - uses key 'scoring_function_input'
-        st.selectbox(
-            "Scoring Function",
-            options=["nnscore2"],
-            # index=0, # No longer needed with key
-            help="Select the scoring function for docking",
-            key="scoring_function_input"
-        )
-
-    # No need for "Save Basic Config" button if not using forms for state saving
+        st.info("💡 **Note**: Unidock automatically handles program choice (qvina) and scoring function (nnscore2) selection for optimal performance.")
 
 with tab2:
     # --- Box Generation Expander (Moved outside the form) ---
@@ -683,31 +638,20 @@ with tab3:
     col14, col15 = st.columns(2) # Use different column variables
 
     with col14:
-        # Exhaustiveness Input - uses key 'exhaustiveness_input'
-        st.number_input(
-            "Exhaustiveness",
-            min_value=1,
-            max_value=100, # Adjust if needed
-            step=1,
-            help="Docking exhaustiveness parameter",
-            key="exhaustiveness_input"
-        )
-
-        # SELFIES Checkbox - uses key 'is_selfies_input'
-        st.checkbox(
-            "Use SELFIES Representation",
-            help="Use SELFIES molecular representation (if applicable model supports)",
-            key="is_selfies_input"
+        # Exhaustiveness Input - uses key 'exhaustiveness_level_input'
+        st.selectbox(
+            "Exhaustiveness Level",
+            options=["fast", "balance", "detail"],
+            format_func=lambda x: {
+                "fast": "Fast (8) - Quick docking for screening",
+                "balance": "Balance (32) - Good balance of speed and accuracy", 
+                "detail": "Detail (128) - Thorough search for final results"
+            }[x],
+            help="Select the exhaustiveness level for docking. Higher levels provide more thorough search but take longer.",
+            key="exhaustiveness_level_input"
         )
 
     with col15:
-        # Peptide Checkbox - uses key 'is_peptide_input'
-        st.checkbox(
-            "Ligand is Peptide",
-            help="Check if the ligand is a peptide (may affect downstream processing)",
-            key="is_peptide_input"
-        )
-
         # Number of Rounds Input - uses key 'num_rounds_input'
         st.number_input(
             "Number of Rounds",
@@ -819,9 +763,10 @@ with col_dl:
         download_config = {}
         download_config["model"] = st.session_state.model_selection
         
-        # Files (store paths from state)
-        download_config["pdbfile"] = st.session_state.pdb_path_input
-        download_config["receptor"] = st.session_state.receptor_path_input # May be empty
+        # Files (store paths from state) - use PDB file for both generation and docking
+        pdb_path = st.session_state.pdb_path_input
+        download_config["pdbfile"] = pdb_path
+        download_config["receptor"] = pdb_path  # Use same file as receptor
 
         # Model specific
         if download_config["model"] == "diffsbdd":
@@ -843,12 +788,8 @@ with col_dl:
 
         # Common parameters
         download_config["n_samples"] = st.session_state.n_samples_input
-        download_config["program_choice"] = st.session_state.program_choice_input
-        download_config["scoring_function"] = st.session_state.scoring_function_input
         download_config["center"] = [st.session_state.center_x, st.session_state.center_y, st.session_state.center_z]
-        download_config["exhaustiveness"] = st.session_state.exhaustiveness_input
-        download_config["is_selfies"] = st.session_state.is_selfies_input
-        download_config["is_peptide"] = st.session_state.is_peptide_input
+        download_config["exhaustiveness_level"] = st.session_state.exhaustiveness_level_input
         download_config["top_n"] = st.session_state.top_n_input
         download_config["max_variants"] = st.session_state.max_variants_input
         download_config["num_rounds"] = st.session_state.num_rounds_input
@@ -972,49 +913,28 @@ if finalize_submitted:
             
             # Create a temporary directory *only* if we have uploaded files to save
             temp_dir_path = None
-            if pdb_file_state or st.session_state.get("receptor_file_uploader"):
+            if pdb_file_state:
                  temp_dir_path = Path(tempfile.mkdtemp())
                  logger.info(f"Created temp dir for uploads: {temp_dir_path}")
-
 
             # --- Populate config dictionary from session state ---
             config["model"] = current_model_final
 
-            # Handle PDB file
+            # Handle PDB file (used for both generation and docking)
             if pdb_file_state:
                 pdb_save_path = temp_dir_path / pdb_file_state.name
                 try:
                     with open(pdb_save_path, "wb") as f:
                         f.write(pdb_file_state.getbuffer())
                     config["pdbfile"] = str(pdb_save_path)
+                    config["receptor"] = str(pdb_save_path)  # Use same file as receptor
                     logger.info(f"Saved uploaded PDB to temp file: {pdb_save_path}")
                 except Exception as e:
                     st.error(f"Failed to save uploaded PDB file: {e}")
                     logger.error(f"Failed to save uploaded PDB file: {e}", exc_info=True)
-                    # Potentially stop config saving here?
             elif final_pdb_source: # Should be the validated path
                 config["pdbfile"] = final_pdb_source
-            
-            # Handle Receptor file
-            receptor_file_state = st.session_state.get("receptor_file_uploader")
-            receptor_path_state = st.session_state.get("receptor_path_input", "")
-            if receptor_file_state:
-                 receptor_save_path = temp_dir_path / receptor_file_state.name
-                 try:
-                     with open(receptor_save_path, "wb") as f:
-                         f.write(receptor_file_state.getbuffer())
-                     config["receptor"] = str(receptor_save_path)
-                     logger.info(f"Saved uploaded receptor to temp file: {receptor_save_path}")
-                 except Exception as e:
-                     st.error(f"Failed to save uploaded receptor file: {e}")
-                     logger.error(f"Failed to save uploaded receptor file: {e}", exc_info=True)
-            elif receptor_path_state and os.path.exists(receptor_path_state):
-                 config["receptor"] = receptor_path_state
-            elif receptor_path_state: # Path provided but doesn't exist
-                 st.warning(f"Specified receptor path does not exist: {receptor_path_state}. It will not be included in the config.")
-                 config["receptor"] = None # Explicitly set to None or omit key
-            else:
-                 config["receptor"] = None # No receptor specified
+                config["receptor"] = final_pdb_source  # Use same file as receptor
 
             # Add model-specific parameters
             if current_model_final == "diffsbdd":
@@ -1037,12 +957,8 @@ if finalize_submitted:
 
             # Add common parameters
             config["n_samples"] = st.session_state.n_samples_input
-            config["program_choice"] = st.session_state.program_choice_input
-            config["scoring_function"] = st.session_state.scoring_function_input
             config["center"] = [st.session_state.center_x, st.session_state.center_y, st.session_state.center_z]
-            config["exhaustiveness"] = st.session_state.exhaustiveness_input
-            config["is_selfies"] = st.session_state.is_selfies_input
-            config["is_peptide"] = st.session_state.is_peptide_input
+            config["exhaustiveness_level"] = st.session_state.exhaustiveness_level_input
             config["top_n"] = st.session_state.top_n_input
             config["max_variants"] = st.session_state.max_variants_input
             config["num_rounds"] = st.session_state.num_rounds_input

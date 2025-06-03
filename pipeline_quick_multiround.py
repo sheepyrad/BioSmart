@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # Import functions from the utils modules
 from utils.ligand_generation import run_ligand_generation, combine_pocket2mol_outputs
-from utils.redocking import redock_compound, vfu_dir
+from utils.redocking import redock_compound
 from utils.retrosynformer import run_retrosynthesis
 from utils.medchem_filter import filter_by_pass_count, generate_filter_plots
 from utils.boltz_filter import boltz_filter_variants
@@ -50,11 +50,13 @@ from utils.retro_utils import extract_variants_from_retrosynthesis, run_retrosyn
 from utils.tracking import generate_tracking_report, update_tracking_report
 from utils.logging_utils import setup_logging, ThreadSafeRotatingFileHandler
 
+# Import the environment manager for conda environment handling
+from utils.environment_manager import env_manager
+
 def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_list=None, 
          n_samples=200, sanitize=True, center=(114.817, 75.602, 82.416), box_size=(38, 70, 58),
-         bbox_size=23.0, receptor=None, program_choice="qvina", scoring_function="nnscore2",
-         exhaustiveness=10, is_selfies=False, is_peptide=False, 
-         top_n=5, max_variants=5, num_rounds=1, boltz_evaluation_method="combined", stop_flag=None):
+         bbox_size=23.0, exhaustiveness="balance", top_n=5, max_variants=5, num_rounds=1, 
+         boltz_evaluation_method="combined", stop_flag=None):
     """
     Multi-round quick pipeline main function with batch filtering optimization.
     
@@ -62,19 +64,14 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         out_dir: Output directory for results
         model_choice: Model to use for molecule generation ('diffsbdd' or 'pocket2mol')
         checkpoint: Path to model checkpoint (DiffSBDD only)
-        pdbfile: Path to target protein PDB file
+        pdbfile: Path to target protein PDB file (used for both generation and docking)
         resi_list: Residue identifiers (DiffSBDD only)
         n_samples: Number of samples to generate
         sanitize: Whether to sanitize generated molecules (DiffSBDD only)
         center: Center coordinates (x, y, z) for docking box or Pocket2Mol
         box_size: Box dimensions (x, y, z) for docking 
         bbox_size: Single box size value for Pocket2Mol
-        receptor: Receptor file for docking
-        program_choice: Docking program choice
-        scoring_function: Scoring function for docking
-        exhaustiveness: Docking exhaustiveness parameter
-        is_selfies: Whether to use SELFIES representation
-        is_peptide: Whether the ligand is a peptide
+        exhaustiveness: Docking exhaustiveness level ("fast", "balance", or "detail")
         top_n: Number of top compounds to process
         max_variants: Maximum number of variants per compound
         num_rounds: Number of rounds to run
@@ -86,8 +83,35 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     
+    # Use exhaustiveness level directly (no mapping needed for Unidock)
+    logger.info(f"Using exhaustiveness level '{exhaustiveness}' for Unidock search mode")
+    
     # Set up logging first
     setup_logging(out_dir)
+    
+    # Check conda environments availability
+    logger.info("Checking conda environments availability...")
+    env_status = env_manager.check_all_environments()
+    
+    # Check if required environments are available based on model choice
+    required_envs = ["synformer", "boltz"]  # Always needed
+    if model_choice.lower() == "diffsbdd":
+        required_envs.append("diffsbdd")
+    elif model_choice.lower() == "pocket2mol":
+        required_envs.append("pocket2mol")
+    
+    missing_envs = []
+    for tool in required_envs:
+        env_name = env_manager.get_environment_for_tool(tool)
+        if not env_status.get(env_name, False):
+            missing_envs.append(env_name)
+    
+    if missing_envs:
+        error_msg = f"Required conda environments are not available: {missing_envs}. Please run './setup.sh' to create them."
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+    
+    logger.info("All required conda environments are available.")
     
     # Check model choice
     model_choice = model_choice.lower()
@@ -330,14 +354,13 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         # Step 6: Sequential docking
         logger.info(f"Round {round_num}: Starting docking of {len(filtered_variants)} filtered variants")
         
-        # Prepare docking parameters
+        # Prepare docking parameters (simplified for direct unidock command)
         center_x, center_y, center_z = center
         size_x, size_y, size_z = box_size
         redock_params = (
-            program_choice, scoring_function,
             center_x, center_y, center_z,
             size_x, size_y, size_z,
-            exhaustiveness, is_selfies, is_peptide
+            exhaustiveness  # Use exhaustiveness level directly as search_mode
         )
         
         # Create a directory for each variant's docking results
@@ -361,7 +384,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                 variant_id,
                 smiles,
                 redock_params,
-                receptor=receptor,
+                receptor=pdbfile,  # Use the same PDB file as receptor
                 log_callback=logger.info
             )
 
@@ -375,21 +398,22 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                 status = result_storage.get("status", "unknown")
                 data = result_storage.get("data", {})
                 error_msg = data.get("error")
-                pose_out = data.get("pose_pred_out")
-                rescored = data.get("re_scored_values")
 
                 if status == "success" and not error_msg:
-                    if pose_out:
-                        # Extract docking information
-                        best_score, best_pose = extract_best_pose_and_score(pose_out)
+                    # Check if we have docking results for this variant
+                    variant_results = data.get(variant_id)
+                    if variant_results:
+                        # Extract docking information from Unidock results
+                        best_score = variant_results.get("docking_score")
+                        pose_count = variant_results.get("pose_count", 1)
+                        result_file = variant_results.get("result_file")
 
                         # Update variant with docking results
                         variant.update({
                             "status": "DOCKED",
                             "docking_score": best_score,
-                            "best_pose": best_pose,
-                            "pose_pred_out": pose_out, # Keep original VFU output
-                            "re_scored_values": rescored # Keep original VFU output
+                            "pose_count": pose_count,
+                            "result_file": result_file
                         })
 
                         round_redock_results.append(variant)
@@ -401,47 +425,38 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                         # Save docking outputs
                         variant_poses_dir = dock_dir / f"variant_{barcode}"
                         variant_poses_dir.mkdir(exist_ok=True)
-                        vfu_outputs_dir = Path(vfu_dir) / "outputs" # Path to *source* VFU outputs
 
-                        # Save VFU output dictionaries (pose_out, rescored) to JSON
-                        vfu_scores_file = variant_poses_dir / "vfu_output_scores.json"
+                        # Save Unidock results summary to JSON
+                        unidock_scores_file = variant_poses_dir / "unidock_results.json"
                         try:
                             # Save the data extracted from result_storage
-                            vfu_data = {
-                                "pose_pred_out": pose_out,
-                                "re_scored_values": rescored
+                            unidock_data = {
+                                "docking_score": best_score,
+                                "pose_count": pose_count,
+                                "result_file": result_file,
+                                "variant_id": variant_id
                             }
-                            with open(vfu_scores_file, 'w') as f:
-                                json.dump(vfu_data, f, indent=4)
-                            logger.info(f"Saved VFU output scores to {vfu_scores_file}")
+                            with open(unidock_scores_file, 'w') as f:
+                                json.dump(unidock_data, f, indent=4)
+                            logger.info(f"Saved Unidock results to {unidock_scores_file}")
                         except Exception as e:
-                            logger.error(f"Error saving VFU output scores for {variant_id} ({barcode}): {e}")
+                            logger.error(f"Error saving Unidock results for {variant_id} ({barcode}): {e}")
 
-                        # Copy other VFU output files *from the source VFU/outputs*
-                        # This assumes the wrapper script leaves files there temporarily.
-                        # Consider if the wrapper should handle moving outputs instead.
-                        if vfu_outputs_dir.exists():
-                            logger.info(f"Copying VFU output files from {vfu_outputs_dir} to {variant_poses_dir}")
-                            for file_path in vfu_outputs_dir.glob("*"):
-                                try:
-                                    if file_path.is_file():
-                                        shutil.copy2(file_path, variant_poses_dir)
-                                    elif file_path.is_dir():
-                                        dest_dir = variant_poses_dir / file_path.name
-                                        if dest_dir.exists():
-                                            shutil.rmtree(dest_dir) # Overwrite if exists
-                                        shutil.copytree(file_path, dest_dir)
-                                except Exception as copy_e:
-                                    logger.warning(f"Could not copy VFU output {file_path.name} for {barcode}: {copy_e}")
-                        else:
-                             logger.warning(f"VFU output directory {vfu_outputs_dir} not found. Cannot copy auxiliary files.")
+                        # Copy Unidock result files if they exist
+                        if result_file and Path(result_file).exists():
+                            try:
+                                dest_file = variant_poses_dir / Path(result_file).name
+                                shutil.copy2(result_file, dest_file)
+                                logger.info(f"Copied Unidock result file to {dest_file}")
+                            except Exception as copy_e:
+                                logger.warning(f"Could not copy Unidock result file for {barcode}: {copy_e}")
 
                     else:
-                        logger.warning(f"Docking for {barcode} completed successfully but no pose_pred_out data found.")
+                        logger.warning(f"Docking for {barcode} completed successfully but no results found for variant {variant_id}.")
                         # Update status to indicate docking attempt but failure to get results
-                        variant["status"] = "DOCKFAIL_NOPOSE"
-                        update_tracking_report(round_report, {"barcode": barcode, "status": "DOCKFAIL_NOPOSE"}, "variant_status_update")
-                        update_tracking_report(master_report, {"barcode": barcode, "status": "DOCKFAIL_NOPOSE"}, "variant_status_update")
+                        variant["status"] = "DOCKFAIL_NORESULTS"
+                        update_tracking_report(round_report, {"barcode": barcode, "status": "DOCKFAIL_NORESULTS"}, "variant_status_update")
+                        update_tracking_report(master_report, {"barcode": barcode, "status": "DOCKFAIL_NORESULTS"}, "variant_status_update")
 
                 else:
                     # Log error from result_storage or generic failure
@@ -464,21 +479,6 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                 variant["status"] = "DOCKFAIL_SETUP"
                 update_tracking_report(round_report, {"barcode": barcode, "status": "DOCKFAIL_SETUP"}, "variant_status_update")
                 update_tracking_report(master_report, {"barcode": barcode, "status": "DOCKFAIL_SETUP"}, "variant_status_update")
-
-
-            # Clean up VFU output directory *after each docking* to avoid file conflicts
-            # Note: This assumes the wrapper places outputs directly in src/VFU/outputs
-            source_vfu_outputs_dir = Path(vfu_dir) / "outputs"
-            if source_vfu_outputs_dir.exists():
-                 logger.info(f"Cleaning up source VFU output directory: {source_vfu_outputs_dir}")
-                 for item in source_vfu_outputs_dir.iterdir():
-                     try:
-                         if item.is_file():
-                             item.unlink()
-                         elif item.is_dir():
-                             shutil.rmtree(item)
-                     except Exception as clean_e:
-                         logger.warning(f"Could not clean up {item.name} from VFU outputs: {clean_e}")
 
         logger.info(f"Round {round_num}: Finished processing docking for {len(filtered_variants)} variants.")
         logger.info(f"Round {round_num}: Successfully docked and processed {len(round_redock_results)} variants.")
@@ -517,19 +517,14 @@ if __name__ == "__main__":
                         help="Size of the bounding box (Pocket2Mol only)")
     
     # Common parameters
-    parser.add_argument("--receptor", required=False, help="Receptor file for docking", default="NS5_test.pdbqt")
-    
     parser.add_argument("--n_samples", type=int, default=200, help="Number of samples to generate")
     parser.add_argument("--sanitize", action="store_true", help="Sanitize generated molecules (DiffSBDD only)", default=True)
-    parser.add_argument("--program_choice", default="qvina", help="Docking program choice")
-    parser.add_argument("--scoring_function", default="nnscore2", help="Scoring function")
     parser.add_argument("--center", nargs=3, type=float, default=[114.817, 75.602, 82.416], 
                         help="Docking box center coordinates (also used for Pocket2Mol)")
     parser.add_argument("--box_size", nargs=3, type=int, default=[38, 70, 58],
                         help="Docking box dimensions")
-    parser.add_argument("--exhaustiveness", type=int, default=32, help="Docking exhaustiveness")
-    parser.add_argument("--is_selfies", action="store_true", help="Use SELFIES representation", default=False)
-    parser.add_argument("--is_peptide", action="store_true", help="Ligand is a peptide", default=False)
+    parser.add_argument("--exhaustiveness", type=str, choices=["fast", "balance", "detail"], default="balance",
+                        help="Docking exhaustiveness level")
     parser.add_argument("--top_n", type=int, default=5, 
                         help="Number of top compounds to process")
     parser.add_argument("--max_variants", type=int, default=5,
@@ -552,12 +547,7 @@ if __name__ == "__main__":
         center=args.center,
         box_size=args.box_size,
         bbox_size=args.bbox_size,
-        receptor=args.receptor,
-        program_choice=args.program_choice,
-        scoring_function=args.scoring_function,
         exhaustiveness=args.exhaustiveness,
-        is_selfies=args.is_selfies,
-        is_peptide=args.is_peptide,
         top_n=args.top_n,
         max_variants=args.max_variants,
         num_rounds=args.num_rounds,

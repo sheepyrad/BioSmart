@@ -14,12 +14,15 @@ import yaml  # Add yaml import
 import random # Import random module for seed generation
 from rdkit import Chem
 
+# Import the new environment manager
+from .environment_manager import env_manager
+
 # Define a timeout for the subprocess (e.g., 2 hours)
 SUBPROCESS_TIMEOUT = 7200 
 
 def run_pocket2mol(pdbfile, center, bbox_size, out_dir, n_samples, log_callback=None):
     """
-    Run the Pocket2Mol model for ligand generation.
+    Run the Pocket2Mol model for ligand generation using conda environment.
     
     Args:
         pdbfile (str): Path to the PDB file
@@ -100,106 +103,78 @@ def run_pocket2mol(pdbfile, center, bbox_size, out_dir, n_samples, log_callback=
     center_arg = f'--center " {center_str}" '
     # ---- End center argument formatting ----
 
-    # Construct the command using the final config path and formatted center argument
-    command = (
-        f"cd {pocket2mol_dir} && python sample_for_pdb.py "
-        f"--pdb_path {pdbfile_path} "
-        f"{center_arg}"  # Use the formatted center argument
-        f"--bbox_size {bbox_size} "
-        f"--config {final_config_to_use} "  # Use the determined config path
-        f"--outdir {out_dir_path}"
-    )
+    # Construct the command using the new environment manager approach
+    command = [
+        "python", "sample_for_pdb.py",
+        "--pdb_path", pdbfile_path,
+        "--center", f" {center_str}",  # Use the formatted center argument
+        "--bbox_size", str(bbox_size),
+        "--config", final_config_to_use,  # Use the determined config path
+        "--outdir", out_dir_path
+    ]
     
     if log_callback:
-        log_callback(f"Executing Pocket2Mol: {command}\nGenerating molecules...\n")
+        log_callback(f"Executing Pocket2Mol: {' '.join(command)}\nGenerating molecules...\n")
 
     def run_process():
         start_time = time.time()
-        process = None
-        stdout_buffer = io.StringIO()
-        stderr_buffer = io.StringIO()
+        result_storage = {}
         
         try:
-            # Try to increase the soft limit for file descriptors for this process
-            try:
-                soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-                if log_callback:
-                    log_callback(f"Current file descriptor limits: soft={soft}, hard={hard}")
-                target_soft = min(hard, 4096) # Or potentially higher if needed
-                resource.setrlimit(resource.RLIMIT_NOFILE, (target_soft, hard))
-                new_soft, new_hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-                if log_callback:
-                    log_callback(f"Successfully set file descriptor limit: soft={new_soft}, hard={new_hard}")
-            except Exception as e:
-                if log_callback:
-                    log_callback(f"Warning: Could not set file descriptor limit: {e}")
+            # Use the environment manager to run Pocket2Mol with streaming output
+            thread = env_manager.run_tool_async(
+                tool_name="pocket2mol",
+                command=command,
+                cwd=str(pocket2mol_dir),
+                timeout=SUBPROCESS_TIMEOUT,
+                log_callback=log_callback,
+                result_storage=result_storage,
+                stream_output=True  # Enable real-time output streaming
+            )
             
-            # Use a with statement to ensure proper cleanup
-            with subprocess.Popen(
-                command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-            ) as process:
-                # Create a safe logging function that won't throw exceptions
-                def safe_log(message):
-                    try:
-                        if log_callback and message.strip():
-                            log_callback(message.strip())
-                    except Exception as e:
-                        # If logging fails, write to a local buffer instead
-                        print(f"Logging error: {e}", file=sys.stderr)
-                        print(f"Message: {message}", file=sys.stderr)
-                
-                # Use communicate to read output and wait for completion with timeout
-                stdout_data, stderr_data = None, None
-                exit_code = None
-                try:
-                    stdout_data, stderr_data = process.communicate(timeout=SUBPROCESS_TIMEOUT)
-                    exit_code = process.returncode
-                    safe_log(f"Pocket2Mol process finished with exit code: {exit_code}")
-                except subprocess.TimeoutExpired:
-                    safe_log(f"Pocket2Mol process timed out after {SUBPROCESS_TIMEOUT} seconds. Terminating...")
-                    process.terminate()
-                    try:
-                        process.wait(timeout=30) 
-                    except subprocess.TimeoutExpired:
-                        safe_log("Process did not terminate gracefully. Killing...")
-                        process.kill() 
-                    exit_code = -1 # Indicate timeout/termination
-                    safe_log("Pocket2Mol process terminated due to timeout.")
-                
-                # --- Log captured stdout/stderr --- 
-                if stdout_data:
-                    safe_log("--- Pocket2Mol stdout ---")
-                    for line in stdout_data.splitlines():
-                        safe_log(line)
-                    safe_log("--- End Pocket2Mol stdout ---")
-                if stderr_data:
-                    safe_log("--- Pocket2Mol stderr ---")
-                    for line in stderr_data.splitlines():
-                        safe_log(line)
-                    safe_log("--- End Pocket2Mol stderr ---")
-                
-                # --- Read Pocket2Mol's own log file (only if process started successfully) --- 
-                if process.pid and exit_code is not None: # Check if process launched and finished/timed out
-                    try:
-                        # Find the specific output directory created by Pocket2Mol inside out_dir_path
-                        # It usually starts with 'temp_sample_for_pdb_' followed by the PDB name
-                        p2m_output_dirs = list(Path(out_dir_path).glob(f"temp_sample_for_pdb_{Path(pdbfile_path).stem}*"))
-                        if p2m_output_dirs:
-                            p2m_log_dir = sorted(p2m_output_dirs)[-1] # Get the latest one if multiple exist
-                            p2m_log_file = p2m_log_dir / "log.txt"
-                            if p2m_log_file.exists():
-                                safe_log("--- Start Pocket2Mol Internal Log --- ")
-                                with open(p2m_log_file, 'r') as f_log:
-                                    for log_line in f_log:
-                                        safe_log(log_line.strip()) # Log each line
-                                safe_log("--- End Pocket2Mol Internal Log --- ")
-                            else:
-                                safe_log(f"Pocket2Mol log file not found at: {p2m_log_file}")
-                        else:
-                            safe_log(f"Could not find Pocket2Mol output subdirectory in: {out_dir_path}")
-                    except Exception as log_read_e:
-                        safe_log(f"Error reading Pocket2Mol log file: {log_read_e}")
-                # --- End Reading Log File ---
+            # Wait for the thread to complete
+            thread.join()
+            
+            # Check results
+            status = result_storage.get("status", "unknown")
+            if status == "success":
+                if log_callback:
+                    log_callback("Pocket2Mol process completed successfully")
+            elif status == "timeout":
+                if log_callback:
+                    log_callback(f"Pocket2Mol process timed out after {SUBPROCESS_TIMEOUT} seconds")
+            else:
+                error_msg = result_storage.get("error", "Unknown error")
+                if log_callback:
+                    log_callback(f"Pocket2Mol process failed: {error_msg}")
+            
+            # Note: stdout/stderr are now streamed in real-time, no need to log them again
+            
+            # --- Read Pocket2Mol's own log file --- 
+            try:
+                # Find the specific output directory created by Pocket2Mol inside out_dir_path
+                p2m_output_dirs = list(Path(out_dir_path).glob(f"temp_sample_for_pdb_{Path(pdbfile_path).stem}*"))
+                if p2m_output_dirs:
+                    p2m_log_dir = sorted(p2m_output_dirs)[-1] # Get the latest one if multiple exist
+                    p2m_log_file = p2m_log_dir / "log.txt"
+                    if p2m_log_file.exists():
+                        if log_callback:
+                            log_callback("--- Start Pocket2Mol Internal Log --- ")
+                        with open(p2m_log_file, 'r') as f_log:
+                            for log_line in f_log:
+                                if log_callback:
+                                    log_callback(log_line.strip()) # Log each line
+                        if log_callback:
+                            log_callback("--- End Pocket2Mol Internal Log --- ")
+                    else:
+                        if log_callback:
+                            log_callback(f"Pocket2Mol log file not found at: {p2m_log_file}")
+                else:
+                    if log_callback:
+                        log_callback(f"Could not find Pocket2Mol output subdirectory in: {out_dir_path}")
+            except Exception as log_read_e:
+                if log_callback:
+                    log_callback(f"Error reading Pocket2Mol log file: {log_read_e}")
             
             elapsed_time = time.time() - start_time
             if log_callback:
@@ -223,17 +198,6 @@ def run_pocket2mol(pdbfile, center, bbox_size, out_dir, n_samples, log_callback=
                     log_callback(f"Error in molecule generation process: {e}")
                 except Exception:
                     print(f"Error in molecule generation process: {e}", file=sys.stderr)
-            
-            # Ensure process is terminated if an exception occurs
-            if process and process.poll() is None:
-                try:
-                    process.terminate()
-                    process.wait(timeout=5)
-                except:
-                    try:
-                        process.kill()
-                    except:
-                        pass
         
         # Delete temporary config file if it was created and used
         if final_config_to_use == temp_config_path and os.path.exists(temp_config_path):
@@ -343,7 +307,7 @@ def run_ligand_generation(checkpoint=None, pdbfile=None, outfile=None, resi_list
                           n_samples=100, sanitize=True, log_callback=None, model="diffsbdd",
                           center=None, bbox_size=None, out_dir=None):
     """
-    Run ligand generation using either DiffSBDD or Pocket2Mol model.
+    Run ligand generation using either DiffSBDD or Pocket2Mol model with conda environments.
     
     Args:
         checkpoint (str): Path to the checkpoint file (DiffSBDD only)
@@ -378,68 +342,54 @@ def run_ligand_generation(checkpoint=None, pdbfile=None, outfile=None, resi_list
         # Change to the directory containing DiffSBDD (now in src)
         diffsbdd_dir = os.path.join(current_dir, "src", "DiffSBDD")
         
-        command = (
-            f"cd {diffsbdd_dir} && python generate_ligands.py {checkpoint_path} "
-            f"--pdbfile {pdbfile_path} --outfile {outfile_path} --resi_list {' '.join(resi_list)} "
-            f"--n_samples {n_samples} {'--sanitize' if sanitize else ''}"
-        )
+        # Construct command as list for environment manager
+        command = [
+            "python", "generate_ligands.py", checkpoint_path,
+            "--pdbfile", pdbfile_path,
+            "--outfile", outfile_path,
+            "--resi_list"] + resi_list + [
+            "--n_samples", str(n_samples)
+        ]
+        
+        if sanitize:
+            command.append("--sanitize")
         
         if log_callback:
-            log_callback(f"Executing DiffSBDD: {command}\nGenerating {n_samples} ligands...\n")
+            log_callback(f"Executing DiffSBDD: {' '.join(command)}\nGenerating {n_samples} ligands...\n")
 
         def run_process():
             start_time = time.time()
-            process = None
-            stdout_buffer = io.StringIO()
-            stderr_buffer = io.StringIO()
+            result_storage = {}
             
             try:
-                # Try to increase the soft limit for file descriptors for this process
-                try:
-                    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-                    resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 4096), hard))
-                    if log_callback:
-                        log_callback(f"Set file descriptor limit to {min(hard, 4096)}")
-                except Exception as e:
-                    if log_callback:
-                        log_callback(f"Warning: Could not set file descriptor limit: {e}")
+                # Use the environment manager to run DiffSBDD with streaming output
+                thread = env_manager.run_tool_async(
+                    tool_name="diffsbdd",
+                    command=command,
+                    cwd=diffsbdd_dir,
+                    timeout=3600,  # 1 hour timeout
+                    log_callback=log_callback,
+                    result_storage=result_storage,
+                    stream_output=True  # Enable real-time output streaming
+                )
                 
-                # Use a with statement to ensure proper cleanup
-                with subprocess.Popen(
-                    command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
-                    text=True, close_fds=True, bufsize=1
-                ) as process:
-                    # Create a safe logging function that won't throw exceptions
-                    def safe_log(message):
-                        try:
-                            if log_callback and message.strip():
-                                log_callback(message.strip())
-                        except Exception as e:
-                            # If logging fails, write to a local buffer instead
-                            print(f"Logging error: {e}", file=sys.stderr)
-                            print(f"Message: {message}", file=sys.stderr)
-                    
-                    # Read output in chunks to avoid buffer issues
-                    for line in iter(process.stdout.readline, ''):
-                        stdout_buffer.write(line)
-                        safe_log(line)
-                    
-                    # Read error output
-                    for err in iter(process.stderr.readline, ''):
-                        stderr_buffer.write(err)
-                        safe_log(err)
-                    
-                    # Wait for process to complete with timeout
-                    try:
-                        process.wait(timeout=3600)  # 1 hour timeout
-                    except subprocess.TimeoutExpired:
-                        safe_log("Process timed out after 1 hour, terminating...")
-                        try:
-                            process.terminate()
-                            process.wait(timeout=30)
-                        except subprocess.TimeoutExpired:
-                            safe_log("Process did not terminate gracefully, killing...")
-                            process.kill()
+                # Wait for the thread to complete
+                thread.join()
+                
+                # Check results
+                status = result_storage.get("status", "unknown")
+                if status == "success":
+                    if log_callback:
+                        log_callback("DiffSBDD process completed successfully")
+                elif status == "timeout":
+                    if log_callback:
+                        log_callback("DiffSBDD process timed out after 1 hour")
+                else:
+                    error_msg = result_storage.get("error", "Unknown error")
+                    if log_callback:
+                        log_callback(f"DiffSBDD process failed: {error_msg}")
+                
+                # Note: stdout/stderr are now streamed in real-time, no need to log them again
                 
                 elapsed_time = time.time() - start_time
                 if log_callback:
@@ -454,17 +404,6 @@ def run_ligand_generation(checkpoint=None, pdbfile=None, outfile=None, resi_list
                         log_callback(f"Error in ligand generation process: {e}")
                     except Exception:
                         print(f"Error in ligand generation process: {e}", file=sys.stderr)
-                
-                # Ensure process is terminated if an exception occurs
-                if process and process.poll() is None:
-                    try:
-                        process.terminate()
-                        process.wait(timeout=5)
-                    except:
-                        try:
-                            process.kill()
-                        except:
-                            pass
         
         thread = threading.Thread(target=run_process)
         thread.daemon = True  # Make thread a daemon so it doesn't block program exit

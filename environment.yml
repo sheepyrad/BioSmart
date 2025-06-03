@@ -42,6 +42,9 @@ dependencies:
   - openmpi
   - mpi4py
   - gromacs
+  - gcc=12
+  - libstdcxx-ng>=13.0.0
+  - rdkit>=2024.9.0
   - pip
   - pip:
     - posebusters >=0.3
@@ -49,7 +52,6 @@ dependencies:
     - tenacity >=8.0
     - wandb >=0.15
     - numpy>=1.24.0
-    - rdkit>=2024.9.6
     - plotly>=5.18.0
     - py3Dmol>=2.0.0
     - pathlib>=1.0.1

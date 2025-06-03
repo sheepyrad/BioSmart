@@ -140,4 +140,37 @@ def extract_best_pose_and_score(pose_pred_str):
             pass
         
         logger.warning(f"Error extracting pose data: {e}")
+        return None, None
+
+def extract_unidock_best_score(unidock_results):
+    """
+    Extract the best docking score from Unidock results.
+    
+    Args:
+        unidock_results: Dictionary containing Unidock results for variants
+        
+    Returns:
+        Tuple of (best_score, variant_id) or (None, None) if no results
+    """
+    try:
+        if not unidock_results or not isinstance(unidock_results, dict):
+            return None, None
+        
+        best_score = float('inf')
+        best_variant = None
+        
+        for variant_id, results in unidock_results.items():
+            if isinstance(results, dict) and 'docking_score' in results:
+                score = results['docking_score']
+                if score is not None and score < best_score:
+                    best_score = score
+                    best_variant = variant_id
+        
+        if best_variant:
+            return best_score, best_variant
+        else:
+            return None, None
+            
+    except Exception as e:
+        logger.error(f"Error extracting Unidock best score: {e}")
         return None, None 

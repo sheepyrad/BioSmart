@@ -9,236 +9,344 @@ import subprocess
 import threading
 import time
 import json
+import tempfile
+from typing import List, Dict, Any, Tuple, Optional
 
-# Determine the absolute path to the VFU folder relative to this file
-vfu_dir = Path(__file__).parent.parent / "src" / "VFU"
-vfu_config_dir = vfu_dir / "config"
-input_dir = Path(__file__).parent.parent / "input"
-vfu_wrapper_script = Path(__file__).parent / "vfu_subprocess_wrapper.py"
+# Import environment manager for conda environment handling
+from utils.environment_manager import env_manager
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
 
-# Define a timeout for the VFU subprocess (e.g., 2 hours)
-VFU_SUBPROCESS_TIMEOUT = 7200
+# Define a timeout for the Unidock subprocess (e.g., 2 hours)
+UNIDOCK_SUBPROCESS_TIMEOUT = 7200
 
-def _run_vfu_subprocess(command, timeout, log_callback, result_storage):
-    """Internal function to run the VFU wrapper script in a subprocess."""
-    start_time = time.time()
-    process = None
-    results = {"pose_pred_out": None, "re_scored_values": None, "error": None, "stdout": "", "stderr": ""}
-
-    # Ensure result_storage is updated even if exceptions occur early
-    result_storage["data"] = results
-    result_storage["status"] = "starting"
-
+def run_unidock_pipeline_simplified(receptor_pdb: Path, sdf_files: List[Path], output_dir: Path, 
+                                   center: Tuple[float, float, float], box_size: Tuple[float, float, float],
+                                   search_mode: str = "balance", log_callback=None) -> bool:
+    """
+    Run complete Unidock pipeline using unidocktools unidock_pipeline with GPU.
+    
+    Args:
+        receptor_pdb: Path to receptor PDB file (will be prepared automatically)
+        sdf_files: List of SDF ligand files
+        output_dir: Directory to save docking results
+        center: Center coordinates (x, y, z)
+        box_size: Box dimensions (x, y, z)
+        search_mode: Search mode ("fast", "balance", or "detail")
+        log_callback: Function to call for logging
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    if log_callback is None:
+        log_callback = print
+        
     try:
-        log_callback(f"Executing VFU wrapper command: {' '.join(command)} in CWD={vfu_dir}")
-        # Use a context manager for Popen
-        with subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        center_x, center_y, center_z = center
+        size_x, size_y, size_z = box_size
+        
+        # Create comma-separated list of SDF files
+        ligands_str = ",".join(str(sdf_file) for sdf_file in sdf_files)
+        
+        # Create working and save directories
+        save_dir = output_dir / "savedir"
+        
+        # Run unidocktools unidock_pipeline command
+        command = [
+            "unidocktools", "unidock_pipeline",
+            "--receptor", str(receptor_pdb),
+            "--ligands", ligands_str,
+            "--center_x", str(center_x),
+            "--center_y", str(center_y),
+            "--center_z", str(center_z),
+            "--size_x", str(size_x),
+            "--size_y", str(size_y),
+            "--size_z", str(size_z),
+            "--search_mode", search_mode,
+            "--savedir", str(save_dir),
+            "--batch_size", "100",  # Good batch size for GPU
+            "--num_modes", "3",     # Multiple modes for better results
+            "--scoring_function", "vina",
+            "--prepared_hydrogen"   # Prepare hydrogen automatically
+        ]
+        
+        log_callback(f"Running unidock_pipeline: {' '.join(command)}")
+        
+        result = env_manager.run_tool(
+            tool_name="unidock",
+            command=command,
+            timeout=UNIDOCK_SUBPROCESS_TIMEOUT,
+            capture_output=True,
             text=True,
-            encoding='utf-8', # Be explicit about encoding
-            errors='replace',  # Handle potential decoding errors
-            cwd=str(vfu_dir) # Set the current working directory for the subprocess
-        ) as process:
-            try:
-                stdout_data, stderr_data = process.communicate(timeout=timeout)
-                results["stdout"] = stdout_data
-                results["stderr"] = stderr_data
-                exit_code = process.returncode
-                log_callback(f"VFU wrapper process finished with exit code: {exit_code}")
-
-                if exit_code == 0:
-                    try:
-                        parsed_output = json.loads(stdout_data)
-                        results["pose_pred_out"] = parsed_output.get("pose_pred_out")
-                        results["re_scored_values"] = parsed_output.get("re_scored_values")
-                        # Check for errors reported within the JSON output
-                        if parsed_output.get("error"):
-                            results["error"] = f"Error reported by VFU wrapper: {parsed_output['error']}"
-                            log_callback(results["error"])
-                            result_storage["status"] = "error"
-                        else:
-                            log_callback("VFU wrapper executed successfully and results parsed.")
-                            result_storage["status"] = "success"
-                    except json.JSONDecodeError as json_err:
-                        results["error"] = f"Failed to parse JSON output from VFU wrapper: {json_err}. stdout: {stdout_data[:500]}..."
-                        log_callback(results["error"])
-                        result_storage["status"] = "error"
-                    except Exception as parse_err: # Catch other potential parsing issues
-                        results["error"] = f"Error processing VFU wrapper output: {parse_err}"
-                        log_callback(results["error"])
-                        result_storage["status"] = "error"
-                else:
-                    results["error"] = f"VFU wrapper process failed with exit code {exit_code}. stderr: {stderr_data[:500]}..."
-                    log_callback(results["error"])
-                    result_storage["status"] = "error"
-
-            except subprocess.TimeoutExpired:
-                log_callback(f"VFU wrapper process timed out after {timeout} seconds. Terminating...")
-                process.terminate()
-                try:
-                    stdout_data, stderr_data = process.communicate(timeout=30) # Wait a bit
-                except subprocess.TimeoutExpired:
-                    log_callback("VFU wrapper did not terminate gracefully. Killing...")
-                    process.kill()
-                    stdout_data, stderr_data = process.communicate()
-
-                results["stdout"] = stdout_data
-                results["stderr"] = stderr_data
-                results["error"] = f"VFU wrapper process timed out after {timeout} seconds."
-                log_callback(results["error"])
-                result_storage["status"] = "error"
-
-    except FileNotFoundError:
-        results["error"] = f"Error: Could not find python interpreter or wrapper script '{vfu_wrapper_script}'."
-        log_callback(results["error"])
-        result_storage["status"] = "error"
+            log_callback=log_callback,
+            stream_output=True
+        )
+        
+        if result.returncode == 0:
+            log_callback("Unidock_pipeline completed successfully")
+            return True
+        else:
+            log_callback(f"Unidock_pipeline failed with return code {result.returncode}")
+            if result.stderr:
+                log_callback(f"Error: {result.stderr}")
+            return False
+            
     except Exception as e:
-        # Catch broader errors during subprocess setup/execution
-        error_traceback = traceback.format_exc()
-        results["error"] = f"Error running VFU subprocess: {e}. Traceback: {error_traceback}"
-        log_callback(results["error"])
-        result_storage["status"] = "error"
-        # Ensure process is terminated if started and an exception occurred
-        if process and process.poll() is None:
-            try: process.kill() # Kill directly if setup failed badly
-            except Exception: pass
-    finally:
-        elapsed_time = time.time() - start_time
-        log_callback(f"VFU subprocess execution attempt finished in {elapsed_time:.2f} seconds. Final status: {result_storage['status']}")
-        # Update the central storage dictionary with the final results
-        result_storage["data"] = results
-        # Ensure status reflects final state
-        if results["error"] and result_storage["status"] != "error":
-             result_storage["status"] = "error"
-        elif not results["error"] and result_storage["status"] == "starting": # Handle case where process finished instantly without error/success path
-             result_storage["status"] = "success" # Assume success if no error logged
+        log_callback(f"Error in unidock_pipeline: {e}")
+        logger.error(f"Error in unidock_pipeline: {e}", exc_info=True)
+        return False
 
 def redock_compound(compound_id, smiles, redock_params, receptor=None, log_callback=print):
     """
-    Redock a compound using VF Unity by running a wrapper script in a subprocess.
+    Redock a compound using Unidock pipeline.
 
     Args:
         compound_id: ID of the compound
         smiles: SMILES string of the compound
-        redock_params: Tuple of redocking parameters
-        receptor: Filename of the receptor file (should be in ./input directory)
+        redock_params: Tuple of redocking parameters (center_x, center_y, center_z, size_x, size_y, size_z, search_mode)
+        receptor: Path to the receptor PDB file
         log_callback: Function to call for logging
 
     Returns:
-        Tuple of (threading.Thread, dict): The thread running the VFU subprocess
+        Tuple of (threading.Thread, dict): The thread running the Unidock subprocess
                                            and a dictionary to store results asynchronously.
-                                           The dict structure: {"status": "starting"|"success"|"error",
-                                                              "data": {"pose_pred_out": ..., "re_scored_values": ..., "error": ...}}
     """
     if log_callback is None:
         log_callback = print
 
-    log_callback(f"Preparing asynchronous redocking process for {compound_id}.")
+    log_callback(f"Preparing asynchronous Unidock pipeline process for {compound_id}.")
 
     # Create a dictionary to store results asynchronously
-    # Initialize status and data structure
     result_storage = {"status": "pending", "data": None}
 
-    # --- VFU Path and Setup Checks ---
-    if not vfu_dir.exists():
-        error_msg = f"VFU directory not found at {vfu_dir}. Please ensure it exists."
-        log_callback(error_msg)
-        result_storage["status"] = "error"
-        result_storage["data"] = {"error": error_msg}
-        return None, result_storage # Return None for thread if setup fails
-
-    if not vfu_wrapper_script.exists():
-        error_msg = f"VFU wrapper script not found at {vfu_wrapper_script}."
+    # Check if receptor file exists
+    if not receptor or not Path(receptor).exists():
+        error_msg = f"Receptor file not found: {receptor}"
         log_callback(error_msg)
         result_storage["status"] = "error"
         result_storage["data"] = {"error": error_msg}
         return None, result_storage
 
-    # Ensure VFU config directory exists
-    vfu_config_dir.mkdir(parents=True, exist_ok=True)
+    # Create output directory
+    output_dir = Path("outputs") / "temp_docking" / f"compound_{compound_id}"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    (program_choice, scoring_function, center_x, center_y, center_z,
-     size_x, size_y, size_z, exhaustiveness, is_selfies, is_peptide) = redock_params
+    # Create variant list for the single compound
+    variants = [{
+        "compound_id": compound_id,
+        "variant_id": compound_id,
+        "smiles": smiles
+    }]
 
-    # --- Receptor Handling ---
-    absolute_receptor_path_in_vfu_config = None
-    if receptor:
-        receptor_filename = Path(receptor).name # Use Path for robustness
-        receptor_in_input = input_dir / receptor_filename
-        receptor_in_vfu_config = vfu_config_dir / receptor_filename
-        absolute_receptor_path_in_vfu_config = str(receptor_in_vfu_config.resolve())
-
-        log_callback(f"Looking for receptor file: {receptor_filename} in input directory {input_dir}")
-
-        if not receptor_in_input.exists():
-            error_msg = f"Receptor file '{receptor_filename}' not found in input directory at {receptor_in_input}. Please place it there."
-            log_callback(error_msg)
-            result_storage["status"] = "error"
-            result_storage["data"] = {"error": error_msg}
-            return None, result_storage
-
-        try:
-            # Copy receptor from input to VFU/config if needed
-            if not receptor_in_vfu_config.exists() or receptor_in_input.stat().st_mtime > receptor_in_vfu_config.stat().st_mtime:
-                log_callback(f"Copying receptor from {receptor_in_input} to {receptor_in_vfu_config}")
-                shutil.copy2(receptor_in_input, receptor_in_vfu_config)
-                log_callback(f"Receptor copied successfully.")
-            else:
-                log_callback(f"Receptor already present in {receptor_in_vfu_config}")
-        except Exception as e:
-            error_msg = f"Error copying receptor file: {e}"
-            log_callback(error_msg)
-            result_storage["status"] = "error"
-            result_storage["data"] = {"error": error_msg}
-            return None, result_storage
-
-    # --- Prepare Subprocess Command ---
-    # Ensure scoring function is separated if passed like 'qvina+nnscore2'
-    actual_program_choice = program_choice
-    actual_scoring_function = scoring_function
-    if '+' in program_choice:
-        parts = program_choice.split('+')
-        actual_program_choice = parts[0]
-        if len(parts) > 1:
-            actual_scoring_function = parts[1]
-
-    command = [
-        sys.executable, # Use the current Python interpreter
-        str(vfu_wrapper_script.resolve()),
-        "--vfu_dir", str(vfu_dir.resolve()),
-        "--program_choice", actual_program_choice,
-        "--scoring_function", actual_scoring_function,
-        "--center_x", str(center_x),
-        "--center_y", str(center_y),
-        "--center_z", str(center_z),
-        "--size_x", str(size_x),
-        "--size_y", str(size_y),
-        "--size_z", str(size_z),
-        "--exhaustiveness", str(exhaustiveness),
-        "--smiles", smiles,
-        "--is_selfies", str(is_selfies), # Pass booleans as strings
-        "--is_peptide", str(is_peptide)
-    ]
-    if absolute_receptor_path_in_vfu_config:
-        command.extend(["--receptor_path", absolute_receptor_path_in_vfu_config])
-
-    # --- Start Thread ---
-    log_callback(f"Starting VFU subprocess thread for {compound_id}...")
+    # Start thread
+    log_callback(f"Starting Unidock pipeline thread for {compound_id}...")
     thread = threading.Thread(
-        target=_run_vfu_subprocess,
-        args=(command, VFU_SUBPROCESS_TIMEOUT, log_callback, result_storage)
+        target=_run_unidock_subprocess,
+        args=(variants, receptor, redock_params, output_dir, log_callback, result_storage)
     )
-    thread.daemon = True # Allow main program to exit even if thread hangs (though timeout should prevent)
+    thread.daemon = True
     thread.start()
 
-    log_callback(f"VFU subprocess thread for {compound_id} started.")
+    log_callback(f"Unidock pipeline thread for {compound_id} started.")
 
-    # Return the thread and the dictionary where results will be stored
     return thread, result_storage
 
-# --- Removed old direct call logic ---
+def _run_unidock_subprocess(variants: List[Dict[str, Any]], receptor_pdb: str, redock_params: Tuple,
+                           output_dir: Path, log_callback, result_storage: Dict[str, Any]):
+    """Internal function to run the complete Unidock pipeline using unidocktools unidock_pipeline."""
+    start_time = time.time()
+    
+    # Initialize result storage
+    result_storage["data"] = {}
+    result_storage["status"] = "starting"
+    
+    try:
+        # Extract parameters
+        (center_x, center_y, center_z, size_x, size_y, size_z, search_mode) = redock_params
+        
+        center = (center_x, center_y, center_z)
+        box_size = (size_x, size_y, size_z)
+        
+        # Create temporary working directory
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            
+            # Step 1: Create SDF files for all variants
+            log_callback("Step 1: Creating SDF files for variants...")
+            ligand_input_dir = temp_path / "ligand_input"
+            ligand_input_dir.mkdir(parents=True, exist_ok=True)
+            
+            sdf_files = []
+            variant_mapping = {}  # Map SDF files to variant IDs
+            
+            for variant in variants:
+                variant_id = variant.get("variant_id", variant.get("compound_id", "unknown"))
+                smiles = variant["smiles"]
+                
+                # Create SDF file for this variant
+                variant_sdf = ligand_input_dir / f"{variant_id}.sdf"
+                success = create_sdf_from_smiles(smiles, variant_sdf, variant_id)
+                
+                if success:
+                    sdf_files.append(variant_sdf)
+                    variant_mapping[variant_sdf.name] = variant_id
+                else:
+                    log_callback(f"Failed to create SDF for variant {variant_id}")
+            
+            if not sdf_files:
+                raise Exception("No valid SDF files created for variants")
+            
+            # Step 2: Run complete unidock_pipeline
+            log_callback("Step 2: Running complete unidock_pipeline...")
+            
+            # Create pipeline output directory
+            pipeline_output_dir = output_dir / "pipeline_results"
+            
+            # Run simplified pipeline
+            pipeline_success = run_unidock_pipeline_simplified(
+                Path(receptor_pdb), sdf_files, pipeline_output_dir,
+                center, box_size, search_mode, log_callback=log_callback
+            )
+            
+            if not pipeline_success:
+                raise Exception("Unidock pipeline failed")
+            
+            # Step 3: Parse pipeline results
+            log_callback("Step 3: Parsing pipeline results...")
+            docking_results = {}
+            
+            # Look for results in save directory
+            save_dir = pipeline_output_dir / "savedir"
+            
+            if save_dir.exists():
+                log_callback(f"Parsing results from {save_dir}")
+                
+                # Parse results from this directory
+                for sdf_file in sdf_files:
+                    variant_id = variant_mapping.get(sdf_file.name, sdf_file.stem)
+                    
+                    # Look for result files
+                    result_files = list(save_dir.glob(f"*{sdf_file.stem}*"))
+                    if not result_files:
+                        # Try without stem matching
+                        result_files = list(save_dir.glob("*.sdf"))
+                    
+                    if result_files:
+                        # Use the first result file found
+                        result_file = result_files[0]
+                        variant_results = parse_sdf_results(result_file, variant_id, log_callback)
+                        if variant_results:
+                            docking_results[variant_id] = variant_results
+                        else:
+                            log_callback(f"Could not parse results for variant {variant_id}")
+                    else:
+                        log_callback(f"No result files found for variant {variant_id}")
+            
+            if not docking_results:
+                log_callback("Warning: No docking results could be parsed")
+            
+            result_storage["data"] = docking_results
+            result_storage["status"] = "success"
+            log_callback("Unidock pipeline completed successfully")
+            
+    except Exception as e:
+        error_msg = f"Unidock pipeline failed: {e}"
+        log_callback(error_msg)
+        result_storage["data"] = {"error": error_msg}
+        result_storage["status"] = "error"
+        logger.error(f"Unidock pipeline error: {e}", exc_info=True)
+    
+    finally:
+        elapsed_time = time.time() - start_time
+        log_callback(f"Unidock pipeline finished in {elapsed_time:.2f} seconds. Status: {result_storage['status']}")
+
+def create_sdf_from_smiles(smiles: str, output_file: Path, mol_name: str = "molecule") -> bool:
+    """
+    Create an SDF file from a SMILES string.
+    
+    Args:
+        smiles: SMILES string
+        output_file: Path to save the SDF file
+        mol_name: Name for the molecule
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+        
+        # Create molecule from SMILES
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return False
+        
+        # Add hydrogens
+        mol = Chem.AddHs(mol)
+        
+        # Generate 3D coordinates
+        AllChem.EmbedMolecule(mol, randomSeed=42)
+        AllChem.UFFOptimizeMolecule(mol)
+        
+        # Set molecule name
+        mol.SetProp("_Name", mol_name)
+        
+        # Write to SDF
+        writer = Chem.SDWriter(str(output_file))
+        writer.write(mol)
+        writer.close()
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error creating SDF from SMILES: {e}")
+        return False
+
+def parse_sdf_results(result_file: Path, variant_id: str, log_callback) -> Optional[Dict[str, Any]]:
+    """Parse SDF result file and extract docking scores."""
+    try:
+        from rdkit import Chem
+        
+        supplier = Chem.SDMolSupplier(str(result_file))
+        best_score = float('inf')
+        pose_count = 0
+        
+        for mol in supplier:
+            if mol is not None:
+                pose_count += 1
+                # Try to extract score from molecule properties
+                score = None
+                for prop in mol.GetPropNames():
+                    if 'score' in prop.lower() or 'energy' in prop.lower() or 'affinity' in prop.lower():
+                        try:
+                            score = float(mol.GetProp(prop))
+                            break
+                        except:
+                            continue
+                
+                if score is not None and score < best_score:
+                    best_score = score
+        
+        if best_score != float('inf'):
+            result_dict = {
+                "docking_score": best_score,
+                "pose_count": pose_count,
+                "result_file": str(result_file)
+            }
+            log_callback(f"Parsed SDF results for {variant_id}: score={best_score}, poses={pose_count}")
+            return result_dict
+        else:
+            log_callback(f"Could not extract score from SDF for {variant_id}")
+            return None
+            
+    except Exception as e:
+        log_callback(f"Error parsing SDF results for {variant_id}: {e}")
+        return None
+
+# For backward compatibility, keep some references
+# These are no longer used but may be referenced in imports
+vfu_dir = None  # Deprecated
+vfu_config_dir = None  # Deprecated
