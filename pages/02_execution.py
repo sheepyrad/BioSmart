@@ -219,9 +219,9 @@ def run_pipeline(config, status_dict, stop_event):
         status_dict["total_rounds"] = config["num_rounds"]
         status_dict["progress"] = 0
         
-        # Check for receptor file
-        if "receptor" not in config or not config["receptor"]:
-            logger.warning("No receptor file provided. Docking steps will be skipped or may fail.")
+        # Check for PDB file (used for both generation and docking)
+        if "pdbfile" not in config or not config["pdbfile"]:
+            logger.warning("No PDB file provided. Pipeline may fail.")
             
         # Determine which model is being used
         model_choice = config.get("model", "diffsbdd").lower()
@@ -233,16 +233,11 @@ def run_pipeline(config, status_dict, stop_event):
             "pdbfile": config["pdbfile"],
             "n_samples": config["n_samples"],
             "center": config["center"],
-            "receptor": config.get("receptor"),
-            "program_choice": config["program_choice"],
-            "scoring_function": config["scoring_function"],
-            "exhaustiveness": config["exhaustiveness"],
-            "is_selfies": config["is_selfies"],
-            "is_peptide": config["is_peptide"],
+            "exhaustiveness": config["exhaustiveness_level"],
             "top_n": config["top_n"],
             "max_variants": config["max_variants"],
             "num_rounds": config["num_rounds"],
-            "boltz_evaluation_method": config.get("boltz_evaluation_method", "combined"),
+            
             "stop_flag": status_dict  # Pass the status dict for stop checking
         }
         

@@ -63,24 +63,41 @@ def generate_tracking_report(compounds, variants, redock_results, out_dir):
                 # Find the docking score
                 for result in redock_results:
                     if result.get('barcode') == row['barcode']:
-                        # Extract best docking score and pose from pose_pred_out
+                        # Extract docking score from Unidock results
+                        if 'docking_score' in result and result['docking_score'] is not None:
+                            row['docking_score'] = result['docking_score']
+                        
+                        # Add pose count information
+                        if 'pose_count' in result and result['pose_count'] is not None:
+                            row['pose_count'] = result['pose_count']
+                        
+                        # Add result file path
+                        if 'result_file' in result and result['result_file'] is not None:
+                            row['result_file'] = result['result_file']
+                        
+                        # Add all scores if available
+                        if 'all_scores' in result and result['all_scores'] is not None:
+                            row['all_scores'] = str(result['all_scores'])
+                        
+                        # Legacy support for old format
                         if 'pose_pred_out' in result and result['pose_pred_out'] is not None:
                             try:
                                 from utils.molecule_processing import extract_best_pose_and_score
                                 best_score, best_pose = extract_best_pose_and_score(result['pose_pred_out'])
-                                if best_score is not None:
+                                if best_score is not None and 'docking_score' not in row:
                                     row['docking_score'] = best_score
                                 if best_pose is not None:
                                     row['best_pose'] = best_pose
                             except Exception as e:
-                                logger.warning(f"Error extracting pose data for {row['barcode']}: {e}")
-                        # Fallback to re_scored_values if pose_pred_out processing fails
-                        elif 're_scored_values' in result and result['re_scored_values'] is not None:
+                                logger.warning(f"Error extracting legacy pose data for {row['barcode']}: {e}")
+                        
+                        # Legacy support for re_scored_values
+                        elif 're_scored_values' in result and result['re_scored_values'] is not None and 'docking_score' not in row:
                             try:
                                 docking_score = result['re_scored_values'].split(',')[0]
                                 row['docking_score'] = float(docking_score)
                             except Exception as e:
-                                logger.warning(f"Error extracting re_scored_values for {row['barcode']}: {e}")
+                                logger.warning(f"Error extracting legacy re_scored_values for {row['barcode']}: {e}")
         
         # Create the report DataFrame
         report_df = pd.DataFrame(report_rows)
@@ -117,7 +134,10 @@ def update_tracking_report(report_file, new_data, report_type="compound"):
         if report_type == "variant":
             base_columns.extend(['source_compound', 'parent_barcode', 'score'])
         elif report_type == "docking":
-            base_columns.extend(['docking_score', 'best_pose'])
+            base_columns.extend(['docking_score', 'pose_count', 'result_file', 'all_scores', 'best_pose'])
+        elif report_type == "variant_status_update":
+            # For status updates, we only need to update existing rows
+            pass
         
         # Add timestamp to the new data
         new_data['timestamp'] = datetime.now().isoformat()
@@ -132,11 +152,28 @@ def update_tracking_report(report_file, new_data, report_type="compound"):
         else:
             df = pd.DataFrame(columns=base_columns)
         
-        # Convert new data to DataFrame row
-        new_row = pd.DataFrame([new_data])
-        
-        # Append new data
-        df = pd.concat([df, new_row], ignore_index=True)
+        # Handle different update types
+        if report_type == "variant_status_update":
+            # Update existing row based on barcode
+            barcode = new_data.get('barcode')
+            if barcode and not df.empty:
+                mask = df['barcode'] == barcode
+                if mask.any():
+                    # Update existing row
+                    for key, value in new_data.items():
+                        if key in df.columns:
+                            df.loc[mask, key] = value
+                        else:
+                            df[key] = None
+                            df.loc[mask, key] = value
+                else:
+                    logger.warning(f"No existing row found for barcode {barcode} in status update")
+            else:
+                logger.warning(f"Invalid barcode for status update: {barcode}")
+        else:
+            # Convert new data to DataFrame row and append
+            new_row = pd.DataFrame([new_data])
+            df = pd.concat([df, new_row], ignore_index=True)
         
         # Save updated report
         df.to_csv(report_file, index=False)

@@ -25,7 +25,8 @@ TOOL_ENVIRONMENTS = {
     "cgflow": "cgflow-env",
     "synformer": "synformer-env",
     "boltz": "boltz-env",
-    "unidock": "unidock-env",
+    "unidock": "base",  # temporarily run in base environment to avoid cuda error
+    "unidocktools": "unidock-env",  # unidocktools is in unidock-env
     "unigbsa": "unigbsa-env"
 }
 
@@ -35,8 +36,8 @@ class EnvironmentManager:
     def __init__(self):
         self.environments = TOOL_ENVIRONMENTS.copy()
     
-    def _stream_output(self, process, log_callback, result_storage):
-        """Stream subprocess output in real-time to log callback."""
+    def _stream_output(self, process, log_callback, result_storage, timeout=None):
+        """Stream subprocess output in real-time to log callback with timeout support."""
         stdout_lines = []
         stderr_lines = []
         
@@ -73,8 +74,27 @@ class EnvironmentManager:
         stdout_thread.start()
         stderr_thread.start()
         
-        # Wait for process to complete
-        process.wait()
+        # Wait for process to complete with timeout support
+        try:
+            if timeout:
+                # Wait with timeout
+                process.wait(timeout=timeout)
+            else:
+                # Wait indefinitely
+                process.wait()
+        except subprocess.TimeoutExpired:
+            # Process timed out, terminate it
+            if log_callback:
+                log_callback(f"[TIMEOUT] Process timed out after {timeout} seconds, terminating...")
+            process.terminate()
+            try:
+                process.wait(timeout=5)  # Give it 5 seconds to terminate gracefully
+            except subprocess.TimeoutExpired:
+                if log_callback:
+                    log_callback("[TIMEOUT] Process didn't terminate gracefully, killing...")
+                process.kill()
+                process.wait()  # Wait for kill to complete
+            raise  # Re-raise the TimeoutExpired exception
         
         # Wait for reader threads to finish
         stdout_thread.join(timeout=5)
@@ -121,6 +141,7 @@ class EnvironmentManager:
             cmd_list = command
         
         # Construct the conda run command
+        # Always use conda run -n <env_name> since we may be running from a different conda env (e.g., Streamlit frontend)
         conda_cmd = ["conda", "run", "-n", env_name] + cmd_list
         
         if log_callback:
@@ -144,7 +165,7 @@ class EnvironmentManager:
                 ) as process:
                     try:
                         # Stream output in real-time
-                        self._stream_output(process, log_callback, result_storage)
+                        self._stream_output(process, log_callback, result_storage, timeout)
                         
                         # Create a CompletedProcess-like object
                         result = subprocess.CompletedProcess(
@@ -153,11 +174,6 @@ class EnvironmentManager:
                             stdout=result_storage["stdout"],
                             stderr=result_storage["stderr"]
                         )
-                        
-                        if timeout and hasattr(process, 'poll'):
-                            # Note: timeout handling with streaming is more complex
-                            # For now, we rely on the process completing naturally
-                            pass
                             
                     except Exception as e:
                         process.terminate()
@@ -324,6 +340,7 @@ class EnvironmentManager:
             True if environment exists and is accessible, False otherwise
         """
         try:
+            # Always use conda run -n <env_name> for consistency
             result = subprocess.run(
                 ["conda", "run", "-n", env_name, "python", "--version"],
                 capture_output=True,

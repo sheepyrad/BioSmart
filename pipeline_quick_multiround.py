@@ -56,7 +56,7 @@ from utils.environment_manager import env_manager
 def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_list=None, 
          n_samples=200, sanitize=True, center=(114.817, 75.602, 82.416), box_size=(38, 70, 58),
          bbox_size=23.0, exhaustiveness="balance", top_n=5, max_variants=5, num_rounds=1, 
-         boltz_evaluation_method="combined", stop_flag=None):
+         stop_flag=None):
     """
     Multi-round quick pipeline main function with batch filtering optimization.
     
@@ -75,8 +75,6 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         top_n: Number of top compounds to process
         max_variants: Maximum number of variants per compound
         num_rounds: Number of rounds to run
-        boltz_evaluation_method: Boltz-1x evaluation method ("any_atom", "geometric_center", 
-                                "majority_atoms", "bounding_box_overlap", or "combined")
         stop_flag: Dictionary containing status information for stopping the pipeline
     """
     # Set up output directories
@@ -94,7 +92,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
     env_status = env_manager.check_all_environments()
     
     # Check if required environments are available based on model choice
-    required_envs = ["synformer", "boltz"]  # Always needed
+    required_envs = ["synformer", "boltz", "unidock", "unidocktools"]  # Always needed for docking
     if model_choice.lower() == "diffsbdd":
         required_envs.append("diffsbdd")
     elif model_choice.lower() == "pocket2mol":
@@ -222,7 +220,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         all_variants = []
         total_compounds = len(compounds)
         
-        # Step 3: Sequential retrosynthesis (VRAM intensive)
+        # Step 3: Sequential retrosynthesis
         for idx, compound in enumerate(compounds, 1):
             # Check stop flag before each compound
             if stop_flag and not stop_flag.get("running", True):
@@ -312,7 +310,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         # Step 5: Boltz-1x blind-docking filter
         # ------------------------------------------------------------------
         logger.info(
-            f"Round {round_num}: Running Boltz-1x blind-docking filter on {len(filtered_variants)} variants using '{boltz_evaluation_method}' evaluation method"
+            f"Round {round_num}: Running Boltz-1x blind-docking filter on {len(filtered_variants)} variants"
         )
 
         passed_variants, failed_variants = boltz_filter_variants(
@@ -322,7 +320,6 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             center=center,
             box_size=box_size,
             log_callback=logger.info,
-            evaluation_method=boltz_evaluation_method,
         )
 
         # Update tracking for all variants processed by Boltz-1x
@@ -407,13 +404,21 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                         best_score = variant_results.get("docking_score")
                         pose_count = variant_results.get("pose_count", 1)
                         result_file = variant_results.get("result_file")
+                        all_scores = variant_results.get("all_scores", [])
+
+                        # Log detailed docking results
+                        logger.info(f"Docking successful for {barcode}: score={best_score}, poses={pose_count}")
+                        if all_scores and len(all_scores) > 1:
+                            logger.info(f"All scores for {barcode}: {all_scores}")
 
                         # Update variant with docking results
                         variant.update({
                             "status": "DOCKED",
                             "docking_score": best_score,
                             "pose_count": pose_count,
-                            "result_file": result_file
+                            "result_file": result_file,
+                            "all_scores": all_scores,
+                            "barcode": barcode  # Ensure barcode is included for tracking
                         })
 
                         round_redock_results.append(variant)
@@ -426,19 +431,30 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                         variant_poses_dir = dock_dir / f"variant_{barcode}"
                         variant_poses_dir.mkdir(exist_ok=True)
 
-                        # Save Unidock results summary to JSON
+                        # Save comprehensive Unidock results summary to JSON
                         unidock_scores_file = variant_poses_dir / "unidock_results.json"
                         try:
-                            # Save the data extracted from result_storage
+                            # Save the complete data extracted from result_storage
                             unidock_data = {
+                                "variant_id": variant_id,
+                                "barcode": barcode,
+                                "smiles": smiles,
                                 "docking_score": best_score,
                                 "pose_count": pose_count,
                                 "result_file": result_file,
-                                "variant_id": variant_id
+                                "all_scores": all_scores,
+                                "workflow_status": status,
+                                "docking_parameters": {
+                                    "center": center,
+                                    "box_size": box_size,
+                                    "search_mode": exhaustiveness,
+                                    "receptor": str(pdbfile)
+                                },
+                                "timestamp": datetime.now().isoformat()
                             }
                             with open(unidock_scores_file, 'w') as f:
                                 json.dump(unidock_data, f, indent=4)
-                            logger.info(f"Saved Unidock results to {unidock_scores_file}")
+                            logger.info(f"Saved comprehensive Unidock results to {unidock_scores_file}")
                         except Exception as e:
                             logger.error(f"Error saving Unidock results for {variant_id} ({barcode}): {e}")
 
@@ -531,8 +547,7 @@ if __name__ == "__main__":
                         help="Maximum number of variants per compound")
     parser.add_argument("--num_rounds", type=int, default=1,
                         help="Number of rounds to run the pipeline")
-    parser.add_argument("--boltz_evaluation_method", type=str, choices=["any_atom", "geometric_center", "majority_atoms", "bounding_box_overlap", "combined"], default="combined",
-                        help="Boltz-1x evaluation method")
+
     
     args = parser.parse_args()
     
@@ -550,6 +565,5 @@ if __name__ == "__main__":
         exhaustiveness=args.exhaustiveness,
         top_n=args.top_n,
         max_variants=args.max_variants,
-        num_rounds=args.num_rounds,
-        boltz_evaluation_method=args.boltz_evaluation_method
+        num_rounds=args.num_rounds
     )

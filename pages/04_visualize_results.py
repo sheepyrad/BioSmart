@@ -14,6 +14,225 @@ import json
 import time
 import streamlit.components.v1 as components
 
+# 3D Visualization Functions
+def render_unidock_result_3d(result_file_path, receptor_file=None):
+    """
+    Render Unidock docking result in 3D with multiple poses if available
+    """
+    try:
+        result_path = Path(result_file_path)
+        
+        if not result_path.exists():
+            st.error(f"Result file not found: {result_path}")
+            return None
+            
+        view = py3Dmol.view(width=800, height=600)
+        
+        if result_path.suffix.lower() == '.sdf':
+            # Handle SDF files with multiple poses
+            try:
+                from rdkit import Chem
+                
+                suppl = Chem.SDMolSupplier(str(result_path))
+                pose_count = 0
+                
+                for i, mol in enumerate(suppl):
+                    if mol is not None:
+                        pose_count += 1
+                        # Convert to PDB format
+                        pdb_block = Chem.MolToPDBBlock(mol)
+                        view.addModel(pdb_block, 'pdb')
+                        
+                        # Style each pose differently
+                        if i == 0:
+                            # Best pose in green
+                            view.setStyle({'model': i}, {'stick': {'colorscheme': 'greenCarbon', 'radius': 0.3}})
+                        else:
+                            # Other poses in different colors
+                            colors = ['cyanCarbon', 'magentaCarbon', 'yellowCarbon', 'orangeCarbon']
+                            color = colors[min(i-1, len(colors)-1)]
+                            view.setStyle({'model': i}, {'stick': {'colorscheme': color, 'radius': 0.2, 'opacity': 0.7}})
+                
+                if pose_count == 0:
+                    st.error("No valid poses found in SDF file")
+                    return None
+                    
+            except ImportError:
+                st.error("RDKit is required to display SDF files")
+                return None
+            except Exception as e:
+                st.error(f"Error processing SDF file: {e}")
+                return None
+                
+        elif result_path.suffix.lower() == '.pdbqt':
+            # Handle PDBQT files with multiple models
+            with open(result_path) as f:
+                pdbqt_data = f.read()
+            
+            # Split into individual models if multiple exist
+            models = pdbqt_data.split('MODEL')
+            
+            for i, model_data in enumerate(models):
+                if model_data.strip():
+                    if i > 0:  # Skip the first empty split
+                        model_data = 'MODEL' + model_data
+                    
+                    view.addModel(model_data, 'pdbqt')
+                    
+                    # Style each model
+                    if i == 1:  # First actual model (best pose)
+                        view.setStyle({'model': i-1}, {'stick': {'colorscheme': 'greenCarbon', 'radius': 0.3}})
+                    else:
+                        colors = ['cyanCarbon', 'magentaCarbon', 'yellowCarbon', 'orangeCarbon']
+                        color = colors[min(i-2, len(colors)-1)] if i > 1 else 'cyanCarbon'
+                        view.setStyle({'model': i-1}, {'stick': {'colorscheme': color, 'radius': 0.2, 'opacity': 0.7}})
+        
+        # Add receptor if provided
+        receptor_model_index = view.getNumModels()
+        if receptor_file and Path(receptor_file).exists():
+            with open(receptor_file) as f:
+                receptor_data = f.read()
+            
+            receptor_format = 'pdbqt' if str(receptor_file).lower().endswith('.pdbqt') else 'pdb'
+            view.addModel(receptor_data, receptor_format)
+            view.setStyle({'model': receptor_model_index}, {
+                'cartoon': {'color': 'spectrum', 'opacity': 0.8},
+                'line': {'hidden': True}
+            })
+            
+            # Add binding site surface around ligands
+            view.addSurface(py3Dmol.VDW, {
+                'opacity': 0.2, 
+                'color': 'lightblue'
+            }, {'model': receptor_model_index})
+        
+        # Set view options
+        view.zoomTo()
+        view.setBackgroundColor('white')
+        
+        # Add informative labels
+        view.addLabel("Best Pose", {
+            'position': {'x': 0, 'y': 0, 'z': 5}, 
+            'backgroundColor': 'green', 
+            'fontColor': 'white',
+            'fontSize': 12
+        })
+        
+        return view._make_html()
+        
+    except Exception as e:
+        st.error(f"Error rendering Unidock result: {e}")
+        return None
+
+def create_interactive_3d_viewer(result_data, output_dir_path):
+    """
+    Create an interactive 3D viewer for docking results with pose selection
+    """
+    try:
+        variant_id = result_data.get('variant_id', result_data.get('compound_id', 'Unknown'))
+        barcode = result_data.get('barcode', 'Unknown')
+        round_num = result_data.get('round', 1)
+        
+        # Try to find result files
+        result_file = result_data.get('result_file')
+        
+        # Look for receptor file
+        receptor_file = None
+        possible_receptor_paths = [
+            output_dir_path / f"round_{round_num}" / "workflow_results" / "receptor_prepared.pdbqt",
+            output_dir_path.parent / "input" / "receptor.pdbqt",
+            output_dir_path.parent / "input" / "receptor.pdb"
+        ]
+        
+        for receptor_path in possible_receptor_paths:
+            if receptor_path.exists():
+                receptor_file = receptor_path
+                break
+        
+        if result_file and Path(result_file).exists():
+            st.markdown("### 🧬 3D Molecular Visualization")
+            
+            # Create tabs for different views
+            tab1, tab2, tab3 = st.tabs(["📊 Docking Result", "🔬 Ligand Only", "📋 Information"])
+            
+            with tab1:
+                st.markdown("**Docking Result with Receptor**")
+                if receptor_file:
+                    html_content = render_unidock_result_3d(result_file, receptor_file)
+                    if html_content:
+                        components.html(html_content, height=600, width=800)
+                        st.caption("🟢 Best pose | 🔵🟣🟡🟠 Alternative poses | 🌈 Protein receptor")
+                    else:
+                        st.error("Failed to render 3D structure")
+                else:
+                    st.warning("Receptor file not found. Showing ligand only.")
+                    html_content = render_unidock_result_3d(result_file)
+                    if html_content:
+                        components.html(html_content, height=600, width=800)
+            
+            with tab2:
+                st.markdown("**Ligand Structure Only**")
+                html_content = render_unidock_result_3d(result_file)
+                if html_content:
+                    components.html(html_content, height=600, width=800)
+                    st.caption("🟢 Best pose | 🔵🟣🟡🟠 Alternative poses")
+            
+            with tab3:
+                st.markdown("**File Information**")
+                file_info = {
+                    "Result File": str(Path(result_file).name),
+                    "File Size": f"{Path(result_file).stat().st_size / 1024:.1f} KB",
+                    "File Type": Path(result_file).suffix.upper(),
+                    "Receptor File": str(Path(receptor_file).name) if receptor_file else "Not found"
+                }
+                
+                if "pose_count" in result_data:
+                    file_info["Pose Count"] = result_data["pose_count"]
+                
+                if "all_scores" in result_data and result_data["all_scores"]:
+                    try:
+                        all_scores_str = str(result_data["all_scores"])
+                        if all_scores_str.startswith('[') and all_scores_str.endswith(']'):
+                            import ast
+                            all_scores = ast.literal_eval(all_scores_str)
+                            file_info["Score Range"] = f"{min(all_scores):.2f} to {max(all_scores):.2f}"
+                    except:
+                        pass
+                
+                st.json(file_info)
+                
+                # Download buttons
+                col1, col2 = st.columns(2)
+                with col1:
+                    with open(result_file, 'rb') as f:
+                        file_data = f.read()
+                    st.download_button(
+                        "📥 Download Result File",
+                        data=file_data,
+                        file_name=Path(result_file).name,
+                        mime="application/octet-stream",
+                        key=f"download_result_{variant_id}"
+                    )
+                
+                with col2:
+                    if receptor_file and Path(receptor_file).exists():
+                        with open(receptor_file, 'rb') as f:
+                            receptor_data = f.read()
+                        st.download_button(
+                            "📥 Download Receptor",
+                            data=receptor_data,
+                            file_name=Path(receptor_file).name,
+                            mime="application/octet-stream",
+                            key=f"download_receptor_{variant_id}"
+                        )
+        else:
+            st.warning("No 3D structure file available for this result")
+            
+    except Exception as e:
+        st.error(f"Error creating 3D viewer: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+
 # Function to render molecule
 def render_mol(smiles, width=400, height=300):
     """Render molecule using RDKit"""
@@ -106,6 +325,41 @@ st.title("🔍 Visualize Pipeline Results")
 st.markdown("""
     View the results from an existing output directory. Upload or select a directory to visualize results.
 """)
+
+# Add information about 3D visualization capabilities
+with st.expander("🧬 3D Visualization Features", expanded=False):
+    st.markdown("""
+    **Enhanced 3D Visualization Features:**
+    
+    🎯 **Interactive Docking Results**
+    - Multi-pose visualization with color-coded representations
+    - Receptor-ligand complex visualization
+    - Tabbed interface for different viewing modes
+    
+    📊 **Visualization Modes:**
+    - **Docking Result**: Full complex with receptor and all poses
+    - **Ligand Only**: Focus on ligand poses without receptor
+    - **Information**: File details and download options
+    
+    🎨 **Color Coding:**
+    - 🟢 Best pose (lowest energy)
+    - 🔵🟣🟡🟠 Alternative poses
+    - 🌈 Protein receptor with binding site surface
+    
+    **File Support:**
+    - SDF files with Unidock energy data
+    - PDBQT files with multiple models
+    - Automatic receptor file detection
+    """)
+    
+    # Check library availability
+    try:
+        import py3Dmol
+        from rdkit import Chem
+        st.success("✅ 3D visualization libraries available")
+    except ImportError as e:
+        st.warning(f"⚠️ Missing libraries: {e}")
+        st.info("Install with: `pip install py3Dmol rdkit`")
 
 # Initialize session state variables
 if "output_dir" not in st.session_state:
@@ -207,7 +461,7 @@ if st.session_state.results_data:
         available_statuses = df["status"].unique() if "status" in df.columns else []
         
         # Summary metrics
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
             compound_count = len(df[df["status"] == "GENERATED"]) if "status" in df.columns else 0
             st.metric("Total Compounds", compound_count)
@@ -215,11 +469,18 @@ if st.session_state.results_data:
             variant_count = len(df[df["status"] == "SYNTHETIZED"]) if "status" in df.columns else 0
             st.metric("Total Variants", variant_count)
         with col3:
-            filtered_count = len(df[df["status"] == "PASSFILTER"]) if "status" in df.columns else 0
+            filtered_count = len(df[df["status"].isin(["PASSFILTER", "PASSBLINDDOCK"])]) if "status" in df.columns else 0
             st.metric("Filtered Variants", filtered_count)
         with col4:
             docked_count = len(df[df["status"] == "DOCKED"]) if "status" in df.columns else 0
             st.metric("Docked Compounds", docked_count)
+        with col5:
+            # Show best docking score if available
+            if "docking_score" in df.columns and df["docking_score"].notna().any():
+                best_score = df[df["docking_score"].notna()]["docking_score"].min()
+                st.metric("Best Score", f"{best_score:.2f}")
+            else:
+                st.metric("Best Score", "N/A")
         
         # Show pipeline progress information
         progress_message = ""
@@ -425,7 +686,7 @@ if st.session_state.results_data:
         st.header("Synthesized Variants")
         
         # Check if we have any variants at all
-        if "status" in df.columns and not any(status for status in df["status"].unique() if status in ["SYNTHETIZED", "PASSFILTER"]):
+        if "status" in df.columns and not any(status for status in df["status"].unique() if status in ["SYNTHETIZED", "PASSFILTER", "PASSBLINDDOCK"]):
             st.info("No variants have been synthesized yet. This tab will populate when retrosynthesis completes.")
             
             # Show what stages have been reached
@@ -437,8 +698,8 @@ if st.session_state.results_data:
             # Enhanced filter controls
             filter_col1, filter_col2, filter_col3 = st.columns(3)
             with filter_col1:
-                status_options = sorted([s for s in df["status"].unique() if pd.notna(s) and s in ["SYNTHETIZED", "PASSFILTER", "DOCKED"]])
-                default_status = [s for s in status_options if s in ["SYNTHETIZED", "PASSFILTER"]]
+                status_options = sorted([s for s in df["status"].unique() if pd.notna(s) and s in ["SYNTHETIZED", "PASSFILTER", "PASSBLINDDOCK", "DOCKED"]])
+                default_status = [s for s in status_options if s in ["SYNTHETIZED", "PASSFILTER", "PASSBLINDDOCK"]]
                 selected_status = st.multiselect(
                     "Filter by Status",
                     options=status_options,
@@ -724,6 +985,10 @@ if st.session_state.results_data:
                 table_columns = ["compound_id", "round", "docking_score", "status", "smiles"]
                 if "variant_id" in docked_df.columns:
                     table_columns.insert(1, "variant_id")
+                if "barcode" in docked_df.columns:
+                    table_columns.insert(2, "barcode")
+                if "pose_count" in docked_df.columns:
+                    table_columns.insert(-1, "pose_count")
                     
                 # Only include columns that exist
                 existing_columns = [col for col in table_columns if col in docked_df.columns]
@@ -734,13 +999,53 @@ if st.session_state.results_data:
                     hide_index=True
                 )
                 
-                # Add download button for this filtered view
-                st.download_button(
-                    "Download Filtered Docking Results",
-                    data=docked_df.to_csv(index=False).encode('utf-8'),
-                    file_name="filtered_docking_results.csv",
-                    mime="text/csv"
-                )
+                # Add download button and 3D visualization option
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.download_button(
+                        "Download Filtered Docking Results",
+                        data=docked_df.to_csv(index=False).encode('utf-8'),
+                        file_name="filtered_docking_results.csv",
+                        mime="text/csv"
+                    )
+                with col2:
+                    if st.button("🧬 View 3D Structures", help="View 3D molecular structures for top results", key="viz_3d_btn"):
+                        st.session_state.show_3d_viz = True
+                
+                # 3D Structure Viewer Section
+                if st.session_state.get('show_3d_viz', False):
+                    st.subheader("🧬 3D Molecular Structures")
+                    
+                    # Allow user to select which compounds to visualize
+                    st.markdown("Select compounds to visualize in 3D:")
+                    
+                    # Create a selection interface
+                    top_10_results = docked_df.head(10)
+                    
+                    selected_indices = []
+                    for idx, result in top_10_results.iterrows():
+                        variant_id = result.get('variant_id', result.get('compound_id', 'Unknown'))
+                        score = result.get('docking_score', 0)
+                        
+                        if st.checkbox(f"{variant_id} (Score: {score:.2f})", key=f"viz_3d_select_{variant_id}"):
+                            selected_indices.append(idx)
+                    
+                    # Display 3D structures for selected compounds
+                    if selected_indices:
+                        for idx in selected_indices:
+                            result = docked_df.loc[idx]
+                            variant_id = result.get('variant_id', result.get('compound_id', 'Unknown'))
+                            
+                            st.markdown(f"### 🎯 {variant_id}")
+                            create_interactive_3d_viewer(result, st.session_state.output_dir)
+                            st.divider()
+                    else:
+                        st.info("Select compounds above to view their 3D structures")
+                    
+                    # Add button to hide 3D structures
+                    if st.button("Hide 3D Structures", key="viz_hide_3d"):
+                        st.session_state.show_3d_viz = False
+                        st.rerun()
                 
                 # Top results
                 st.subheader("Top Docking Results")
@@ -757,14 +1062,21 @@ if st.session_state.results_data:
                     display_id = result.get('variant_id', result.get('compound_id', 'Unknown'))
                     
                     with st.expander(f"{display_id} (Score: {result.get('docking_score', 0):.2f})"):
-                        col1, col2 = st.columns([1, 2])
-                        with col1:
+                        # Create tabs for 2D, 3D, and details
+                        tab1, tab2, tab3 = st.tabs(["2D Structure", "3D Visualization", "Details"])
+                        
+                        with tab1:
                             mol_img = render_mol(result["smiles"])
                             if mol_img:
                                 st.image(mol_img, caption="2D Structure", use_container_width=True)
                             else:
                                 st.info("Could not render molecule structure")
-                        with col2:
+                        
+                        with tab2:
+                            # 3D visualization
+                            create_interactive_3d_viewer(result, st.session_state.output_dir)
+                        
+                        with tab3:
                             # Use .get() for safer access to ensure no KeyError if fields are missing
                             details = {
                                 "Compound ID": result.get("compound_id", ""),
@@ -775,7 +1087,27 @@ if st.session_state.results_data:
                                 "SMILES": result.get("smiles", "")
                             }
                             
-                            # Only add best_pose if it exists
+                            # Add Unidock-specific information
+                            if "pose_count" in result and not pd.isna(result["pose_count"]):
+                                details["Pose Count"] = result["pose_count"]
+                            
+                            if "all_scores" in result and not pd.isna(result["all_scores"]):
+                                try:
+                                    # Parse all_scores if it's a string representation of a list
+                                    all_scores_str = str(result["all_scores"])
+                                    if all_scores_str.startswith('[') and all_scores_str.endswith(']'):
+                                        import ast
+                                        all_scores = ast.literal_eval(all_scores_str)
+                                        if len(all_scores) > 1:
+                                            details["Score Range"] = f"{min(all_scores):.2f} to {max(all_scores):.2f}"
+                                            details["All Scores"] = all_scores_str
+                                except:
+                                    pass
+                            
+                            if "result_file" in result and not pd.isna(result["result_file"]):
+                                details["Result File"] = str(Path(result["result_file"]).name)
+                            
+                            # Only add best_pose if it exists (legacy support)
                             if "best_pose" in result and not pd.isna(result["best_pose"]):
                                 details["Best Pose"] = result["best_pose"]
                                 

@@ -113,8 +113,7 @@ if "max_variants_input" not in st.session_state:
     st.session_state.max_variants_input = 5
 if "output_dir_name_input" not in st.session_state:
     st.session_state.output_dir_name_input = "pipeline_output"
-if "boltz_evaluation_method_input" not in st.session_state:
-    st.session_state.boltz_evaluation_method_input = "combined"
+
 
 # Box Generation Input
 if "generate_box_residues_input" not in st.session_state:
@@ -150,7 +149,6 @@ if st.session_state._apply_loaded_config_on_next_run:
             st.session_state.top_n_input = int(pending_config.get("top_n", st.session_state.top_n_input))
             st.session_state.max_variants_input = int(pending_config.get("max_variants", st.session_state.max_variants_input))
             st.session_state.num_rounds_input = int(pending_config.get("num_rounds", st.session_state.num_rounds_input))
-            st.session_state.boltz_evaluation_method_input = pending_config.get("boltz_evaluation_method", st.session_state.boltz_evaluation_method_input)
 
             if "out_dir" in pending_config:
                 st.session_state.output_dir_name_input = Path(pending_config["out_dir"]).name
@@ -456,7 +454,7 @@ with tab1:
         )
 
     with col4:
-        st.info("💡 **Note**: Unidock automatically handles program choice (qvina) and scoring function (nnscore2) selection for optimal performance.")
+        pass
 
 with tab2:
     # --- Box Generation Expander (Moved outside the form) ---
@@ -643,9 +641,9 @@ with tab3:
             "Exhaustiveness Level",
             options=["fast", "balance", "detail"],
             format_func=lambda x: {
-                "fast": "Fast (8) - Quick docking for screening",
-                "balance": "Balance (32) - Good balance of speed and accuracy", 
-                "detail": "Detail (128) - Thorough search for final results"
+                "fast": "Fast (128) - Quick docking for screening",
+                "balance": "Balance (384) - Good balance of speed and accuracy", 
+                "detail": "Detail (512) - Thorough search for final results"
             }[x],
             help="Select the exhaustiveness level for docking. Higher levels provide more thorough search but take longer.",
             key="exhaustiveness_level_input"
@@ -664,53 +662,7 @@ with tab3:
 
     st.markdown("""<div class="form-header"><h3>Boltz-1x Filtering Configuration</h3></div>""", unsafe_allow_html=True)
     
-    # Boltz-1x Evaluation Method Selection
-    st.selectbox(
-        "Boltz-1x Evaluation Method",
-        options=["any_atom", "geometric_center", "majority_atoms", "bounding_box_overlap", "combined"],
-        format_func=lambda x: {
-            "any_atom": "Any Atom - Passes if ANY ligand atom is inside the docking box",
-            "geometric_center": "Geometric Center - Passes if ligand center is inside the box", 
-            "majority_atoms": "Majority Atoms - Passes if >50% of ligand atoms are inside",
-            "bounding_box_overlap": "Bounding Box Overlap - Passes if >10% volume overlap",
-            "combined": "Combined (Recommended) - Uses multiple criteria for robust evaluation"
-        }[x],
-        help="Method for evaluating whether predicted ligand positions are acceptable. 'Combined' is recommended as it balances sensitivity and specificity.",
-        key="boltz_evaluation_method_input"
-    )
-    
-    # Add detailed information about evaluation methods
-    with st.expander("ℹ️ Detailed Evaluation Method Information"):
-        st.markdown("""
-        **Choose the evaluation method that best fits your research needs:**
-        
-        **🎯 Any Atom** - Most permissive approach
-        - Passes if ANY ligand atom is inside the docking box
-        - Good for initial screening and high sensitivity
-        - May accept ligands that are mostly outside the target region
-        
-        **📍 Geometric Center** - Balanced approach  
-        - Passes if the geometric center (centroid) of the ligand is inside the box
-        - Good balance between sensitivity and specificity
-        - Ensures the ligand is generally positioned in the target region
-        
-        **📊 Majority Atoms** - High specificity
-        - Passes if more than 50% of ligand atoms are inside the docking box
-        - Ensures significant binding site occupancy
-        - May be too strict for large ligands or edge binding cases
-        
-        **📦 Bounding Box Overlap** - Shape-aware evaluation
-        - Passes if more than 10% of ligand bounding box overlaps with docking box
-        - Accounts for ligand shape and size
-        - Good for irregularly shaped molecules
-        
-        **🎯 Combined (Recommended)** - Multi-criteria approach
-        - Passes if: center inside OR >30% bounding box overlap OR >60% atoms inside
-        - Robust across different ligand types and binding scenarios
-        - Balances sensitivity and specificity effectively
-        """)
-        
-        st.info("💡 **Recommendation**: Use 'Combined' for most applications as it provides robust filtering across various ligand shapes and binding modes while maintaining good specificity for the target region.")
+    st.info("Boltz-1x filtering uses a simple 'any atom within docking box' evaluation method. If any ligand atom from the predicted structure falls within the specified docking box, the variant passes the filter.")
 
     st.markdown("""<div class="form-header"><h3>Output Configuration</h3></div>""", unsafe_allow_html=True)
 
@@ -793,7 +745,6 @@ with col_dl:
         download_config["top_n"] = st.session_state.top_n_input
         download_config["max_variants"] = st.session_state.max_variants_input
         download_config["num_rounds"] = st.session_state.num_rounds_input
-        download_config["boltz_evaluation_method"] = st.session_state.boltz_evaluation_method_input
         
         # Use output dir name for filename and construct full path for config value
         output_dir_name_value = st.session_state.get("output_dir_name_input", "pipeline_output")
@@ -962,7 +913,6 @@ if finalize_submitted:
             config["top_n"] = st.session_state.top_n_input
             config["max_variants"] = st.session_state.max_variants_input
             config["num_rounds"] = st.session_state.num_rounds_input
-            config["boltz_evaluation_method"] = st.session_state.boltz_evaluation_method_input
             config["out_dir"] = str(output_path) # Use the validated, absolute path
 
 
