@@ -11,7 +11,7 @@ This package contains various utilities for different stages of the drug discove
 - Molecule processing
 - Tracking and reporting
 - Logging
-- Boltz-1x filtering
+- Boltz-2 filtering with affinity prediction
 """
 
 # Import main utilities

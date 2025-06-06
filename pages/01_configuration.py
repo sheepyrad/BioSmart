@@ -660,9 +660,9 @@ with tab3:
             key="num_rounds_input"
         )
 
-    st.markdown("""<div class="form-header"><h3>Boltz-1x Filtering Configuration</h3></div>""", unsafe_allow_html=True)
-    
-    st.info("Boltz-1x filtering uses a simple 'any atom within docking box' evaluation method. If any ligand atom from the predicted structure falls within the specified docking box, the variant passes the filter.")
+    st.markdown("""<div class="form-header"><h3>Boltz-2 Filtering Configuration</h3></div>""", unsafe_allow_html=True)
+
+    st.info("Boltz-2 filtering predicts protein-ligand structures and evaluates binding affinity. The filter uses spatial evaluation (any ligand atom within the docking box) and provides affinity predictions with confidence scores.")
 
     st.markdown("""<div class="form-header"><h3>Output Configuration</h3></div>""", unsafe_allow_html=True)
 

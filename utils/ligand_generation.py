@@ -214,13 +214,14 @@ def run_pocket2mol(pdbfile, center, bbox_size, out_dir, n_samples, log_callback=
     thread.start()
     return thread
 
-def combine_pocket2mol_outputs(output_dir, target_sdf):
+def combine_pocket2mol_outputs(output_dir, target_sdf, cleanup_pt_files=True):
     """
-    Combine Pocket2Mol output SDF files into a single SDF file.
+    Combine Pocket2Mol output SDF files into a single SDF file and optionally clean up .pt files.
     
     Args:
         output_dir (str): Pocket2Mol output directory
         target_sdf (str): Target SDF file path
+        cleanup_pt_files (bool): Whether to delete .pt files after successful combination
         
     Returns:
         bool: True if successful, False otherwise
@@ -288,6 +289,41 @@ def combine_pocket2mol_outputs(output_dir, target_sdf):
                     pass
 
             print(f"Successfully combined {mol_count} molecules into {target_sdf}", file=sys.stderr)
+            
+            # Clean up .pt files after successful combination
+            if cleanup_pt_files and mol_count > 0:
+                try:
+                    pt_files = list(output_path.rglob("*.pt"))
+                    if pt_files:
+                        # Calculate total size before deletion
+                        total_size = sum(f.stat().st_size for f in pt_files if f.exists())
+                        
+                        deleted_count = 0
+                        deleted_size = 0
+                        for pt_file in pt_files:
+                            try:
+                                if pt_file.exists():
+                                    file_size = pt_file.stat().st_size
+                                    pt_file.unlink()
+                                    deleted_count += 1
+                                    deleted_size += file_size
+                            except Exception as del_e:
+                                print(f"Warning: Could not delete {pt_file}: {del_e}", file=sys.stderr)
+                        
+                        # Convert bytes to human readable format
+                        def format_bytes(bytes_val):
+                            for unit in ['B', 'KB', 'MB', 'GB']:
+                                if bytes_val < 1024.0:
+                                    return f"{bytes_val:.1f}{unit}"
+                                bytes_val /= 1024.0
+                            return f"{bytes_val:.1f}TB"
+                        
+                        print(f"Cleaned up {deleted_count} .pt files, freed {format_bytes(deleted_size)} of disk space", file=sys.stderr)
+                    else:
+                        print("No .pt files found for cleanup", file=sys.stderr)
+                except Exception as cleanup_e:
+                    print(f"Warning: Error during .pt file cleanup: {cleanup_e}", file=sys.stderr)
+            
             return True
         except Exception as e:
             print(f"Error combining Pocket2Mol outputs using RDKit: {e}", file=sys.stderr)
@@ -302,6 +338,96 @@ def combine_pocket2mol_outputs(output_dir, target_sdf):
     except Exception as e: # Outer try-except for path finding etc.
         print(f"Error finding Pocket2Mol output directories: {e}", file=sys.stderr)
         return False
+
+def cleanup_pocket2mol_pt_files(directory_path, log_callback=None):
+    """
+    Clean up .pt files from Pocket2Mol output directories to save disk space.
+    
+    Args:
+        directory_path (str): Path to directory containing Pocket2Mol outputs
+        log_callback (function): Optional callback function for logging
+        
+    Returns:
+        dict: Summary of cleanup operation with keys:
+              - 'success': bool
+              - 'files_deleted': int 
+              - 'space_freed': int (bytes)
+              - 'error': str (if any)
+    """
+    result = {
+        'success': False,
+        'files_deleted': 0,
+        'space_freed': 0,
+        'error': None
+    }
+    
+    try:
+        directory_path = Path(directory_path)
+        if not directory_path.exists():
+            result['error'] = f"Directory does not exist: {directory_path}"
+            return result
+            
+        # Find all .pt files recursively
+        pt_files = list(directory_path.rglob("*.pt"))
+        
+        if not pt_files:
+            if log_callback:
+                log_callback("No .pt files found for cleanup")
+            result['success'] = True
+            return result
+        
+        # Calculate total size and delete files
+        total_size_before = 0
+        deleted_count = 0
+        deleted_size = 0
+        
+        for pt_file in pt_files:
+            try:
+                if pt_file.exists():
+                    file_size = pt_file.stat().st_size
+                    total_size_before += file_size
+                    pt_file.unlink()
+                    deleted_count += 1
+                    deleted_size += file_size
+                    if log_callback:
+                        log_callback(f"Deleted: {pt_file} ({file_size / (1024**3):.2f} GB)")
+            except Exception as del_e:
+                error_msg = f"Warning: Could not delete {pt_file}: {del_e}"
+                if log_callback:
+                    log_callback(error_msg)
+                else:
+                    print(error_msg, file=sys.stderr)
+        
+        # Convert bytes to human readable format
+        def format_bytes(bytes_val):
+            for unit in ['B', 'KB', 'MB', 'GB']:
+                if bytes_val < 1024.0:
+                    return f"{bytes_val:.1f}{unit}"
+                bytes_val /= 1024.0
+            return f"{bytes_val:.1f}TB"
+        
+        success_msg = f"Cleanup completed: {deleted_count} .pt files deleted, {format_bytes(deleted_size)} disk space freed"
+        if log_callback:
+            log_callback(success_msg)
+        else:
+            print(success_msg, file=sys.stderr)
+            
+        result.update({
+            'success': True,
+            'files_deleted': deleted_count,
+            'space_freed': deleted_size
+        })
+        
+        return result
+        
+    except Exception as e:
+        error_msg = f"Error during .pt file cleanup: {e}"
+        result['error'] = error_msg
+        if log_callback:
+            log_callback(error_msg)
+        else:
+            print(error_msg, file=sys.stderr)
+        return result
 
 def run_ligand_generation(checkpoint=None, pdbfile=None, outfile=None, resi_list=None, 
                           n_samples=100, sanitize=True, log_callback=None, model="diffsbdd",

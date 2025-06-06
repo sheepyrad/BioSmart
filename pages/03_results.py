@@ -927,12 +927,12 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                 docked_count = len(df[df["status"] == "DOCKED"]) if "status" in df.columns else 0
                 st.metric("Docked Compounds", docked_count)
             with col5:
-                # Show best docking score if available
+                # Show best docking score if available (lower is better)
                 if "docking_score" in df.columns and df["docking_score"].notna().any():
                     best_score = df[df["docking_score"].notna()]["docking_score"].min()
-                    st.metric("Best Score", f"{best_score:.2f}")
+                    st.metric("Best Score (lower=better)", f"{best_score:.2f}")
                 else:
-                    st.metric("Best Score", "N/A")
+                    st.metric("Best Score (lower=better)", "N/A")
                         
             # Workflow Progress Visualization
             st.subheader("Workflow Progress")
@@ -978,9 +978,123 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                 else:
                     st.info(progress_message + " Some visualizations may not be available until those steps complete.")
             
+            # Affinity Analysis Section
+            if "affinity_pred_value" in df.columns and df["affinity_pred_value"].notna().any():
+                st.subheader("🤖 Boltz-2 Affinity Analysis")
+                
+                affinity_with_values = df[df["affinity_pred_value"].notna()]
+                if not affinity_with_values.empty:
+                    # Create metrics for affinity (IC50 in μM - lower is better)
+                    aff_col1, aff_col2, aff_col3, aff_col4 = st.columns(4)
+                    with aff_col1:
+                        best_affinity = affinity_with_values["affinity_pred_value"].min()  # Lower IC50 is better
+                        st.metric("Best IC50 (lower=better)", f"{best_affinity:.3f} μM")
+                    with aff_col2:
+                        avg_affinity = affinity_with_values["affinity_pred_value"].mean()
+                        st.metric("Average IC50", f"{avg_affinity:.3f} μM")
+                    with aff_col3:
+                        if "affinity_probability_binary" in affinity_with_values.columns:
+                            high_prob_count = len(affinity_with_values[affinity_with_values["affinity_probability_binary"] > 0.5])
+                            st.metric("High Confidence", f"{high_prob_count}/{len(affinity_with_values)}")
+                        else:
+                            st.metric("Predictions", len(affinity_with_values))
+                    with aff_col4:
+                        if "confidence_score" in affinity_with_values.columns:
+                            avg_confidence = affinity_with_values["confidence_score"].mean()
+                            st.metric("Avg Confidence", f"{avg_confidence:.3f}")
+                        else:
+                            median_affinity = affinity_with_values["affinity_pred_value"].median()
+                            st.metric("Median IC50", f"{median_affinity:.3f} μM")
+                    
+                    # Create visualizations
+                    viz_col1, viz_col2 = st.columns(2)
+                    
+                    with viz_col1:
+                        # Affinity value distribution
+                        fig_aff = px.histogram(
+                            affinity_with_values,
+                            x="affinity_pred_value",
+                            nbins=20,
+                            title="Distribution of IC50 Predictions (Lower = Better)",
+                            color_discrete_sequence=["#00cc96"],
+                            labels={"affinity_pred_value": "IC50 Prediction (μM)", "count": "Number of Compounds"}
+                        )
+                        fig_aff.update_layout(bargap=0.1)
+                        st.plotly_chart(fig_aff, use_container_width=True)
+                    
+                    with viz_col2:
+                        # Affinity vs Probability scatter plot if probability data exists
+                        if "affinity_probability_binary" in affinity_with_values.columns:
+                            fig_scatter = px.scatter(
+                                affinity_with_values,
+                                x="affinity_pred_value",
+                                y="affinity_probability_binary",
+                                title="IC50 Prediction vs Probability (Lower IC50 = Better)",
+                                color="affinity_probability_binary",
+                                color_continuous_scale="viridis",
+                                labels={
+                                    "affinity_pred_value": "IC50 Prediction (μM)",
+                                    "affinity_probability_binary": "Binary Probability"
+                                }
+                            )
+                            st.plotly_chart(fig_scatter, use_container_width=True)
+                        else:
+                            # Show affinity by round if multiple rounds exist
+                            if "round" in affinity_with_values.columns and len(affinity_with_values["round"].unique()) > 1:
+                                fig_box_aff = px.box(
+                                    affinity_with_values,
+                                    x="round",
+                                    y="affinity_pred_value",
+                                    title="IC50 Predictions by Round (Lower = Better)",
+                                    color_discrete_sequence=["#00cc96"]
+                                )
+                                fig_box_aff.update_layout(
+                                    xaxis_title="Round",
+                                    yaxis_title="IC50 Prediction (μM)"
+                                )
+                                st.plotly_chart(fig_box_aff, use_container_width=True)
+                            else:
+                                # Show affinity statistics
+                                st.markdown("**IC50 Statistics (μM):**")
+                                aff_stats = affinity_with_values["affinity_pred_value"].describe()
+                                aff_stats_df = pd.DataFrame({
+                                    "Statistic": ["Count", "Mean", "Std", "Min", "25%", "50%", "75%", "Max"],
+                                    "Value": [
+                                        f"{aff_stats['count']:.0f}",
+                                        f"{aff_stats['mean']:.3f}",
+                                        f"{aff_stats['std']:.3f}",
+                                        f"{aff_stats['min']:.3f}",
+                                        f"{aff_stats['25%']:.3f}",
+                                        f"{aff_stats['50%']:.3f}",
+                                        f"{aff_stats['75%']:.3f}",
+                                        f"{aff_stats['max']:.3f}"
+                                    ]
+                                })
+                                st.dataframe(aff_stats_df, use_container_width=True, hide_index=True)
+                    
+                    # Show top affinity performers (lowest IC50 values are best)
+                    st.markdown("**🏆 Top 10 IC50 Predictions (Lowest/Best Values):**")
+                    top_affinity = affinity_with_values.nsmallest(10, "affinity_pred_value")
+                    aff_display_cols = ["compound_id", "affinity_pred_value", "round"]
+                    if "variant_id" in top_affinity.columns:
+                        aff_display_cols.insert(1, "variant_id")
+                    if "barcode" in top_affinity.columns:
+                        aff_display_cols.insert(2, "barcode")
+                    if "affinity_probability_binary" in top_affinity.columns:
+                        aff_display_cols.insert(-1, "affinity_probability_binary")
+                    if "confidence_score" in top_affinity.columns:
+                        aff_display_cols.insert(-1, "confidence_score")
+                    
+                    existing_aff_cols = [col for col in aff_display_cols if col in top_affinity.columns]
+                    st.dataframe(
+                        top_affinity[existing_aff_cols],
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
             # Docking score distribution if available
             if "docking_score" in df.columns and df["docking_score"].notna().any():
-                st.subheader("Docking Score Analysis")
+                st.subheader("🎯 Docking Score Analysis")
                 
                 docked_with_scores = df[df["docking_score"].notna()]
                 if not docked_with_scores.empty:
@@ -993,9 +1107,9 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                             docked_with_scores,
                             x="docking_score",
                             nbins=20,
-                            title="Distribution of Docking Scores",
+                            title="Distribution of Docking Scores (Lower = Better)",
                             color_discrete_sequence=["#4287f5"],
-                            labels={"docking_score": "Docking Score", "count": "Number of Compounds"}
+                            labels={"docking_score": "Docking Score (lower=better)", "count": "Number of Compounds"}
                         )
                         fig_hist.update_layout(bargap=0.1)
                         st.plotly_chart(fig_hist, use_container_width=True)
@@ -1034,8 +1148,8 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                             })
                             st.dataframe(stats_df, use_container_width=True, hide_index=True)
                 
-                # Show top performers
-                st.markdown("**🏆 Top 10 Performers:**")
+                # Show top performers (lowest/best scores)
+                st.markdown("**🏆 Top 10 Docking Performers (Lowest/Best Scores):**")
                 top_performers = docked_with_scores.nsmallest(10, "docking_score")
                 display_cols = ["compound_id", "docking_score", "round"]
                 if "variant_id" in top_performers.columns:
@@ -1051,6 +1165,72 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                 )
             else:
                 st.info("No compounds with docking scores are available yet.")
+                
+            # Combined Analysis Section - Show correlation if both affinity and docking data exist
+            if ("affinity_pred_value" in df.columns and df["affinity_pred_value"].notna().any() and
+                "docking_score" in df.columns and df["docking_score"].notna().any()):
+                
+                st.subheader("🔬 Combined Affinity vs Docking Analysis")
+                
+                # Get compounds that have both affinity and docking data
+                combined_data = df[
+                    df["affinity_pred_value"].notna() & 
+                    df["docking_score"].notna()
+                ]
+                
+                if not combined_data.empty:
+                    # Create correlation plot
+                    fig_corr = px.scatter(
+                        combined_data,
+                        x="docking_score",
+                        y="affinity_pred_value",
+                        color="affinity_probability_binary" if "affinity_probability_binary" in combined_data.columns else None,
+                        title="Docking Score vs IC50 Prediction (Both Lower = Better)",
+                        hover_data=["compound_id", "barcode"] if "barcode" in combined_data.columns else ["compound_id"],
+                        labels={
+                            "docking_score": "Docking Score (lower=better)",
+                            "affinity_pred_value": "IC50 Prediction (μM, lower=better)",
+                            "affinity_probability_binary": "Affinity Probability"
+                        }
+                    )
+                    st.plotly_chart(fig_corr, use_container_width=True)
+                    
+                    # Show correlation coefficient
+                    correlation = combined_data["docking_score"].corr(combined_data["affinity_pred_value"])
+                    st.info(f"Correlation between docking score and IC50: {correlation:.3f} (positive correlation means both values tend to move together)")
+                    
+                    # Show top combined performers
+                    st.markdown("**🎯 Best Combined Performance (Low IC50 + Low Docking Score):**")
+                    # Normalize scores for ranking (lower values are better for both)
+                    combined_data_normalized = combined_data.copy()
+                    combined_data_normalized["docking_score_norm"] = (
+                        (combined_data["docking_score"].max() - combined_data["docking_score"]) / 
+                        (combined_data["docking_score"].max() - combined_data["docking_score"].min())
+                    )
+                    combined_data_normalized["affinity_norm"] = (
+                        (combined_data["affinity_pred_value"].max() - combined_data["affinity_pred_value"]) / 
+                        (combined_data["affinity_pred_value"].max() - combined_data["affinity_pred_value"].min())
+                    )
+                    combined_data_normalized["combined_score"] = (
+                        combined_data_normalized["docking_score_norm"] + 
+                        combined_data_normalized["affinity_norm"]
+                    ) / 2
+                    
+                    top_combined = combined_data_normalized.nlargest(10, "combined_score")
+                    combined_display_cols = ["compound_id", "docking_score", "affinity_pred_value", "combined_score"]
+                    if "variant_id" in top_combined.columns:
+                        combined_display_cols.insert(1, "variant_id")
+                    if "barcode" in top_combined.columns:
+                        combined_display_cols.insert(2, "barcode")
+                    
+                    existing_combined_cols = [col for col in combined_display_cols if col in top_combined.columns]
+                    st.dataframe(
+                        top_combined[existing_combined_cols].round(3),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.info("No compounds have both affinity and docking data for correlation analysis.")
 
         elif st.session_state.selected_view == "Compounds":
             st.header("Generated Compounds")
@@ -1144,7 +1324,7 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
             st.header("Synthesized Variants")
             
             # Check if we have any variants at all
-            if "status" in df.columns and not any(status for status in df["status"].unique() if status in ["SYNTHETIZED", "PASSFILTER"]):
+            if "status" in df.columns and not any(status for status in df["status"].unique() if status in ["SYNTHETIZED", "PASSFILTER", "PASSBLINDDOCK"]):
                 st.info("No variants have been synthesized yet. This tab will populate when retrosynthesis completes.")
                 
                 # Show what stages have been reached
@@ -1350,10 +1530,10 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                 if docked_df.empty:
                     st.info("No docked compounds match the current filter criteria.")
                 else:
-                    # Docking statistics
+                    # Docking statistics (lower scores are better)
                     stats_cols = st.columns(4)
                     with stats_cols[0]:
-                        st.metric("Best Score", f"{docked_df['docking_score'].min():.2f}")
+                        st.metric("Best Score (lower=better)", f"{docked_df['docking_score'].min():.2f}")
                     with stats_cols[1]:
                         st.metric("Average Score", f"{docked_df['docking_score'].mean():.2f}")
                     with stats_cols[2]:
@@ -1362,7 +1542,7 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                         st.metric("Total Docked", len(docked_df))
                         
                     # Score distribution
-                    st.subheader("Score Distribution")
+                    st.subheader("Score Distribution (Lower = Better)")
                     try:
                         fig = px.scatter(
                             docked_df,
@@ -1370,8 +1550,9 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                             y="docking_score",
                             color="docking_score",
                             hover_data=["compound_id", "smiles"],
-                            title="Docking Scores by Round",
-                            color_continuous_scale="viridis"
+                            title="Docking Scores by Round (Lower = Better)",
+                            color_continuous_scale="viridis_r",  # Reverse scale so lower values are brighter
+                            labels={"docking_score": "Docking Score (lower=better)"}
                         )
                         st.plotly_chart(fig, use_container_width=True)
                     except Exception as e:
@@ -1468,8 +1649,26 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                                     if mol_img:
                                         st.image(mol_img, caption="2D Structure", use_container_width=True)
                                 
+                                # Show Boltz-2 affinity predictions
+                                if "affinity_pred_value" in result and not pd.isna(result["affinity_pred_value"]):
+                                    st.markdown("**🤖 Boltz-2 Predictions:**")
+                                    affinity_data = {
+                                        "IC50": f"{result['affinity_pred_value']:.3f} μM",
+                                    }
+                                    if "affinity_probability_binary" in result and not pd.isna(result["affinity_probability_binary"]):
+                                        prob_val = result["affinity_probability_binary"]
+                                        confidence_text = "High" if prob_val > 0.5 else "Low"
+                                        affinity_data["Affinity Confidence"] = f"{prob_val:.3f} ({confidence_text})"
+                                    if "confidence_score" in result and not pd.isna(result["confidence_score"]):
+                                        affinity_data["Overall Confidence"] = f"{result['confidence_score']:.3f}"
+                                    
+                                    for key, value in affinity_data.items():
+                                        st.write(f"**{key}:** {value}")
+                                    
+                                    st.divider()
+                                
                                 # Show docking statistics
-                                st.markdown("**Docking Statistics:**")
+                                st.markdown("**🎯 Docking Statistics:**")
                                 stats_data = {
                                     "Score": f"{result.get('docking_score', 'N/A'):.2f}" if pd.notna(result.get('docking_score')) else "N/A",
                                     "Poses": result.get('pose_count', 'N/A'),
@@ -1583,5 +1782,12 @@ with export_col3:
         if "docking_score" in df.columns and df["docking_score"].notna().any():
             stats["average_docking_score"] = float(df[df["docking_score"].notna()]["docking_score"].mean())
             stats["best_docking_score"] = float(df[df["docking_score"].notna()]["docking_score"].min())
+        
+        if "affinity_pred_value" in df.columns and df["affinity_pred_value"].notna().any():
+            stats["average_ic50_uM"] = float(df[df["affinity_pred_value"].notna()]["affinity_pred_value"].mean())
+            stats["best_ic50_uM"] = float(df[df["affinity_pred_value"].notna()]["affinity_pred_value"].min())  # Lower is better
+            if "affinity_probability_binary" in df.columns:
+                high_conf_count = len(df[df["affinity_probability_binary"] > 0.5])
+                stats["high_confidence_ic50_predictions"] = high_conf_count
         
         st.json(stats) 

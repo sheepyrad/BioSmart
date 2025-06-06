@@ -31,7 +31,7 @@ The project consists of a Python pipeline with both standalone execution capabil
 -   Utility functions should be placed in the `utils/` directory.
 -   Streamlit frontend code resides in `app.py` and the `pages/` directory.
 -   Avoid modifying files within the `src/` and `notebooks/` directories.
--   **Dependency Management**: Project dependencies are managed using Conda. Each external tool would have its own conda environment, deactivate and activate the correpsonding environmrnt during the pipeline run.
+-   **Dependency Management**: Project dependencies are managed using Conda. Each external tool would have its own conda environment, deactivate and activate the correpsonding environmrnt during the pipeline run. The conda environments are specified in the `conda_files/` directory
 -   **Logging**: Implement consistent logging using Python's `logging` module. Build upon the existing logging infrastructure.
 -   **Type Hinting & Docstrings**: Use Python type hints for clarity and write clear docstrings for functions and modules.
 -   **Modularity**: Design functions and classes to be modular and reusable.
