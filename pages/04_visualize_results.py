@@ -15,53 +15,185 @@ import time
 import streamlit.components.v1 as components
 
 # 3D Visualization Functions
+def create_simple_3d_viewer(smiles_list, width=800, height=600):
+    """
+    Create a simple 3D viewer from SMILES strings as a fallback
+    """
+    try:
+        import py3Dmol
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+        
+        view = py3Dmol.view(width=width, height=height)
+        view.setBackgroundColor('white')
+        
+        model_count = 0
+        for i, smiles in enumerate(smiles_list[:5]):  # Limit to 5 molecules
+            try:
+                mol = Chem.MolFromSmiles(smiles)
+                if mol:
+                    mol = Chem.AddHs(mol)
+                    AllChem.EmbedMolecule(mol, randomSeed=42)
+                    AllChem.UFFOptimizeMolecule(mol)
+                    
+                    pdb_block = Chem.MolToPDBBlock(mol)
+                    view.addModel(pdb_block, 'pdb')
+                    
+                    # Color differently - use proper model index
+                    colors = ['greenCarbon', 'cyanCarbon', 'magentaCarbon', 'yellowCarbon', 'orangeCarbon']
+                    color = colors[model_count % len(colors)]
+                    view.setStyle({'model': model_count}, {'stick': {'colorscheme': color, 'radius': 0.3}})
+                    model_count += 1
+            except Exception as mol_e:
+                st.warning(f"Could not process SMILES {i}: {mol_e}")
+                continue
+        
+        view.zoomTo()
+        view.render()  # ✅ Critical: render before generating HTML
+        return view._make_html()
+        
+    except Exception as e:
+        st.error(f"Error in simple 3D viewer: {e}")
+        return None
+
 def render_unidock_result_3d(result_file_path, receptor_file=None):
     """
     Render Unidock docking result in 3D with multiple poses if available
     """
     try:
-        result_path = Path(result_file_path)
+        # Check if required libraries are available
+        try:
+            import py3Dmol
+            from rdkit import Chem
+        except ImportError as e:
+            st.error(f"❌ Required libraries not available: {e}")
+            st.info("Install with: `pip install py3Dmol rdkit`")
+            return None
         
-        if not result_path.exists():
-            st.error(f"Result file not found: {result_path}")
+        # Ensure result_file_path is a string or Path object, not a dict
+        if isinstance(result_file_path, dict):
+            st.error(f"❌ Invalid file path: received dict instead of file path")
+            st.error(f"Debug info: {result_file_path}")
             return None
             
+        result_path = Path(str(result_file_path))  # Ensure string conversion
+        
+        if not result_path.exists():
+            st.error(f"❌ Result file not found: {result_path}")
+            return None
+            
+        # Check file size to avoid loading extremely large files
+        file_size = result_path.stat().st_size
+        if file_size > 50 * 1024 * 1024:  # 50MB limit
+            st.warning(f"⚠️ File is large ({file_size / 1024 / 1024:.1f} MB). Visualization may be slow.")
+            
         view = py3Dmol.view(width=800, height=600)
+        pose_count = 0
+        model_index = 0  # Track model index explicitly throughout the function
         
         if result_path.suffix.lower() == '.sdf':
             # Handle SDF files with multiple poses
             try:
                 from rdkit import Chem
                 
-                suppl = Chem.SDMolSupplier(str(result_path))
-                pose_count = 0
-                
-                for i, mol in enumerate(suppl):
-                    if mol is not None:
-                        pose_count += 1
-                        # Convert to PDB format
-                        pdb_block = Chem.MolToPDBBlock(mol)
-                        view.addModel(pdb_block, 'pdb')
+                # Try to read the SDF file
+                try:
+                    suppl = Chem.SDMolSupplier(str(result_path), removeHs=False, sanitize=False)
+                    
+                    # Check if supplier is valid
+                    if suppl is None:
+                        st.error("❌ Failed to create molecule supplier from SDF file")
+                        return None
+                    
+                    processed_molecules = 0
+                    
+                    for i, mol in enumerate(suppl):
+                        try:
+                            # Check what type of object we got from the supplier
+                            if mol is not None:
+                                # Validate that mol is actually an RDKit molecule object
+                                if isinstance(mol, dict):
+                                    st.error(f"❌ Got dict instead of molecule at position {i}: {mol}")
+                                    continue
+                                elif not hasattr(mol, 'GetNumAtoms'):
+                                    st.error(f"❌ Invalid molecule object at position {i}, type: {type(mol)}")
+                                    continue
+                                    
+                                processed_molecules += 1
+                                pose_count += 1
+                                
+                                # Ensure the molecule has 3D coordinates
+                                if mol.GetNumConformers() == 0:
+                                    st.warning(f"⚠️ Molecule {i} has no 3D coordinates, generating them...")
+                                    from rdkit.Chem import AllChem
+                                    try:
+                                        AllChem.EmbedMolecule(mol, randomSeed=42)
+                                        AllChem.UFFOptimizeMolecule(mol)
+                                    except Exception as embed_e:
+                                        st.warning(f"⚠️ Could not generate 3D coordinates for molecule {i}: {embed_e}")
+                                        continue
+                                
+                                # Convert to PDB format with error handling
+                                try:
+                                    # Validate molecule object before conversion
+                                    if hasattr(mol, 'GetNumAtoms') and mol.GetNumAtoms() > 0:
+                                        pdb_block = Chem.MolToPDBBlock(mol)
+                                        if pdb_block and len(pdb_block.strip()) > 0:
+                                            # Validate that we have a proper PDB block
+                                            if isinstance(pdb_block, str):
+                                                view.addModel(pdb_block, 'pdb')
+                                                
+                                                # Style each pose differently with more visible settings
+                                                # Ensure model_index is an integer
+                                                model_idx = int(model_index)
+                                                
+                                                if model_index == 0:
+                                                    # Best pose in green with larger radius
+                                                    style_selector = {'model': model_idx}
+                                                    style_def = {'stick': {'colorscheme': 'greenCarbon', 'radius': 0.4}}
+                                                else:
+                                                    # Other poses in different colors
+                                                    colors = ['cyanCarbon', 'magentaCarbon', 'yellowCarbon', 'orangeCarbon']
+                                                    color = colors[min(model_index-1, len(colors)-1)]
+                                                    style_selector = {'model': model_idx}
+                                                    style_def = {'stick': {'colorscheme': color, 'radius': 0.3, 'opacity': 0.8}}
+                                                
+                                                # Apply styling with validation
+                                                try:
+                                                    view.setStyle(style_selector, style_def)
+                                                except Exception as style_e:
+                                                    st.error(f"❌ Error styling model {model_index}: {style_e}")
+                                                
+                                                model_index += 1
+                                            else:
+                                                st.error(f"❌ PDB block is not a string for molecule {i}, got {type(pdb_block)}")
+                                        else:
+                                            st.warning(f"⚠️ Could not convert molecule {i} to PDB format or empty PDB block")
+                                    else:
+                                        st.warning(f"⚠️ Molecule {i} has no atoms or is invalid")
+                                except Exception as pdb_e:
+                                    st.error(f"❌ PDB conversion error for molecule {i}: {pdb_e}")
+                                    continue
+                            else:
+                                st.warning(f"⚠️ Invalid molecule at position {i} in SDF file")
+                        except Exception as mol_e:
+                            st.error(f"❌ Error processing molecule {i}: {mol_e}")
+                            continue
+                    
+                    if pose_count == 0:
+                        st.error("❌ No valid poses found in SDF file")
+                        return None
                         
-                        # Style each pose differently
-                        if i == 0:
-                            # Best pose in green
-                            view.setStyle({'model': i}, {'stick': {'colorscheme': 'greenCarbon', 'radius': 0.3}})
-                        else:
-                            # Other poses in different colors
-                            colors = ['cyanCarbon', 'magentaCarbon', 'yellowCarbon', 'orangeCarbon']
-                            color = colors[min(i-1, len(colors)-1)]
-                            view.setStyle({'model': i}, {'stick': {'colorscheme': color, 'radius': 0.2, 'opacity': 0.7}})
-                
-                if pose_count == 0:
-                    st.error("No valid poses found in SDF file")
+                except Exception as sdf_e:
+                    st.error(f"❌ Error reading SDF file: {sdf_e}")
                     return None
                     
             except ImportError:
-                st.error("RDKit is required to display SDF files")
+                st.error("❌ RDKit is required to display SDF files")
+                st.info("Install with: `pip install rdkit`")
                 return None
             except Exception as e:
-                st.error(f"Error processing SDF file: {e}")
+                st.error(f"❌ Error processing SDF file: {e}")
                 return None
                 
         elif result_path.suffix.lower() == '.pdbqt':
@@ -79,46 +211,127 @@ def render_unidock_result_3d(result_file_path, receptor_file=None):
                     
                     view.addModel(model_data, 'pdbqt')
                     
-                    # Style each model
-                    if i == 1:  # First actual model (best pose)
-                        view.setStyle({'model': i-1}, {'stick': {'colorscheme': 'greenCarbon', 'radius': 0.3}})
+                    # Style each model - use correct model index with validation
+                    model_idx = int(model_index)
+                    
+                    if model_index == 0:  # First actual model (best pose)
+                        style_selector = {'model': model_idx}
+                        style_def = {'stick': {'colorscheme': 'greenCarbon', 'radius': 0.3}}
                     else:
                         colors = ['cyanCarbon', 'magentaCarbon', 'yellowCarbon', 'orangeCarbon']
-                        color = colors[min(i-2, len(colors)-1)] if i > 1 else 'cyanCarbon'
-                        view.setStyle({'model': i-1}, {'stick': {'colorscheme': color, 'radius': 0.2, 'opacity': 0.7}})
+                        color = colors[min(model_index-1, len(colors)-1)]
+                        style_selector = {'model': model_idx}
+                        style_def = {'stick': {'colorscheme': color, 'radius': 0.2, 'opacity': 0.7}}
+                    
+                    # Apply styling with error handling
+                    try:
+                        view.setStyle(style_selector, style_def)
+                    except Exception as style_e:
+                        st.error(f"❌ Error styling PDBQT model {model_index}: {style_e}")
+                    
+                    model_index += 1
+                    pose_count += 1
         
         # Add receptor if provided
-        receptor_model_index = view.getNumModels()
         if receptor_file and Path(receptor_file).exists():
-            with open(receptor_file) as f:
-                receptor_data = f.read()
-            
-            receptor_format = 'pdbqt' if str(receptor_file).lower().endswith('.pdbqt') else 'pdb'
-            view.addModel(receptor_data, receptor_format)
-            view.setStyle({'model': receptor_model_index}, {
-                'cartoon': {'color': 'spectrum', 'opacity': 0.8},
-                'line': {'hidden': True}
-            })
-            
-            # Add binding site surface around ligands
-            view.addSurface(py3Dmol.VDW, {
-                'opacity': 0.2, 
-                'color': 'lightblue'
-            }, {'model': receptor_model_index})
+            try:
+                receptor_model_index = model_index  # This will be the next model index
+                
+                with open(receptor_file) as f:
+                    receptor_data = f.read()
+                
+                if not receptor_data.strip():
+                    st.error("❌ Receptor file is empty")
+                    raise ValueError("Empty receptor file")
+                
+                receptor_format = 'pdbqt' if str(receptor_file).lower().endswith('.pdbqt') else 'pdb'
+                view.addModel(receptor_data, receptor_format)
+                
+                # Create style dictionary with higher opacity for more distinct receptor
+                model_selector = {'model': int(receptor_model_index)}
+                style_dict = {
+                    'cartoon': {'color': 'spectrum', 'opacity': 0.8},  # Increased to 0.8 for more distinction
+                    'line': {'hidden': True}
+                }
+                
+                view.setStyle(model_selector, style_dict)
+                
+                # Add binding site surface with more visible opacity
+                surface_style = {'opacity': 0.3, 'color': 'lightblue'}  # Increased to 0.3 for more visibility
+                surface_selector = {'model': int(receptor_model_index)}
+                
+                view.addSurface(py3Dmol.VDW, surface_style, surface_selector)
+                
+                # Update model index after adding the receptor
+                model_index += 1
+                    
+            except Exception as receptor_e:
+                st.error(f"❌ Error adding receptor: {receptor_e}")
+                st.warning("🔄 Continuing without receptor...")
         
-        # Set view options
-        view.zoomTo()
+        # Set view options and ensure molecules are visible
         view.setBackgroundColor('white')
         
         # Add informative labels
-        view.addLabel("Best Pose", {
-            'position': {'x': 0, 'y': 0, 'z': 5}, 
-            'backgroundColor': 'green', 
-            'fontColor': 'white',
-            'fontSize': 12
-        })
+        if pose_count > 0:
+            view.addLabel(f"Poses: {pose_count}", {
+                'position': {'x': 0, 'y': 0, 'z': 5}, 
+                'backgroundColor': 'green', 
+                'fontColor': 'white',
+                'fontSize': 12
+            })
         
-        return view._make_html()
+        # Set view options before final render
+        view.zoomTo()  # Zoom to fit all molecules
+        view.center()  # Center the view
+        
+        # Critical: render before generating HTML
+        view.render()
+        
+        # Optional: adjust zoom level after render if needed
+        # view.zoom(1.2)  # Slightly zoom out for better view
+        
+        # Generate HTML and add some debugging
+        html_content = view._make_html()
+        
+        # Replace the default CDN with a more reliable one
+        html_content = html_content.replace(
+            'https://cdnjs.cloudflare.com/ajax/libs/3Dmol/2.0.1/3Dmol-min.js',
+            'https://unpkg.com/3dmol@latest/build/3Dmol-min.js'
+        )
+        
+        # Add fallback CDN in case the first one fails
+        fallback_script = '''
+        <script>
+        if (typeof $3Dmol === 'undefined') {
+            console.log('Primary 3Dmol CDN failed, trying fallback...');
+            var script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/3dmol@latest/build/3Dmol-min.js';
+            script.onload = function() {
+                console.log('Fallback 3Dmol CDN loaded successfully');
+                // Reinitialize the viewer after fallback loads
+                if (window.viewer) {
+                    window.viewer.render();
+                }
+            };
+            script.onerror = function() {
+                console.error('Both 3Dmol CDNs failed to load');
+                document.getElementById('3dmolviewer_UNIQUE_ID').innerHTML = 
+                    '<div style="text-align:center; padding:50px; color:red;">' +
+                    '❌ 3Dmol.js failed to load from CDN<br>' +
+                    'Please check your internet connection or browser settings</div>';
+            };
+            document.head.appendChild(script);
+        }
+        </script>
+        '''
+        
+        # Insert the fallback script before the closing body tag
+        html_content = html_content.replace('</body>', fallback_script + '</body>')
+        
+
+        
+        return html_content
         
     except Exception as e:
         st.error(f"Error rendering Unidock result: {e}")
@@ -136,18 +349,47 @@ def create_interactive_3d_viewer(result_data, output_dir_path):
         # Try to find result files
         result_file = result_data.get('result_file')
         
-        # Look for receptor file
-        receptor_file = None
-        possible_receptor_paths = [
-            output_dir_path / f"round_{round_num}" / "workflow_results" / "receptor_prepared.pdbqt",
-            output_dir_path.parent / "input" / "receptor.pdbqt",
-            output_dir_path.parent / "input" / "receptor.pdb"
-        ]
+        # User input for receptor file path
+        st.markdown("#### 🔬 Receptor File Configuration")
+        receptor_file_path = st.text_input(
+            "Receptor File Path (optional)",
+            placeholder="Enter path to receptor file (.pdbqt or .pdb)",
+            help="Provide the full path to your receptor file for protein-ligand visualization",
+            key=f"receptor_path_{variant_id}"
+        )
         
-        for receptor_path in possible_receptor_paths:
+        receptor_file = None
+        if receptor_file_path and receptor_file_path.strip():
+            receptor_path = Path(receptor_file_path.strip())
             if receptor_path.exists():
                 receptor_file = receptor_path
-                break
+                st.success(f"✅ Receptor file found: {receptor_path.name}")
+            else:
+                st.error(f"❌ Receptor file not found: {receptor_path}")
+                st.info("💡 Please check the file path and ensure the file exists")
+        elif hasattr(st.session_state, 'global_receptor_file') and st.session_state.global_receptor_file:
+            # Use global receptor file if no local one is provided
+            receptor_file = Path(st.session_state.global_receptor_file)
+            st.info(f"📋 Using global receptor file: {receptor_file.name}")
+        else:
+            st.info("💡 No receptor file specified - ligand will be displayed without protein context")
+        
+        # Try to find the result file if not provided
+        if not result_file or not Path(result_file).exists():
+            # Try to construct the result file path
+            if barcode and round_num:
+                possible_result_paths = [
+                    output_dir_path / f"round_{round_num}" / "docking_results" / f"variant_{barcode}" / "unidock_out.sdf",
+                    output_dir_path / f"round_{round_num}" / "docking_results" / f"variant_{barcode}" / "poses.sdf",
+                    output_dir_path / f"round_{round_num}" / "docking_results" / f"variant_{barcode}" / "result.sdf",
+                    output_dir_path / f"round_{round_num}" / "docking_results" / f"{variant_id}.sdf",
+                    output_dir_path / f"round_{round_num}" / "docking_results" / f"{barcode}.sdf"
+                ]
+                
+                for path in possible_result_paths:
+                    if path.exists():
+                        result_file = str(path)
+                        break
         
         if result_file and Path(result_file).exists():
             st.markdown("### 🧬 3D Molecular Visualization")
@@ -158,24 +400,158 @@ def create_interactive_3d_viewer(result_data, output_dir_path):
             with tab1:
                 st.markdown("**Docking Result with Receptor**")
                 if receptor_file:
-                    html_content = render_unidock_result_3d(result_file, receptor_file)
-                    if html_content:
-                        components.html(html_content, height=600, width=800)
-                        st.caption("🟢 Best pose | 🔵🟣🟡🟠 Alternative poses | 🌈 Protein receptor")
-                    else:
-                        st.error("Failed to render 3D structure")
+                    try:
+                        # Ensure we're passing strings, not other data types
+                        result_file_str = str(result_file) if result_file else None
+                        receptor_file_str = str(receptor_file) if receptor_file else None
+                        
+                        html_content = render_unidock_result_3d(result_file_str, receptor_file_str)
+                        if html_content:
+                            components.html(html_content, height=600, width=800)
+                            st.caption("🟢 Best pose | 🔵🟣🟡🟠 Alternative poses | 🌈 Protein receptor")
+                        else:
+                            st.error("❌ Failed to render 3D structure with receptor")
+                    except Exception as e:
+                        st.error(f"❌ Error rendering 3D structure: {str(e)}")
+                        st.info("🔄 Falling back to ligand-only view...")
+                        try:
+                            result_file_str = str(result_file) if result_file else None
+                            html_content = render_unidock_result_3d(result_file_str)
+                            if html_content:
+                                components.html(html_content, height=600, width=800)
+                        except Exception as e2:
+                            st.error(f"❌ Also failed to render ligand-only: {str(e2)}")
                 else:
-                    st.warning("Receptor file not found. Showing ligand only.")
-                    html_content = render_unidock_result_3d(result_file)
-                    if html_content:
-                        components.html(html_content, height=600, width=800)
+                    st.info("📍 Showing ligand without receptor context")
+                    try:
+                        result_file_str = str(result_file) if result_file else None
+                        html_content = render_unidock_result_3d(result_file_str)
+                        if html_content:
+                            components.html(html_content, height=600, width=800)
+                        else:
+                            st.error("❌ Failed to render ligand structure")
+                    except Exception as e:
+                        st.error(f"❌ Error rendering ligand: {str(e)}")
             
             with tab2:
                 st.markdown("**Ligand Structure Only**")
-                html_content = render_unidock_result_3d(result_file)
-                if html_content:
-                    components.html(html_content, height=600, width=800)
-                    st.caption("🟢 Best pose | 🔵🟣🟡🟠 Alternative poses")
+                try:
+                    result_file_str = str(result_file) if result_file else None
+                    html_content = render_unidock_result_3d(result_file_str)
+                    if html_content:
+                        # Show a preview of the HTML content
+                        if st.checkbox("🔍 Show HTML preview", key=f"show_html_{variant_id}"):
+                            st.code(html_content[:500] + "..." if len(html_content) > 500 else html_content, language="html")
+                        
+                        components.html(html_content, height=600, width=800)
+                        st.caption("🟢 Best pose | 🔵🟣🟡🟠 Alternative poses")
+                    else:
+                        st.error("❌ Failed to render ligand structure from SDF file")
+                        
+                        # Try alternative visualization methods
+                        if "smiles" in result_data and result_data["smiles"]:
+                            visualization_options = st.radio(
+                                "Choose visualization method:",
+                                ["🔄 Try simple 3D (SMILES)", "📄 2D Structure", "🎨 RDKit 3D Plot"],
+                                key=f"viz_option_{variant_id}"
+                            )
+                            
+                            if visualization_options == "🔄 Try simple 3D (SMILES)":
+                                st.info("🔄 Trying simple 3D visualization from SMILES...")
+                                simple_html = create_simple_3d_viewer([result_data["smiles"]])
+                                if simple_html:
+                                    components.html(simple_html, height=400, width=600)
+                                    st.caption("3D structure generated from SMILES")
+                                else:
+                                    st.error("❌ 3D visualization failed")
+                            
+                            elif visualization_options == "📄 2D Structure":
+                                st.info("📄 Showing 2D molecular structure:")
+                                mol_img = render_mol(result_data["smiles"])
+                                if mol_img:
+                                    st.image(mol_img, caption="2D Molecular Structure", width=200)
+                                else:
+                                    st.text(f"SMILES: {result_data['smiles']}")
+                            
+                            elif visualization_options == "🎨 RDKit 3D Plot":
+                                st.info("🎨 Creating 3D plot with RDKit and Plotly...")
+                                try:
+                                    from rdkit import Chem
+                                    from rdkit.Chem import AllChem
+                                    import plotly.graph_objects as go
+                                    
+                                    mol = Chem.MolFromSmiles(result_data["smiles"])
+                                    if mol:
+                                        mol = Chem.AddHs(mol)
+                                        AllChem.EmbedMolecule(mol, randomSeed=42)
+                                        AllChem.UFFOptimizeMolecule(mol)
+                                        
+                                        # Get atom coordinates
+                                        conf = mol.GetConformer()
+                                        atoms = []
+                                        x_coords, y_coords, z_coords = [], [], []
+                                        
+                                        for atom in mol.GetAtoms():
+                                            pos = conf.GetAtomPosition(atom.GetIdx())
+                                            x_coords.append(pos.x)
+                                            y_coords.append(pos.y)
+                                            z_coords.append(pos.z)
+                                            atoms.append(atom.GetSymbol())
+                                        
+                                        # Create 3D scatter plot
+                                        fig = go.Figure(data=[go.Scatter3d(
+                                            x=x_coords, y=y_coords, z=z_coords,
+                                            mode='markers+text',
+                                            marker=dict(size=8, color=atoms, colorscale='viridis'),
+                                            text=atoms,
+                                            textposition="middle center"
+                                        )])
+                                        
+                                        # Add bonds
+                                        bond_x, bond_y, bond_z = [], [], []
+                                        for bond in mol.GetBonds():
+                                            start_idx = bond.GetBeginAtomIdx()
+                                            end_idx = bond.GetEndAtomIdx()
+                                            start_pos = conf.GetAtomPosition(start_idx)
+                                            end_pos = conf.GetAtomPosition(end_idx)
+                                            
+                                            bond_x.extend([start_pos.x, end_pos.x, None])
+                                            bond_y.extend([start_pos.y, end_pos.y, None])
+                                            bond_z.extend([start_pos.z, end_pos.z, None])
+                                        
+                                        fig.add_trace(go.Scatter3d(
+                                            x=bond_x, y=bond_y, z=bond_z,
+                                            mode='lines',
+                                            line=dict(color='gray', width=3),
+                                            showlegend=False
+                                        ))
+                                        
+                                        fig.update_layout(
+                                            title="3D Molecular Structure (RDKit + Plotly)",
+                                            scene=dict(aspectmode='cube'),
+                                            showlegend=False
+                                        )
+                                        
+                                        st.plotly_chart(fig, use_container_width=True)
+                                        st.success("✅ 3D structure plotted with RDKit and Plotly")
+                                    else:
+                                        st.error("❌ Could not parse SMILES")
+                                except Exception as e:
+                                    st.error(f"❌ RDKit 3D plot failed: {e}")
+                                    st.info("📄 Fallback to 2D:")
+                                    mol_img = render_mol(result_data["smiles"])
+                                    if mol_img:
+                                        st.image(mol_img, caption="2D Molecular Structure")
+                except Exception as e:
+                    st.error(f"❌ Error rendering ligand: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
+                    # Show SMILES as fallback
+                    if "smiles" in result_data and result_data["smiles"]:
+                        st.info("📄 Showing 2D structure as fallback:")
+                        mol_img = render_mol(result_data["smiles"])
+                        if mol_img:
+                            st.image(mol_img, caption="2D Molecular Structure")
             
             with tab3:
                 st.markdown("**File Information**")
@@ -183,7 +559,7 @@ def create_interactive_3d_viewer(result_data, output_dir_path):
                     "Result File": str(Path(result_file).name),
                     "File Size": f"{Path(result_file).stat().st_size / 1024:.1f} KB",
                     "File Type": Path(result_file).suffix.upper(),
-                    "Receptor File": str(Path(receptor_file).name) if receptor_file else "Not found"
+                    "Receptor File": str(Path(receptor_file).name) if receptor_file else "Not provided"
                 }
                 
                 if "pose_count" in result_data:
@@ -204,29 +580,49 @@ def create_interactive_3d_viewer(result_data, output_dir_path):
                 # Download buttons
                 col1, col2 = st.columns(2)
                 with col1:
-                    with open(result_file, 'rb') as f:
-                        file_data = f.read()
-                    st.download_button(
-                        "📥 Download Result File",
-                        data=file_data,
-                        file_name=Path(result_file).name,
-                        mime="application/octet-stream",
-                        key=f"download_result_{variant_id}"
-                    )
+                    try:
+                        with open(result_file, 'rb') as f:
+                            file_data = f.read()
+                        st.download_button(
+                            "📥 Download Result File",
+                            data=file_data,
+                            file_name=Path(result_file).name,
+                            mime="application/octet-stream",
+                            key=f"download_result_{variant_id}"
+                        )
+                    except Exception as e:
+                        st.error(f"❌ Cannot read result file: {str(e)}")
                 
                 with col2:
                     if receptor_file and Path(receptor_file).exists():
-                        with open(receptor_file, 'rb') as f:
-                            receptor_data = f.read()
-                        st.download_button(
-                            "📥 Download Receptor",
-                            data=receptor_data,
-                            file_name=Path(receptor_file).name,
-                            mime="application/octet-stream",
-                            key=f"download_receptor_{variant_id}"
-                        )
+                        try:
+                            with open(receptor_file, 'rb') as f:
+                                receptor_data = f.read()
+                            st.download_button(
+                                "📥 Download Receptor",
+                                data=receptor_data,
+                                file_name=Path(receptor_file).name,
+                                mime="application/octet-stream",
+                                key=f"download_receptor_{variant_id}"
+                            )
+                        except Exception as e:
+                            st.error(f"❌ Cannot read receptor file: {str(e)}")
         else:
-            st.warning("No 3D structure file available for this result")
+            st.warning("❌ No 3D structure file available for this result")
+            st.info("🔍 Searched for result files but none were found.")
+            
+
+            
+            # Show 2D structure as fallback if SMILES is available
+            if "smiles" in result_data and result_data["smiles"]:
+                st.info("📄 Showing 2D structure instead:")
+                mol_img = render_mol(result_data["smiles"])
+                if mol_img:
+                    st.image(mol_img, caption="2D Molecular Structure", use_container_width=True)
+                else:
+                    st.text(f"SMILES: {result_data['smiles']}")
+            else:
+                st.text("No molecular structure data available")
             
     except Exception as e:
         st.error(f"Error creating 3D viewer: {e}")
@@ -234,7 +630,7 @@ def create_interactive_3d_viewer(result_data, output_dir_path):
         st.code(traceback.format_exc())
 
 # Function to render molecule
-def render_mol(smiles, width=400, height=300):
+def render_mol(smiles, width=250, height=200):
     """Render molecule using RDKit"""
     try:
         if smiles is None or pd.isna(smiles) or smiles == "":
@@ -295,12 +691,12 @@ def get_download_link(df, filename, text):
 
 # Page configuration
 st.set_page_config(
-    page_title="Visualize Results",
+    page_title="Results Analysis",
     page_icon="🔍",
     layout="wide"
 )
 
-# Add custom CSS for full-width layout
+# Add custom CSS for consistent styling across both pages
 st.markdown("""
     <style>
     .main {
@@ -318,45 +714,140 @@ st.markdown("""
     .st-emotion-cache-1v0mbdj {
         width: 100%;
     }
+    
+    /* Dashboard-specific styling */
+    .dashboard-header {
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        padding: 1rem;
+        border-radius: 10px;
+        color: white;
+        margin-bottom: 1rem;
+    }
+    
+    .analysis-header {
+        background: linear-gradient(90deg, #11998e 0%, #38ef7d 100%);
+        padding: 1rem;
+        border-radius: 10px;
+        color: white;
+        margin-bottom: 1rem;
+    }
+    
+    .metric-container {
+        background: white;
+        padding: 1rem;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        border-left: 4px solid #11998e;
+        color: #2c3e50;
+    }
+    
+    .metric-container h4 {
+        color: #34495e;
+        margin: 0 0 0.5rem 0;
+        font-size: 1rem;
+        font-weight: 600;
+    }
+    
+    .metric-container h2 {
+        margin: 0.5rem 0;
+        font-size: 2rem;
+        font-weight: bold;
+    }
+    
+    .metric-container small {
+        color: #7f8c8d;
+        font-size: 0.875rem;
+    }
+    
+    .status-indicator {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        margin-right: 8px;
+    }
+    
+    .status-running { background-color: #ffd93d; }
+    .status-complete { background-color: #6bff6b; }
+    .status-pending { background-color: #d3d3d3; }
+    .status-error { background-color: #ff6b6b; }
+    
+    .pipeline-stage {
+        background: #f8f9fa;
+        border: 1px solid #dee2e6;
+        border-radius: 8px;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        transition: all 0.3s ease;
+    }
+    
+    .pipeline-stage:hover {
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        transform: translateY(-2px);
+    }
+    
+    .analysis-indicator {
+        color: #11998e;
+        font-weight: bold;
+    }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🔍 Visualize Pipeline Results")
+# Header for analysis page
 st.markdown("""
-    View the results from an existing output directory. Upload or select a directory to visualize results.
-""")
+    <div class="analysis-header">
+        <h1>🔍 Pipeline Results Analysis <span class="analysis-indicator">📈</span></h1>
+        <p>Comprehensive post-hoc analysis of completed pipeline runs</p>
+    </div>
+""", unsafe_allow_html=True)
 
-# Add information about 3D visualization capabilities
-with st.expander("🧬 3D Visualization Features", expanded=False):
+# Add information about analysis capabilities
+with st.expander("🔬 Analysis Features", expanded=False):
     st.markdown("""
-    **Enhanced 3D Visualization Features:**
+    **Comprehensive Analysis Capabilities:**
     
-    🎯 **Interactive Docking Results**
-    - Multi-pose visualization with color-coded representations
-    - Receptor-ligand complex visualization
-    - Tabbed interface for different viewing modes
+    📊 **Deep Data Exploration**
+    - Load and analyze any completed pipeline output
+    - Advanced filtering and sorting across all data dimensions
+    - Pagination for large datasets with configurable views
     
-    📊 **Visualization Modes:**
-    - **Docking Result**: Full complex with receptor and all poses
-    - **Ligand Only**: Focus on ligand poses without receptor
-    - **Information**: File details and download options
+    🎯 **Detailed Visualizations**
+    - Interactive 3D molecular structure viewers
+    - Multi-dimensional plotting and correlation analysis
+    - Custom dashboard views for different analysis needs
     
-    🎨 **Color Coding:**
-    - 🟢 Best pose (lowest energy)
-    - 🔵🟣🟡🟠 Alternative poses
-    - 🌈 Protein receptor with binding site surface
+    📈 **Statistical Analysis**
+    - Distribution analysis for docking scores and affinity predictions
+    - Correlation analysis between different metrics
+    - Performance comparisons across pipeline rounds
     
-    **File Support:**
-    - SDF files with Unidock energy data
-    - PDBQT files with multiple models
-    - Automatic receptor file detection
+    🧬 **Enhanced 3D Visualization:**
+    - 🟢 Best poses highlighted in green
+    - 🔵🟣🟡🟠 Alternative poses color-coded  
+    - 🌈 Protein receptor with binding surface
+    - Interactive controls with download capabilities
+    
+    **💾 Export & Sharing:**
+    - Download filtered datasets in multiple formats
+    - Export 3D structures for external analysis
+    - Generate summary reports and statistics
+    
+    **🔍 Flexible Data Input:**
+    - Manual directory path entry
+    - Automatic detection of pipeline structure
+    - Support for multiple output formats
+    
+    **🔬 Receptor File Configuration:**
+    - Set a global receptor file in the sidebar for all visualizations
+    - Override with specific receptor files for individual compounds
+    - Supports both .pdbqt and .pdb formats
     """)
     
     # Check library availability
     try:
         import py3Dmol
         from rdkit import Chem
-        st.success("✅ 3D visualization libraries available")
+        st.success("✅ All analysis libraries available (py3Dmol, RDKit)")
     except ImportError as e:
         st.warning(f"⚠️ Missing libraries: {e}")
         st.info("Install with: `pip install py3Dmol rdkit`")
@@ -372,60 +863,94 @@ if "selected_view" not in st.session_state:
     st.session_state.selected_view = "Summary"
 
 # Directory selection
-st.header("Select Output Directory")
+st.markdown("## 📁 Select Pipeline Output Directory")
+
+st.info("Enter the path to any completed pipeline output directory for analysis")
 
 # Enter path manually
-dir_path = st.text_input("Enter the path to the output directory:", placeholder="/path/to/outputs/NS5")
+dir_path = st.text_input(
+    "Output Directory Path:", 
+    placeholder="/path/to/outputs/pipeline_run_name",
+    help="Enter the full path to a pipeline output directory containing results to analyze"
+)
 
 # Process manually entered path
 if dir_path:
     output_dir_path = Path(dir_path)
     if output_dir_path.exists() and output_dir_path.is_dir():
-        st.success(f"Found directory: {output_dir_path}")
+        st.success(f"✅ Directory Found: {output_dir_path}")
         st.session_state.output_dir = output_dir_path
     else:
-        st.error(f"Directory not found: {output_dir_path}")
+        st.error(f"❌ Directory not found: {output_dir_path}")
         st.session_state.output_dir = None
 
 # Load results if directory is available
 if st.session_state.output_dir:
-    st.success(f"Ready to load data from: {st.session_state.output_dir}")
+    st.info(f"📊 Ready to analyze: {st.session_state.output_dir.name}")
     
-    # Add a more prominent load button
-    load_col1, load_col2 = st.columns([2, 1])
-    with load_col1:
-        st.markdown("Click the button to load data from the selected directory.")
-    with load_col2:
-        if st.button("Load Results", type="primary", use_container_width=True):
-            with st.spinner("Loading results..."):
-                try:
-                    results = load_results(st.session_state.output_dir)
-                    if results is None:
-                        st.error("Failed to load results")
-                    else:
-                        st.session_state.results_data = results
-                        st.success("Successfully loaded results!")
-                except Exception as e:
-                    st.error(f"Error processing results: {str(e)}")
-                    import traceback
-                    st.code(traceback.format_exc())
+    if st.button("🔬 Load & Analyze Results", type="primary"):
+        with st.spinner("🔄 Loading and processing results data..."):
+            try:
+                results = load_results(st.session_state.output_dir)
+                if results is None:
+                    st.error("❌ Failed to load results - check if the directory contains valid pipeline output")
+                else:
+                    st.session_state.results_data = results
+                    st.balloons()
+                    st.success("✅ Successfully loaded results! Analysis dashboard is now available.")
+            except Exception as e:
+                st.error(f"❌ Error processing results: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
 else:
-    st.info("Please select a directory to load results from.")
+    st.warning("📁 Please enter a valid pipeline output directory path above to start your analysis.")
+    st.info("💡 **Tip:** Look for directories containing 'master_tracking' or 'round_*' subdirectories.")
 
 # Navigation
 if st.session_state.results_data:
-    # Sidebar for navigation
+    # Enhanced Sidebar for navigation
     with st.sidebar:
-        st.title("Dashboard Navigation")
+        st.markdown("""
+            <div style="text-align: center; padding: 1rem; background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); border-radius: 10px; color: white; margin-bottom: 1rem;">
+                <h3>📊 ANALYSIS MODE</h3>
+                <p style="margin: 0; font-size: 0.9em;">Post-hoc exploration</p>
+            </div>
+        """, unsafe_allow_html=True)
+        
         st.session_state.selected_view = st.radio(
-            "Select View",
-            ["Summary", "Compounds", "Variants", "Docking Results"]
+            "🔬 Analysis Views",
+            ["Summary", "Compounds", "Variants", "Docking Results"],
+            help="Select different analysis perspectives of your data"
         )
         
         st.divider()
         
+        # Global Receptor File Configuration
+        st.subheader("🔬 Global Receptor File")
+        global_receptor_path = st.text_input(
+            "Receptor File Path",
+            placeholder="Enter path to receptor file (.pdbqt or .pdb)",
+            help="Set a global receptor file path to use for all 3D visualizations on this page",
+            key="global_receptor_path"
+        )
+        
+        if global_receptor_path and global_receptor_path.strip():
+            receptor_test_path = Path(global_receptor_path.strip())
+            if receptor_test_path.exists():
+                st.success(f"✅ Global receptor file set: {receptor_test_path.name}")
+                # Store in session state for use by visualization functions
+                st.session_state.global_receptor_file = str(receptor_test_path)
+            else:
+                st.error(f"❌ Receptor file not found")
+                st.session_state.global_receptor_file = None
+        else:
+            st.info("💡 No global receptor file set")
+            st.session_state.global_receptor_file = None
+        
+        st.divider()
+        
         # Sidebar filtering options (global)
-        st.subheader("Global Filters")
+        st.subheader("🎛️ Global Filters")
         df = st.session_state.results_data["tracking_report"]
         
         # Round filter (applies to all views)
@@ -455,32 +980,64 @@ if st.session_state.results_data:
             
     # Main content based on selected view
     if st.session_state.selected_view == "Summary":
-        st.header("Pipeline Summary")
+        st.markdown("## 📊 Pipeline Results Analysis")
         
         # Determine what pipeline stages have been reached
         available_statuses = df["status"].unique() if "status" in df.columns else []
         
-        # Summary metrics
+        # Enhanced Summary metrics with styling
+        st.markdown("### 🔢 Key Metrics")
         col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
             compound_count = len(df[df["status"] == "GENERATED"]) if "status" in df.columns else 0
-            st.metric("Total Compounds", compound_count)
+            st.markdown(f"""
+                <div class="metric-container">
+                    <h4>🧬 Compounds</h4>
+                    <h2 style="color: #11998e; margin: 0;">{compound_count}</h2>
+                    <small>Generated</small>
+                </div>
+            """, unsafe_allow_html=True)
         with col2:
             variant_count = len(df[df["status"] == "SYNTHETIZED"]) if "status" in df.columns else 0
-            st.metric("Total Variants", variant_count)
+            st.markdown(f"""
+                <div class="metric-container">
+                    <h4>⚗️ Variants</h4>
+                    <h2 style="color: #11998e; margin: 0;">{variant_count}</h2>
+                    <small>Synthesized</small>
+                </div>
+            """, unsafe_allow_html=True)
         with col3:
             filtered_count = len(df[df["status"].isin(["PASSFILTER", "PASSBLINDDOCK"])]) if "status" in df.columns else 0
-            st.metric("Filtered Variants", filtered_count)
+            st.markdown(f"""
+                <div class="metric-container">
+                    <h4>🔬 Filtered</h4>
+                    <h2 style="color: #11998e; margin: 0;">{filtered_count}</h2>
+                    <small>Passed filters</small>
+                </div>
+            """, unsafe_allow_html=True)
         with col4:
             docked_count = len(df[df["status"] == "DOCKED"]) if "status" in df.columns else 0
-            st.metric("Docked Compounds", docked_count)
+            st.markdown(f"""
+                <div class="metric-container">
+                    <h4>🎯 Docked</h4>
+                    <h2 style="color: #11998e; margin: 0;">{docked_count}</h2>
+                    <small>Completed</small>
+                </div>
+            """, unsafe_allow_html=True)
         with col5:
             # Show best docking score if available
             if "docking_score" in df.columns and df["docking_score"].notna().any():
                 best_score = df[df["docking_score"].notna()]["docking_score"].min()
-                st.metric("Best Score", f"{best_score:.2f}")
+                score_text = f"{best_score:.2f}"
             else:
-                st.metric("Best Score", "N/A")
+                score_text = "N/A"
+            st.markdown(f"""
+                <div class="metric-container">
+                    <h4>🏆 Best Score</h4>
+                    <h2 style="color: #11998e; margin: 0;">{score_text}</h2>
+                    <small>Lower = better</small>
+                </div>
+            """, unsafe_allow_html=True)
         
         # Show pipeline progress information
         progress_message = ""
@@ -625,7 +1182,7 @@ if st.session_state.results_data:
                             if "smiles" in compound and not pd.isna(compound["smiles"]):
                                 mol_img = render_mol(compound["smiles"])
                                 if mol_img:
-                                    st.image(mol_img, caption="2D Structure", use_container_width=True)
+                                    st.image(mol_img, caption="2D Structure", width=200)
                                 else:
                                     st.info("Could not render molecule structure")
                             else:
@@ -830,7 +1387,7 @@ if st.session_state.results_data:
                             if "smiles" in variant and not pd.isna(variant["smiles"]):
                                 mol_img = render_mol(variant["smiles"])
                                 if mol_img:
-                                    st.image(mol_img, caption="2D Structure", use_container_width=True)
+                                    st.image(mol_img, caption="2D Structure", width=200)
                                 else:
                                     st.info("Could not render molecule structure")
                             else:
@@ -844,7 +1401,7 @@ if st.session_state.results_data:
                                 if "source_smiles" in variant and not pd.isna(variant["source_smiles"]):
                                     parent_mol_img = render_mol(variant["source_smiles"])
                                     if parent_mol_img:
-                                        st.image(parent_mol_img, caption="Parent Structure", use_container_width=True)
+                                        st.image(parent_mol_img, caption="Parent Structure", width=200)
                                     else:
                                         st.info("Could not render parent molecule structure")
                                 else:
@@ -854,7 +1411,7 @@ if st.session_state.results_data:
                                         parent_smiles = df[df["compound_id"] == parent_id]["smiles"].values[0]
                                         parent_mol_img = render_mol(parent_smiles)
                                         if parent_mol_img:
-                                            st.image(parent_mol_img, caption="Parent Structure", use_container_width=True)
+                                            st.image(parent_mol_img, caption="Parent Structure", width=200)
                                     else:
                                         st.info("Parent structure not available")
                         
@@ -1068,7 +1625,7 @@ if st.session_state.results_data:
                         with tab1:
                             mol_img = render_mol(result["smiles"])
                             if mol_img:
-                                st.image(mol_img, caption="2D Structure", use_container_width=True)
+                                st.image(mol_img, caption="2D Structure", width=200)
                             else:
                                 st.info("Could not render molecule structure")
                         
@@ -1237,9 +1794,10 @@ if st.session_state.results_data:
                             else:
                                 st.info("Barcode or round information missing for 3D structure visualization")
     
-    # Export options
+    # Enhanced Export options
     st.divider()
-    st.subheader("Export Options")
+    st.markdown("## 💾 Export & Download Options")
+    st.markdown("Export your analyzed data for further research or sharing")
     
     # Add download button for complete dataset
     if st.button("Export All Results"):
@@ -1249,5 +1807,16 @@ if st.session_state.results_data:
             file_name="all_results.csv",
             mime="text/csv"
         )
+
+    # Analysis footer
+    st.divider()
+    st.markdown("""
+        <div style="text-align: center; padding: 2rem; background: #f8f9fa; border-radius: 10px; margin: 2rem 0;">
+            <p style="margin: 0; color: #6c757d;">
+                <strong>Pipeline Results Analysis</strong> | Comprehensive post-hoc exploration<br>
+                📊 Advanced analytics | 🔬 Detailed visualizations | 💾 Flexible export options
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
 else:
     st.info("Please select an output directory and load results to view visualizations.") 

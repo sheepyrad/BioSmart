@@ -339,6 +339,9 @@ def visualize_protein_residues(pdb_content, selected_residues=None, center=None,
 
     view.zoomTo()
 
+    # Critical: render before generating HTML
+    view.render()
+
     # Get the HTML representation
     html = view._make_html()
 

@@ -15,7 +15,7 @@ import time
 import streamlit.components.v1 as components
 
 # Function to render molecule
-def render_mol(smiles, width=400, height=300):
+def render_mol(smiles, width=250, height=200):
     """Render molecule using RDKit"""
     try:
         if smiles is None or pd.isna(smiles) or smiles == "":
@@ -264,6 +264,7 @@ def render_3d_structure(ligand_file, receptor_file=None):
     """
     try:
         view = py3Dmol.view(width=800, height=600)
+        model_index = 0  # Manual model index tracking
         
         # Handle different ligand file formats
         ligand_path = Path(ligand_file)
@@ -275,10 +276,15 @@ def render_3d_structure(ligand_file, receptor_file=None):
                 from rdkit.Chem import AllChem
                 
                 # Read SDF and convert to PDB format
-                suppl = Chem.SDMolSupplier(str(ligand_path))
+                suppl = Chem.SDMolSupplier(str(ligand_path), removeHs=False, sanitize=False)
                 mol = next(suppl)
                 
                 if mol is not None:
+                    # Validate molecule object
+                    if isinstance(mol, dict) or not hasattr(mol, 'GetNumAtoms'):
+                        st.error("❌ Invalid molecule object from SDF file")
+                        return None
+                    
                     # Add hydrogens and generate 3D coordinates if needed
                     mol = Chem.AddHs(mol)
                     if mol.GetNumConformers() == 0:
@@ -287,8 +293,19 @@ def render_3d_structure(ligand_file, receptor_file=None):
                     
                     # Convert to PDB format
                     pdb_block = Chem.MolToPDBBlock(mol)
-                    view.addModel(pdb_block, 'pdb')
-                    view.setStyle({'model': 0}, {'stick': {'colorscheme': 'greenCarbon', 'radius': 0.2}})
+                    if pdb_block and len(pdb_block.strip()) > 0:
+                        view.addModel(pdb_block, 'pdb')
+                        
+                        # Apply styling with error handling
+                        try:
+                            view.setStyle({'model': int(model_index)}, {'stick': {'colorscheme': 'greenCarbon', 'radius': 0.2}})
+                        except Exception as style_e:
+                            st.error(f"❌ Error styling ligand: {style_e}")
+                        
+                        model_index += 1
+                    else:
+                        st.error("❌ Could not convert molecule to PDB format")
+                        return None
                 else:
                     st.error("Could not read molecule from SDF file")
                     return None
@@ -305,34 +322,75 @@ def render_3d_structure(ligand_file, receptor_file=None):
             with open(ligand_file) as f:
                 ligand_data = f.read()
             
+            if not ligand_data.strip():
+                st.error("❌ Ligand file is empty")
+                return None
+            
             # Determine file format for py3Dmol
             ligand_format = 'pdbqt' if ligand_path.suffix.lower() == '.pdbqt' else 'pdb'
             
             # Add ligand model
             view.addModel(ligand_data, ligand_format)
-            view.setStyle({'model': 0}, {'stick': {'colorscheme': 'greenCarbon', 'radius': 0.2}})
+            
+            # Apply styling with error handling
+            try:
+                view.setStyle({'model': int(model_index)}, {'stick': {'colorscheme': 'greenCarbon', 'radius': 0.2}})
+            except Exception as style_e:
+                st.error(f"❌ Error styling ligand: {style_e}")
+            
+            model_index += 1
         
         # Add receptor if provided
         if receptor_file and Path(receptor_file).exists():
-            with open(receptor_file) as f:
-                receptor_data = f.read()
-            
-            # Determine format for receptor
-            receptor_format = 'pdbqt' if str(receptor_file).lower().endswith('.pdbqt') else 'pdb'
-            
-            # Add receptor as separate model
-            view.addModel(receptor_data, receptor_format)
-            view.setStyle({'model': 1}, {'cartoon': {'color': 'spectrum', 'opacity': 0.8}})
-            
-            # Add binding site surface
-            view.addSurface(py3Dmol.VDW, {'opacity': 0.3, 'color': 'lightblue'}, {'model': 1})
+            try:
+                receptor_model_index = model_index  # Use manually tracked model index
+                
+                with open(receptor_file) as f:
+                    receptor_data = f.read()
+                
+                if not receptor_data.strip():
+                    st.error("❌ Receptor file is empty")
+                    raise ValueError("Empty receptor file")
+                
+                # Determine format for receptor
+                receptor_format = 'pdbqt' if str(receptor_file).lower().endswith('.pdbqt') else 'pdb'
+                
+                # Add receptor as separate model
+                view.addModel(receptor_data, receptor_format)
+                
+                # Apply receptor styling with error handling
+                model_selector = {'model': int(receptor_model_index)}
+                style_dict = {'cartoon': {'color': 'spectrum', 'opacity': 0.8}}
+                
+                try:
+                    view.setStyle(model_selector, style_dict)
+                except Exception as style_e:
+                    st.error(f"❌ Error styling receptor: {style_e}")
+                
+                # Add binding site surface
+                try:
+                    surface_style = {'opacity': 0.3, 'color': 'lightblue'}
+                    surface_selector = {'model': int(receptor_model_index)}
+                    view.addSurface(py3Dmol.VDW, surface_style, surface_selector)
+                except Exception as surface_e:
+                    st.warning(f"⚠️ Could not add receptor surface: {surface_e}")
+                
+                model_index += 1
+                    
+            except Exception as receptor_e:
+                st.error(f"❌ Error adding receptor: {receptor_e}")
+                st.warning("🔄 Continuing without receptor...")
         
-        # Set view options
+        # Set view options before final render
         view.zoomTo()
+        view.center()
         view.setBackgroundColor('white')
         
         # Add labels and improve visualization
         view.addLabel("Ligand", {'position': {'x': 0, 'y': 0, 'z': 0}, 'backgroundColor': 'green', 'fontColor': 'white'})
+        
+        # Critical: render before generating HTML
+        view.render()
         
         return view._make_html()
     
@@ -352,42 +410,131 @@ def render_unidock_result_3d(result_file_path, receptor_file=None):
         HTML string for embedding in Streamlit
     """
     try:
-        result_path = Path(result_file_path)
+        # Check if required libraries are available
+        try:
+            import py3Dmol
+            from rdkit import Chem
+        except ImportError as e:
+            st.error(f"❌ Required libraries not available: {e}")
+            st.info("Install with: `pip install py3Dmol rdkit`")
+            return None
         
-        if not result_path.exists():
-            st.error(f"Result file not found: {result_path}")
+        # Ensure result_file_path is a string or Path object, not a dict
+        if isinstance(result_file_path, dict):
+            st.error(f"❌ Invalid file path: received dict instead of file path")
+            st.error(f"Debug info: {result_file_path}")
             return None
             
+        result_path = Path(str(result_file_path))  # Ensure string conversion
+        
+        if not result_path.exists():
+            st.error(f"❌ Result file not found: {result_path}")
+            return None
+            
+        # Check file size to avoid loading extremely large files
+        file_size = result_path.stat().st_size
+        if file_size > 50 * 1024 * 1024:  # 50MB limit
+            st.warning(f"⚠️ File is large ({file_size / 1024 / 1024:.1f} MB). Visualization may be slow.")
+            
         view = py3Dmol.view(width=800, height=600)
+        pose_count = 0
+        model_index = 0  # Track model index explicitly throughout the function
         
         if result_path.suffix.lower() == '.sdf':
             # Handle SDF files with multiple poses
             try:
                 from rdkit import Chem
-                from rdkit.Chem import AllChem
                 
-                suppl = Chem.SDMolSupplier(str(result_path))
-                pose_count = 0
-                
-                for i, mol in enumerate(suppl):
-                    if mol is not None:
-                        pose_count += 1
-                        # Convert to PDB format
-                        pdb_block = Chem.MolToPDBBlock(mol)
-                        view.addModel(pdb_block, 'pdb')
+                # Try to read the SDF file
+                try:
+                    suppl = Chem.SDMolSupplier(str(result_path), removeHs=False, sanitize=False)
+                    
+                    # Check if supplier is valid
+                    if suppl is None:
+                        st.error("❌ Failed to create molecule supplier from SDF file")
+                        return None
+                    
+                    processed_molecules = 0
+                    
+                    for i, mol in enumerate(suppl):
+                        try:
+                            # Check what type of object we got from the supplier
+                            if mol is not None:
+                                # Validate that mol is actually an RDKit molecule object
+                                if isinstance(mol, dict):
+                                    st.error(f"❌ Got dict instead of molecule at position {i}: {mol}")
+                                    continue
+                                elif not hasattr(mol, 'GetNumAtoms'):
+                                    st.error(f"❌ Invalid molecule object at position {i}, type: {type(mol)}")
+                                    continue
+                                    
+                                processed_molecules += 1
+                                pose_count += 1
+                                
+                                # Ensure the molecule has 3D coordinates
+                                if mol.GetNumConformers() == 0:
+                                    st.warning(f"⚠️ Molecule {i} has no 3D coordinates, generating them...")
+                                    from rdkit.Chem import AllChem
+                                    try:
+                                        AllChem.EmbedMolecule(mol, randomSeed=42)
+                                        AllChem.UFFOptimizeMolecule(mol)
+                                    except Exception as embed_e:
+                                        st.warning(f"⚠️ Could not generate 3D coordinates for molecule {i}: {embed_e}")
+                                        continue
+                                
+                                # Convert to PDB format with error handling
+                                try:
+                                    # Validate molecule object before conversion
+                                    if hasattr(mol, 'GetNumAtoms') and mol.GetNumAtoms() > 0:
+                                        pdb_block = Chem.MolToPDBBlock(mol)
+                                        if pdb_block and len(pdb_block.strip()) > 0:
+                                            # Validate that we have a proper PDB block
+                                            if isinstance(pdb_block, str):
+                                                view.addModel(pdb_block, 'pdb')
+                                                
+                                                # Style each pose differently with more visible settings
+                                                # Ensure model_index is an integer
+                                                model_idx = int(model_index)
+                                                
+                                                if model_index == 0:
+                                                    # Best pose in green with larger radius
+                                                    style_selector = {'model': model_idx}
+                                                    style_def = {'stick': {'colorscheme': 'greenCarbon', 'radius': 0.4}}
+                                                else:
+                                                    # Other poses in different colors
+                                                    colors = ['cyanCarbon', 'magentaCarbon', 'yellowCarbon', 'orangeCarbon']
+                                                    color = colors[min(model_index-1, len(colors)-1)]
+                                                    style_selector = {'model': model_idx}
+                                                    style_def = {'stick': {'colorscheme': color, 'radius': 0.3, 'opacity': 0.8}}
+                                                
+                                                # Apply styling with validation
+                                                try:
+                                                    view.setStyle(style_selector, style_def)
+                                                except Exception as style_e:
+                                                    st.error(f"❌ Error styling model {model_index}: {style_e}")
+                                                
+                                                model_index += 1
+                                            else:
+                                                st.error(f"❌ PDB block is not a string for molecule {i}, got {type(pdb_block)}")
+                                        else:
+                                            st.warning(f"⚠️ Could not convert molecule {i} to PDB format or empty PDB block")
+                                    else:
+                                        st.warning(f"⚠️ Molecule {i} has no atoms or is invalid")
+                                except Exception as pdb_e:
+                                    st.error(f"❌ PDB conversion error for molecule {i}: {pdb_e}")
+                                    continue
+                            else:
+                                st.warning(f"⚠️ Invalid molecule at position {i} in SDF file")
+                        except Exception as mol_e:
+                            st.error(f"❌ Error processing molecule {i}: {mol_e}")
+                            continue
+                    
+                    if pose_count == 0:
+                        st.error("❌ No valid poses found in SDF file")
+                        return None
                         
-                        # Style each pose differently
-                        if i == 0:
-                            # Best pose in green
-                            view.setStyle({'model': i}, {'stick': {'colorscheme': 'greenCarbon', 'radius': 0.3}})
-                        else:
-                            # Other poses in different colors
-                            colors = ['cyanCarbon', 'magentaCarbon', 'yellowCarbon', 'orangeCarbon']
-                            color = colors[min(i-1, len(colors)-1)]
-                            view.setStyle({'model': i}, {'stick': {'colorscheme': color, 'radius': 0.2, 'opacity': 0.7}})
-                
-                if pose_count == 0:
-                    st.error("No valid poses found in SDF file")
+                except Exception as sdf_e:
+                    st.error(f"❌ Error reading SDF file: {sdf_e}")
                     return None
                     
             except ImportError:
@@ -402,6 +549,10 @@ def render_unidock_result_3d(result_file_path, receptor_file=None):
             with open(result_path) as f:
                 pdbqt_data = f.read()
             
+            if not pdbqt_data.strip():
+                st.error("❌ PDBQT file is empty")
+                return None
+            
             # Split into individual models if multiple exist
             models = pdbqt_data.split('MODEL')
             
@@ -412,46 +563,122 @@ def render_unidock_result_3d(result_file_path, receptor_file=None):
                     
                     view.addModel(model_data, 'pdbqt')
                     
-                    # Style each model
-                    if i == 1:  # First actual model (best pose)
-                        view.setStyle({'model': i-1}, {'stick': {'colorscheme': 'greenCarbon', 'radius': 0.3}})
+                    # Style each model - use correct model index with validation
+                    model_idx = int(model_index)
+                    
+                    if model_index == 0:  # First actual model (best pose)
+                        style_selector = {'model': model_idx}
+                        style_def = {'stick': {'colorscheme': 'greenCarbon', 'radius': 0.3}}
                     else:
                         colors = ['cyanCarbon', 'magentaCarbon', 'yellowCarbon', 'orangeCarbon']
-                        color = colors[min(i-2, len(colors)-1)] if i > 1 else 'cyanCarbon'
-                        view.setStyle({'model': i-1}, {'stick': {'colorscheme': color, 'radius': 0.2, 'opacity': 0.7}})
+                        color = colors[min(model_index-1, len(colors)-1)]
+                        style_selector = {'model': model_idx}
+                        style_def = {'stick': {'colorscheme': color, 'radius': 0.2, 'opacity': 0.7}}
+                    
+                    # Apply styling with error handling
+                    try:
+                        view.setStyle(style_selector, style_def)
+                    except Exception as style_e:
+                        st.error(f"❌ Error styling PDBQT model {model_index}: {style_e}")
+                    
+                    model_index += 1
+                    pose_count += 1
         
         # Add receptor if provided
-        receptor_model_index = view.getNumModels()
         if receptor_file and Path(receptor_file).exists():
-            with open(receptor_file) as f:
-                receptor_data = f.read()
-            
-            receptor_format = 'pdbqt' if str(receptor_file).lower().endswith('.pdbqt') else 'pdb'
-            view.addModel(receptor_data, receptor_format)
-            view.setStyle({'model': receptor_model_index}, {
-                'cartoon': {'color': 'spectrum', 'opacity': 0.8},
-                'line': {'hidden': True}
-            })
-            
-            # Add binding site surface around ligands
-            view.addSurface(py3Dmol.VDW, {
-                'opacity': 0.2, 
-                'color': 'lightblue'
-            }, {'model': receptor_model_index})
+            try:
+                receptor_model_index = model_index  # Use manually tracked model index instead of getNumModels()
+                
+                with open(receptor_file) as f:
+                    receptor_data = f.read()
+                
+                if not receptor_data.strip():
+                    st.error("❌ Receptor file is empty")
+                    raise ValueError("Empty receptor file")
+                
+                receptor_format = 'pdbqt' if str(receptor_file).lower().endswith('.pdbqt') else 'pdb'
+                view.addModel(receptor_data, receptor_format)
+                
+                # Create style dictionary with explicit integer casting
+                model_selector = {'model': int(receptor_model_index)}
+                style_dict = {
+                    'cartoon': {'color': 'spectrum', 'opacity': 0.8},
+                    'line': {'hidden': True}
+                }
+                
+                view.setStyle(model_selector, style_dict)
+                
+                # Add binding site surface around ligands
+                surface_style = {'opacity': 0.3, 'color': 'lightblue'}
+                surface_selector = {'model': int(receptor_model_index)}
+                
+                view.addSurface(py3Dmol.VDW, surface_style, surface_selector)
+                
+                # Update model index after adding the receptor
+                model_index += 1
+                    
+            except Exception as receptor_e:
+                st.error(f"❌ Error adding receptor: {receptor_e}")
+                st.warning("🔄 Continuing without receptor...")
         
-        # Set view options
-        view.zoomTo()
+        # Set view options and ensure molecules are visible
         view.setBackgroundColor('white')
         
         # Add informative labels
-        view.addLabel("Best Pose", {
-            'position': {'x': 0, 'y': 0, 'z': 5}, 
-            'backgroundColor': 'green', 
-            'fontColor': 'white',
-            'fontSize': 12
-        })
+        if pose_count > 0:
+            view.addLabel(f"Poses: {pose_count}", {
+                'position': {'x': 0, 'y': 0, 'z': 5}, 
+                'backgroundColor': 'green', 
+                'fontColor': 'white',
+                'fontSize': 12
+            })
         
-        return view._make_html()
+        # Set view options before final render
+        view.zoomTo()  # Zoom to fit all molecules
+        view.center()  # Center the view
+        
+        # Critical: render before generating HTML
+        view.render()
+        
+        # Generate HTML and add some debugging
+        html_content = view._make_html()
+        
+        # Replace the default CDN with a more reliable one
+        html_content = html_content.replace(
+            'https://cdnjs.cloudflare.com/ajax/libs/3Dmol/2.0.1/3Dmol-min.js',
+            'https://unpkg.com/3dmol@latest/build/3Dmol-min.js'
+        )
+        
+        # Add fallback CDN in case the first one fails
+        fallback_script = '''
+        <script>
+        if (typeof $3Dmol === 'undefined') {
+            console.log('Primary 3Dmol CDN failed, trying fallback...');
+            var script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/3dmol@latest/build/3Dmol-min.js';
+            script.onload = function() {
+                console.log('Fallback 3Dmol CDN loaded successfully');
+                // Reinitialize the viewer after fallback loads
+                if (window.viewer) {
+                    window.viewer.render();
+                }
+            };
+            script.onerror = function() {
+                console.error('Both 3Dmol CDNs failed to load');
+                document.getElementById('3dmolviewer_UNIQUE_ID').innerHTML = 
+                    '<div style="text-align:center; padding:50px; color:red;">' +
+                    '❌ 3Dmol.js failed to load from CDN<br>' +
+                    'Please check your internet connection or browser settings</div>';
+            };
+            document.head.appendChild(script);
+        }
+        </script>
+        '''
+        
+        # Insert the fallback script before the closing body tag
+        html_content = html_content.replace('</body>', fallback_script + '</body>')
+        
+        return html_content
         
     except Exception as e:
         st.error(f"Error rendering Unidock result: {e}")
@@ -476,18 +703,47 @@ def create_interactive_3d_viewer(result_data, output_dir_path):
         # Try to find result files
         result_file = result_data.get('result_file')
         
-        # Look for receptor file
-        receptor_file = None
-        possible_receptor_paths = [
-            output_dir_path / f"round_{round_num}" / "workflow_results" / "receptor_prepared.pdbqt",
-            output_dir_path.parent / "input" / "receptor.pdbqt",
-            output_dir_path.parent / "input" / "receptor.pdb"
-        ]
+        # User input for receptor file path
+        st.markdown("#### 🔬 Receptor File Configuration")
+        receptor_file_path = st.text_input(
+            "Receptor File Path (optional)",
+            placeholder="Enter path to receptor file (.pdbqt or .pdb)",
+            help="Provide the full path to your receptor file for protein-ligand visualization",
+            key=f"receptor_path_{variant_id}"
+        )
         
-        for receptor_path in possible_receptor_paths:
+        receptor_file = None
+        if receptor_file_path and receptor_file_path.strip():
+            receptor_path = Path(receptor_file_path.strip())
             if receptor_path.exists():
                 receptor_file = receptor_path
-                break
+                st.success(f"✅ Receptor file found: {receptor_path.name}")
+            else:
+                st.error(f"❌ Receptor file not found: {receptor_path}")
+                st.info("💡 Please check the file path and ensure the file exists")
+        elif hasattr(st.session_state, 'global_receptor_file') and st.session_state.global_receptor_file:
+            # Use global receptor file if no local one is provided
+            receptor_file = Path(st.session_state.global_receptor_file)
+            st.info(f"📋 Using global receptor file: {receptor_file.name}")
+        else:
+            st.info("💡 No receptor file specified - ligand will be displayed without protein context")
+        
+        # Try to find the result file if not provided
+        if not result_file or not Path(result_file).exists():
+            # Try to construct the result file path
+            if barcode and round_num:
+                possible_result_paths = [
+                    output_dir_path / f"round_{round_num}" / "docking_results" / f"variant_{barcode}" / "unidock_out.sdf",
+                    output_dir_path / f"round_{round_num}" / "docking_results" / f"variant_{barcode}" / "poses.sdf",
+                    output_dir_path / f"round_{round_num}" / "docking_results" / f"variant_{barcode}" / "result.sdf",
+                    output_dir_path / f"round_{round_num}" / "docking_results" / f"{variant_id}.sdf",
+                    output_dir_path / f"round_{round_num}" / "docking_results" / f"{barcode}.sdf"
+                ]
+                
+                for path in possible_result_paths:
+                    if path.exists():
+                        result_file = str(path)
+                        break
         
         if result_file and Path(result_file).exists():
             st.markdown("### 🧬 3D Molecular Visualization")
@@ -505,7 +761,7 @@ def create_interactive_3d_viewer(result_data, output_dir_path):
                     else:
                         st.error("Failed to render 3D structure")
                 else:
-                    st.warning("Receptor file not found. Showing ligand only.")
+                    st.warning("Receptor file not provided. Showing ligand only.")
                     html_content = render_unidock_result_3d(result_file)
                     if html_content:
                         components.html(html_content, height=600, width=800)
@@ -523,7 +779,7 @@ def create_interactive_3d_viewer(result_data, output_dir_path):
                     "Result File": str(Path(result_file).name),
                     "File Size": f"{Path(result_file).stat().st_size / 1024:.1f} KB",
                     "File Type": Path(result_file).suffix.upper(),
-                    "Receptor File": str(Path(receptor_file).name) if receptor_file else "Not found"
+                    "Receptor File": str(Path(receptor_file).name) if receptor_file else "Not provided"
                 }
                 
                 if "pose_count" in result_data:
@@ -620,18 +876,22 @@ def render_boltz_cif(cif_path: Path):
         # Ligand sticks chain B
         view.setStyle({"chain": "B"}, {"stick": {"colorscheme": "greenCarbon"}})
         view.zoomTo()
+        
+        # Critical: render before generating HTML
+        view.render()
+        
         return view._make_html()
     except Exception as exc:
         return f"Failed to render CIF: {exc}"
 
 # Page configuration
 st.set_page_config(
-    page_title="Pipeline Results",
+    page_title="Live Pipeline Dashboard",
     page_icon="📊",
     layout="wide"
 )
 
-# Add custom CSS for full-width layout
+# Add custom CSS for consistent styling across both pages
 st.markdown("""
     <style>
     .main {
@@ -648,6 +908,80 @@ st.markdown("""
     }
     .st-emotion-cache-1v0mbdj {
         width: 100%;
+    }
+    
+    /* Dashboard-specific styling */
+    .dashboard-header {
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        padding: 1rem;
+        border-radius: 10px;
+        color: white;
+        margin-bottom: 1rem;
+    }
+    
+    .metric-container {
+        background: white;
+        padding: 1rem;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        border-left: 4px solid #667eea;
+        color: #2c3e50;
+    }
+    
+    .metric-container h4 {
+        color: #34495e;
+        margin: 0 0 0.5rem 0;
+        font-size: 1rem;
+        font-weight: 600;
+    }
+    
+    .metric-container h2 {
+        margin: 0.5rem 0;
+        font-size: 2rem;
+        font-weight: bold;
+    }
+    
+    .metric-container small {
+        color: #7f8c8d;
+        font-size: 0.875rem;
+    }
+    
+    .status-indicator {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        margin-right: 8px;
+    }
+    
+    .status-running { background-color: #ffd93d; }
+    .status-complete { background-color: #6bff6b; }
+    .status-pending { background-color: #d3d3d3; }
+    .status-error { background-color: #ff6b6b; }
+    
+    .pipeline-stage {
+        background: #f8f9fa;
+        border: 1px solid #dee2e6;
+        border-radius: 8px;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        transition: all 0.3s ease;
+    }
+    
+    .pipeline-stage:hover {
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        transform: translateY(-2px);
+    }
+    
+    .live-indicator {
+        animation: pulse 2s infinite;
+        color: #ff6b6b;
+    }
+    
+    @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.5; }
+        100% { opacity: 1; }
     }
     </style>
 """, unsafe_allow_html=True)
@@ -666,47 +1000,69 @@ if "selected_view" not in st.session_state:
 if "auto_refresh" not in st.session_state:
     st.session_state.auto_refresh = False
 
-st.title("📊 Results Dashboard")
+# Header with live indicator
+st.markdown("""
+    <div class="dashboard-header">
+        <h1>📊 Live Pipeline Dashboard <span class="live-indicator">●</span></h1>
+        <p>Real-time monitoring of your active pipeline run</p>
+    </div>
+""", unsafe_allow_html=True)
 
-# Add information about 3D visualization capabilities
-with st.expander("🧬 3D Visualization Features", expanded=False):
+# Add information about dashboard capabilities
+with st.expander("🔧 Dashboard Features", expanded=False):
     st.markdown("""
-    **Available 3D Visualization Features:**
+    **Live Monitoring Capabilities:**
     
-    🎯 **Docking Results Visualization**
-    - Interactive 3D viewer for Unidock docking results
-    - Multiple pose visualization with color coding
-    - Receptor-ligand complex visualization
-    - Support for SDF and PDBQT file formats
+    🔄 **Real-time Updates**
+    - Auto-refresh functionality for live data streaming
+    - Pipeline progress tracking with visual indicators
+    - Live log monitoring with syntax highlighting
     
-    🟢 **Best Pose** - Highlighted in green with thicker representation
-    🔵🟣🟡🟠 **Alternative Poses** - Color-coded for easy identification
-    🌈 **Protein Receptor** - Cartoon representation with binding site surface
+    📊 **Interactive Visualizations**
+    - Dynamic charts that update as data arrives
+    - 3D molecular structure viewers
+    - Multi-pose docking result visualization
     
-    **Supported File Formats:**
-    - SDF files (Unidock output with multiple poses)
-    - PDBQT files (AutoDock/Vina format)
-    - PDB files (Protein Data Bank format)
+    🎯 **Pipeline Stages Tracking**
+    - Generation → Retrosynthesis → Filtering → Docking
+    - Status indicators for each stage
+    - Estimated completion times
     
-    **Interactive Controls:**
-    - Zoom, rotate, and pan the 3D structure
-    - Toggle between different visualization modes
-    - Download structure files for external analysis
+    🧬 **3D Visualization Features:**
+    - 🟢 Best poses highlighted in green
+    - 🔵🟣🟡🟠 Alternative poses color-coded
+    - 🌈 Protein receptor with binding surface
+    - Interactive rotation, zoom, and pan controls
+    
+    **📈 Advanced Analytics:**
+    - Boltz-2 affinity predictions (IC50 values)
+    - Docking score distributions
+    - Combined affinity vs docking analysis
+    
+    **🔬 Receptor File Configuration:**
+    - Set a global receptor file in the sidebar for all visualizations
+    - Override with specific receptor files for individual compounds
+    - Supports both .pdbqt and .pdb formats
     """)
     
     # Check if required libraries are available
     try:
         import py3Dmol
         from rdkit import Chem
-        st.success("✅ All required libraries (py3Dmol, RDKit) are available for 3D visualization")
+        st.success("✅ All visualization libraries available (py3Dmol, RDKit)")
     except ImportError as e:
-        st.warning(f"⚠️ Some libraries missing for full 3D functionality: {e}")
-        st.info("Install missing libraries with: `pip install py3Dmol rdkit`")
+        st.warning(f"⚠️ Some libraries missing: {e}")
+        st.info("Install with: `pip install py3Dmol rdkit`")
 
 # Check if configuration exists
 if not st.session_state.pipeline_config:
-    st.warning("Please configure and run the pipeline first!")
-    st.info("Go to the **Configure & Run** page to set up and launch a pipeline.")
+    st.markdown("""
+        <div style="text-align: center; padding: 2rem; background: #fff3cd; border-radius: 10px; margin: 2rem 0;">
+            <h3>🚀 No Active Pipeline Found</h3>
+            <p>Please configure and run a pipeline first to start monitoring.</p>
+            <p><strong>Next Steps:</strong> Go to the <strong>Configure & Run</strong> page to set up and launch a pipeline.</p>
+        </div>
+    """, unsafe_allow_html=True)
     st.stop()
 
 # Get the output directory path
@@ -715,9 +1071,24 @@ output_dir_path = Path(output_dir) if output_dir else None
 
 # Validate output directory
 if not output_dir_path or not output_dir_path.exists():
-    st.error(f"Output directory not found: {output_dir_path}")
-    st.info("Please check if the pipeline has started running.")
+    st.markdown("""
+        <div style="text-align: center; padding: 2rem; background: #f8d7da; border-radius: 10px; margin: 2rem 0;">
+            <h3>❌ Output Directory Not Found</h3>
+            <p>Output directory: <code>{}</code></p>
+            <p>Please check if the pipeline has started running properly.</p>
+        </div>
+    """.format(output_dir_path), unsafe_allow_html=True)
     st.stop()
+
+# Live Status Indicator
+status_col1, status_col2, status_col3 = st.columns([1, 2, 1])
+with status_col2:
+    st.markdown("""
+        <div style="text-align: center; padding: 1rem; background: #d1ecf1; border-radius: 8px; margin: 1rem 0;">
+            <h4>🔴 LIVE</h4>
+            <p>Monitoring: <code>{}</code></p>
+        </div>
+    """.format(output_dir_path.name), unsafe_allow_html=True)
 
 # Load results if available
 if output_dir_path:
@@ -807,18 +1178,49 @@ if output_dir_path:
             import traceback
             st.code(traceback.format_exc())
 
-# Sidebar for navigation
+# Enhanced Sidebar for navigation
 with st.sidebar:
-    st.title("Dashboard Navigation")
+    st.markdown("""
+        <div style="text-align: center; padding: 1rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; color: white; margin-bottom: 1rem;">
+            <h3>🔴 LIVE DASHBOARD</h3>
+            <p style="margin: 0; font-size: 0.9em;">Real-time monitoring</p>
+        </div>
+    """, unsafe_allow_html=True)
+    
     st.session_state.selected_view = st.radio(
-        "Select View",
-        ["Summary", "Compounds", "Variants", "Docking Results"]
+        "📊 Dashboard Views",
+        ["Summary", "Compounds", "Variants", "Docking Results"],
+        help="Select different views of your pipeline data"
     )
     
     st.divider()
     
+    # Global Receptor File Configuration
+    st.subheader("🔬 Global Receptor File")
+    global_receptor_path = st.text_input(
+        "Receptor File Path",
+        placeholder="Enter path to receptor file (.pdbqt or .pdb)",
+        help="Set a global receptor file path to use for all 3D visualizations on this page",
+        key="global_receptor_path_live"
+    )
+    
+    if global_receptor_path and global_receptor_path.strip():
+        receptor_test_path = Path(global_receptor_path.strip())
+        if receptor_test_path.exists():
+            st.success(f"✅ Global receptor file set: {receptor_test_path.name}")
+            # Store in session state for use by visualization functions
+            st.session_state.global_receptor_file = str(receptor_test_path)
+        else:
+            st.error(f"❌ Receptor file not found")
+            st.session_state.global_receptor_file = None
+    else:
+        st.info("💡 No global receptor file set")
+        st.session_state.global_receptor_file = None
+    
+    st.divider()
+    
     # Sidebar filtering options (global)
-    st.subheader("Global Filters")
+    st.subheader("🎛️ Global Filters")
     if st.session_state.results is not None and st.session_state.results.get("tracking_report") is not None:
         df = st.session_state.results["tracking_report"]
         
@@ -908,31 +1310,63 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
         available_statuses = df["status"].unique() if "status" in df.columns else []
                 
         if st.session_state.selected_view == "Summary":
-            st.header("Pipeline Summary")
+            st.markdown("## 📊 Live Pipeline Overview")
             
-            # Summary metrics
+            # Enhanced Summary metrics with styling
+            st.markdown("### 🔢 Key Metrics")
             col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
                 compound_count = len(df[df["status"] == "GENERATED"]) if "status" in df.columns else 0
-                st.metric("Total Compounds", compound_count)
+                st.markdown(f"""
+                    <div class="metric-container">
+                        <h4>🧬 Compounds</h4>
+                        <h2 style="color: #667eea; margin: 0;">{compound_count}</h2>
+                        <small>Generated</small>
+                    </div>
+                """, unsafe_allow_html=True)
             with col2:
                 variant_count = len(df[df["status"] == "SYNTHETIZED"]) if "status" in df.columns else 0
-                st.metric("Total Variants", variant_count)
+                st.markdown(f"""
+                    <div class="metric-container">
+                        <h4>⚗️ Variants</h4>
+                        <h2 style="color: #667eea; margin: 0;">{variant_count}</h2>
+                        <small>Synthesized</small>
+                    </div>
+                """, unsafe_allow_html=True)
             with col3:
                 filtered_count = len(
                     df[df["status"].isin(["PASSFILTER", "PASSBLINDDOCK"])]
                 ) if "status" in df.columns else 0
-                st.metric("Filtered Variants", filtered_count)
+                st.markdown(f"""
+                    <div class="metric-container">
+                        <h4>🔬 Filtered</h4>
+                        <h2 style="color: #667eea; margin: 0;">{filtered_count}</h2>
+                        <small>Passed filters</small>
+                    </div>
+                """, unsafe_allow_html=True)
             with col4:
                 docked_count = len(df[df["status"] == "DOCKED"]) if "status" in df.columns else 0
-                st.metric("Docked Compounds", docked_count)
+                st.markdown(f"""
+                    <div class="metric-container">
+                        <h4>🎯 Docked</h4>
+                        <h2 style="color: #667eea; margin: 0;">{docked_count}</h2>
+                        <small>Completed</small>
+                    </div>
+                """, unsafe_allow_html=True)
             with col5:
                 # Show best docking score if available (lower is better)
                 if "docking_score" in df.columns and df["docking_score"].notna().any():
                     best_score = df[df["docking_score"].notna()]["docking_score"].min()
-                    st.metric("Best Score (lower=better)", f"{best_score:.2f}")
+                    score_text = f"{best_score:.2f}"
                 else:
-                    st.metric("Best Score (lower=better)", "N/A")
+                    score_text = "N/A"
+                st.markdown(f"""
+                    <div class="metric-container">
+                        <h4>🏆 Best Score</h4>
+                        <h2 style="color: #667eea; margin: 0;">{score_text}</h2>
+                        <small>Lower = better</small>
+                    </div>
+                """, unsafe_allow_html=True)
                         
             # Workflow Progress Visualization
             st.subheader("Workflow Progress")
@@ -1645,9 +2079,9 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                             with col1:
                                 # Render 2D structure
                                 if "smiles" in result and not pd.isna(result["smiles"]):
-                                    mol_img = render_mol(result["smiles"])
-                                    if mol_img:
-                                        st.image(mol_img, caption="2D Structure", use_container_width=True)
+                                                                    mol_img = render_mol(result["smiles"])
+                                if mol_img:
+                                    st.image(mol_img, caption="2D Structure", width=200)
                                 
                                 # Show Boltz-2 affinity predictions
                                 if "affinity_pred_value" in result and not pd.isna(result["affinity_pred_value"]):
@@ -1740,9 +2174,11 @@ else:
     else:
         st.warning("Output directory not specified. Please configure and run the pipeline.")
 
-# Export options
+# Enhanced Export options
 st.divider()
-st.subheader("Export Options")
+st.markdown("## 💾 Export & Download Options")
+st.markdown("Export your live pipeline data for external analysis or sharing")
+
 export_col1, export_col2, export_col3 = st.columns(3)
 
 with export_col1:
@@ -1790,4 +2226,15 @@ with export_col3:
                 high_conf_count = len(df[df["affinity_probability_binary"] > 0.5])
                 stats["high_confidence_ic50_predictions"] = high_conf_count
         
-        st.json(stats) 
+        st.json(stats)
+
+# Dashboard footer
+st.divider()
+st.markdown("""
+    <div style="text-align: center; padding: 2rem; background: #f8f9fa; border-radius: 10px; margin: 2rem 0;">
+        <p style="margin: 0; color: #6c757d;">
+            <strong>Live Pipeline Dashboard</strong> | Real-time monitoring and analysis<br>
+            🔄 Auto-refresh available | 📊 Interactive visualizations | 🧬 3D molecular viewers
+        </p>
+    </div>
+""", unsafe_allow_html=True) 
