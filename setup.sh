@@ -4,7 +4,7 @@
 set -e
 
 # Define variables
-ENV_DIR="env"
+ENV_DIR="conda_files"
 
 # --- Helper Functions ---
 echo_step() {
@@ -108,86 +108,86 @@ else
     echo "Warning: Directory src/Pocket2Mol/ckpt not found. Skipping Pocket2Mol setup."
 fi
 
-# 3. Create CGFlow environment and setup
-echo_step "Setting up CGFlow environment"
+# # 3. Create CGFlow environment and setup
+# echo_step "Setting up CGFlow environment"
 
-# Clone CGFlow if not exists
-if [ ! -d "src/cgflow" ]; then
-    echo "Cloning CGFlow repository"
-    cd src
-    git clone https://github.com/tsa87/cgflow.git
-    cd ..
-fi
+# # Clone CGFlow if not exists
+# if [ ! -d "src/cgflow" ]; then
+#     echo "Cloning CGFlow repository"
+#     cd src
+#     git clone https://github.com/tsa87/cgflow.git
+#     cd ..
+# fi
 
-create_env_if_not_exists "cgflow-env" "$ENV_DIR/cgflow.yml"
+# create_env_if_not_exists "cgflow-env" "$ENV_DIR/cgflow.yml"
 
-# Setup CGFlow
-if [ -d "src/cgflow" ]; then
-    cd src/cgflow
-    echo "Changed directory to $(pwd)"
+# # Setup CGFlow
+# if [ -d "src/cgflow" ]; then
+#     cd src/cgflow
+#     echo "Changed directory to $(pwd)"
 
-    # Install PyTorch packages separately and independently
-    echo "Installing PyTorch 2.6.0..."
-    conda run -n cgflow-env pip install torch==2.6.0 --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
+#     # Install PyTorch packages separately and independently
+#     echo "Installing PyTorch 2.6.0..."
+#     conda run -n cgflow-env pip install torch==2.6.0 --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
     
-    echo "Installing PyTorch Geometric..."
-    conda run -n cgflow-env pip install torch-geometric>=2.4.0
+#     echo "Installing PyTorch Geometric..."
+#     conda run -n cgflow-env pip install torch-geometric>=2.4.0
     
-    echo "Installing PyTorch Scatter..."
-    conda run -n cgflow-env pip install torch-scatter>=2.1.2 --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
+#     echo "Installing PyTorch Scatter..."
+#     conda run -n cgflow-env pip install torch-scatter>=2.1.2 --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
     
-    echo "Installing PyTorch Sparse..."
-    conda run -n cgflow-env pip install torch-sparse>=0.6.18 --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
+#     echo "Installing PyTorch Sparse..."
+#     conda run -n cgflow-env pip install torch-sparse>=0.6.18 --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
     
-    echo "Installing PyTorch Cluster..."
-    conda run -n cgflow-env pip install torch-cluster>=1.6.3 --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
+#     echo "Installing PyTorch Cluster..."
+#     conda run -n cgflow-env pip install torch-cluster>=1.6.3 --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
 
-    # Install CGFlow in editable mode
-    echo "Installing CGFlow in editable mode..."
-    conda run -n cgflow-env pip install -e '.[extra]'
+#     # Install CGFlow in editable mode
+#     echo "Installing CGFlow in editable mode..."
+#     conda run -n cgflow-env pip install -e '.[extra]'
     
-    echo "Installing Uni-Dock tools..."
-    conda run -n cgflow-env pip install git+https://github.com/dptech-corp/Uni-Dock.git#subdirectory=unidock_tools
+#     echo "Installing Uni-Dock tools..."
+#     conda run -n cgflow-env pip install git+https://github.com/dptech-corp/Uni-Dock.git#subdirectory=unidock_tools
 
-    # Create data directories and download data
-    echo "Setting up CGFlow data directories"
-    mkdir -p experiments/data/complex
-    cd experiments/data/complex
+#     # Create data directories and download data
+#     echo "Setting up CGFlow data directories"
+#     mkdir -p experiments/data/complex
+#     cd experiments/data/complex
     
-    if [ ! -f "plinder_15A.zip" ]; then
-        echo "Downloading plinder data"
-        curl -L -o plinder_15A.zip https://figshare.com/ndownloader/files/54405473
-        unzip plinder_15A.zip
-    fi
+#     if [ ! -f "plinder_15A.zip" ]; then
+#         echo "Downloading plinder data"
+#         curl -L -o plinder_15A.zip https://figshare.com/ndownloader/files/54405473
+#         unzip plinder_15A.zip
+#     fi
     
-    cd ../
-    if [ ! -f "LIT-PCBA.tar.gz" ]; then
-        echo "Downloading LIT-PCBA data"
-        curl -L -o LIT-PCBA.tar.gz https://figshare.com/ndownloader/files/54411395
-        tar -xzvf LIT-PCBA.tar.gz
-    fi
+#     cd ../
+#     if [ ! -f "LIT-PCBA.tar.gz" ]; then
+#         echo "Downloading LIT-PCBA data"
+#         curl -L -o LIT-PCBA.tar.gz https://figshare.com/ndownloader/files/54411395
+#         tar -xzvf LIT-PCBA.tar.gz
+#     fi
 
-    mkdir -p envs
-    cd envs
-    if [ ! -f "stock.tar.gz" ]; then
-        echo "Downloading stock environment data"
-        conda run -n cgflow-env gdown 11EXcLEFzpD430ML0gt5Lwnx65PQfHIVP
-        tar -xzvf stock.tar.gz
-    fi
+#     mkdir -p envs
+#     cd envs
+#     if [ ! -f "stock.tar.gz" ]; then
+#         echo "Downloading stock environment data"
+#         conda run -n cgflow-env gdown 11EXcLEFzpD430ML0gt5Lwnx65PQfHIVP
+#         tar -xzvf stock.tar.gz
+#     fi
 
-    cd ../../ # back to cgflow root
-    mkdir -p weights
-    cd weights
-    if [ ! -f "cgflow_weights.tar.gz" ]; then
-        echo "Downloading CGFlow weights"
-        conda run -n cgflow-env gdown 1UpdOxfMVdALdAPpzG_dXF72diP2AbHOl
-    fi
+#     cd ../../ # back to cgflow root
+#     mkdir -p weights
+#     cd weights
+#     if [ ! -f "cgflow_weights.tar.gz" ]; then
+#         echo "Downloading CGFlow weights"
+#         conda run -n cgflow-env gdown 1UpdOxfMVdALdAPpzG_dXF72diP2AbHOl
+#     fi
 
-    cd ../../../.. # Go back to the root of the repo
-    echo "Changed directory back to $(pwd)"
-else
-    echo "Warning: Directory src/cgflow not found. Skipping CGFlow setup."
-fi
+#     cd ../../../.. # Go back to the root of the repo
+#     echo "Changed directory back to $(pwd)"
+# else
+#     echo "Warning: Directory src/cgflow not found. Skipping CGFlow setup."
+# fi
 
 # 4. Create Synformer environment
 echo_step "Setting up Synformer environment"
@@ -282,7 +282,7 @@ echo "=========================================="
 echo "Created the following conda environments:"
 echo "  - diffsbdd-env     (for DiffSBDD)"
 echo "  - pocket2mol-env   (for Pocket2Mol)"
-echo "  - cgflow-env       (for CGFlow)"
+# echo "  - cgflow-env       (for CGFlow)"
 echo "  - synformer-env    (for Synformer)"
 echo "  - boltz-env        (for Boltz)"
 echo "  - unidock-env      (for Uni-dock)"
