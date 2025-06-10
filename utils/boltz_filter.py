@@ -424,7 +424,7 @@ def boltz_filter_variants(
                         str(boltz_output_dir)
                     ],
                     log_callback,
-                    timeout=600  # 10 minute timeout for Boltz prediction
+                    timeout=6000  # 100 minute timeout for Boltz prediction
                 ):
                     boltz_success = True
                     break
