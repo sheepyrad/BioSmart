@@ -111,8 +111,8 @@ if "top_n_input" not in st.session_state:
     st.session_state.top_n_input = 5
 if "max_variants_input" not in st.session_state:
     st.session_state.max_variants_input = 5
-if "output_dir_name_input" not in st.session_state:
-    st.session_state.output_dir_name_input = "pipeline_output"
+if "output_dir_path_input" not in st.session_state:
+    st.session_state.output_dir_path_input = "outputs/pipeline_output"
 
 
 # Box Generation Input
@@ -151,7 +151,7 @@ if st.session_state._apply_loaded_config_on_next_run:
             st.session_state.num_rounds_input = int(pending_config.get("num_rounds", st.session_state.num_rounds_input))
 
             if "out_dir" in pending_config:
-                st.session_state.output_dir_name_input = Path(pending_config["out_dir"]).name
+                st.session_state.output_dir_path_input = pending_config["out_dir"]
 
             if current_model_loaded == "diffsbdd":
                 st.session_state.diffsbdd_resi_list = pending_config.get("resi_list", st.session_state.diffsbdd_resi_list)
@@ -672,12 +672,20 @@ with tab3:
     col16, col17 = st.columns(2) # Use different column variables
 
     with col16:
-        # Output Directory Name Input - uses key 'output_dir_name_input'
+        # Output Directory Path Input - uses key 'output_dir_path_input'
         st.text_input(
-            "Output Directory Name *",
-            help="Name of the output directory where results will be stored (relative to 'outputs/' folder)",
-            key="output_dir_name_input"
+            "Output Directory Path *",
+            help="Path to the output directory where results will be stored. Can be absolute (e.g., '/home/user/results') or relative to project root (e.g., 'outputs/my_experiment')",
+            key="output_dir_path_input"
         )
+        
+        # Add helpful information about path formats
+        st.caption("""
+        **Path Examples:**
+        - Relative: `outputs/my_experiment` (relative to project root)
+        - Absolute: `/home/user/drug_discovery_results`
+        - With subdirectories: `outputs/experiments/2024/january`
+        """)
 
         # Top N Input - uses key 'top_n_input'
         st.number_input(
@@ -710,7 +718,7 @@ col_dl, col_ul = st.columns(2)
 with col_dl:
     # Download button - Create config dynamically from current state for download
     # Disable if required fields (like output dir name) are missing
-    config_ready_for_download = bool(st.session_state.get("output_dir_name_input"))
+    config_ready_for_download = bool(st.session_state.get("output_dir_path_input"))
     config_json_data = ""
     download_filename = "pipeline_config.json" # Default filename
     if config_ready_for_download:
@@ -749,10 +757,12 @@ with col_dl:
         download_config["max_variants"] = st.session_state.max_variants_input
         download_config["num_rounds"] = st.session_state.num_rounds_input
         
-        # Use output dir name for filename and construct full path for config value
-        output_dir_name_value = st.session_state.get("output_dir_name_input", "pipeline_output")
-        download_config["out_dir"] = f"outputs/{output_dir_name_value}"
-        download_filename = f"{output_dir_name_value}.json"
+        # Use output dir path for config value and extract name for filename
+        output_dir_path_value = st.session_state.get("output_dir_path_input", "outputs/pipeline_output")
+        download_config["out_dir"] = output_dir_path_value
+        # Extract just the directory name for the filename
+        output_dir_name = Path(output_dir_path_value).name
+        download_filename = f"{output_dir_name}.json"
 
         try:
             config_json_data = json.dumps(download_config, indent=4)
@@ -842,14 +852,34 @@ if finalize_submitted:
         error_messages.append("Please fill in the residue list for DiffSBDD.")
         validation_error = True
 
-    # Validate output directory name
-    output_dir_name_state = st.session_state.get("output_dir_name_input", "").strip()
-    if not output_dir_name_state:
-        error_messages.append("Please specify an Output Directory Name.")
+    # Validate output directory path
+    output_dir_path_state = st.session_state.get("output_dir_path_input", "").strip()
+    if not output_dir_path_state:
+        error_messages.append("Please specify an Output Directory Path.")
         validation_error = True
-    elif not re.match(r"^[a-zA-Z0-9_.-]+$", output_dir_name_state):
-         error_messages.append("Output Directory Name contains invalid characters. Use only letters, numbers, underscore, dot, or hyphen.")
-         validation_error = True
+    else:
+        # Convert to Path object for validation
+        try:
+            output_path = Path(output_dir_path_state)
+            
+            # If it's a relative path, make it relative to the project root
+            if not output_path.is_absolute():
+                project_root = Path(__file__).resolve().parent.parent
+                output_path = project_root / output_path
+            
+            # Resolve the path to handle any .. or . components
+            output_path = output_path.resolve()
+            
+            # Validate that the parent directory exists or can be created
+            try:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+            except (OSError, PermissionError) as e:
+                error_messages.append(f"Cannot create parent directories for output path: {e}")
+                validation_error = True
+                
+        except (OSError, ValueError) as e:
+            error_messages.append(f"Invalid output directory path: {e}")
+            validation_error = True
 
 
     if validation_error:
@@ -857,10 +887,8 @@ if finalize_submitted:
             st.error(msg)
     else:
         # Check if output directory already exists
-        project_root = Path(__file__).resolve().parent.parent
-        output_path = project_root / "outputs" / output_dir_name_state
         if output_path.exists():
-            st.error(f"Output directory 'outputs/{output_dir_name_state}' already exists. Please choose a different name.")
+            st.error(f"Output directory '{output_path}' already exists. Please choose a different path.")
         else:
             # Create the final configuration dictionary
             config = {}
@@ -922,6 +950,11 @@ if finalize_submitted:
             # --- Save final configuration in session state ---
             st.session_state.pipeline_config = config
             st.success(f"Configuration saved successfully! Output will be in '{output_path}'. Proceed to the Execution page.")
+            
+            # Show the resolved path if it's different from what the user entered
+            if str(output_path) != output_dir_path_state:
+                st.info(f"Resolved path: `{output_path}`")
+            
             logger.info(f"Finalized pipeline config: {config}")
             # We might want to store the temp_dir_path if files were uploaded,
             # so they can be cleaned up later, but managing temp dirs across sessions/pages is tricky.
