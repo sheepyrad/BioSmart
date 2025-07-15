@@ -113,7 +113,12 @@ if "max_variants_input" not in st.session_state:
     st.session_state.max_variants_input = 5
 if "output_dir_path_input" not in st.session_state:
     st.session_state.output_dir_path_input = "outputs/pipeline_output"
+if "score_threshold_input" not in st.session_state:
+    st.session_state.score_threshold_input = 0.7
 
+# Boltz-2 Specific
+if "boltz_pocket_residues_input" not in st.session_state:
+    st.session_state.boltz_pocket_residues_input = ""
 
 # Box Generation Input
 if "generate_box_residues_input" not in st.session_state:
@@ -149,6 +154,10 @@ if st.session_state._apply_loaded_config_on_next_run:
             st.session_state.top_n_input = int(pending_config.get("top_n", st.session_state.top_n_input))
             st.session_state.max_variants_input = int(pending_config.get("max_variants", st.session_state.max_variants_input))
             st.session_state.num_rounds_input = int(pending_config.get("num_rounds", st.session_state.num_rounds_input))
+            st.session_state.score_threshold_input = float(pending_config.get("score_threshold", st.session_state.score_threshold_input))
+            
+            # Load Boltz-2 configuration
+            st.session_state.boltz_pocket_residues_input = pending_config.get("boltz_pocket_residues", st.session_state.boltz_pocket_residues_input)
 
             if "out_dir" in pending_config:
                 st.session_state.output_dir_path_input = pending_config["out_dir"]
@@ -393,6 +402,22 @@ with tab1:
 
     # Single PDB file upload section
     st.subheader("Target Protein PDB File")    
+    
+    # Add PDB indexing reminder
+    st.warning("""
+    **⚠️ Important PDB Indexing Requirement:**
+    
+    The input protein PDB file **must be 1-indexed** (residue numbering starts from 1). 
+    If your PDB file uses non-standard indexing (e.g., starting from 0 or with gaps), 
+    please use [pdb-tools](https://www.bonvinlab.org/pdb-tools/) to renumber it before uploading:
+    
+    ```bash
+    pdb_reres -1 input.pdb > output_reindexed.pdb
+    ```
+    
+    The pipeline does not currently support automatic renumbering of non-1-indexed PDB files.
+    """)
+    
     col1, col2 = st.columns(2)
 
     with col1:
@@ -663,9 +688,40 @@ with tab3:
             key="num_rounds_input"
         )
 
+    st.markdown("""<div class="form-header"><h3>Retrosynthesis Filtering Configuration</h3></div>""", unsafe_allow_html=True)
+
+    col_score, col_empty = st.columns(2)
+    with col_score:
+        # Score Threshold Input - uses key 'score_threshold_input'
+        st.number_input(
+            "Retrosynthesis Score Threshold",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.1,
+            format="%.1f",
+            help="Minimum retrosynthesis score threshold for filtering variants. Only variants with scores >= this threshold will proceed to MedChem filtering. Higher values are more restrictive.",
+            key="score_threshold_input"
+        )
+
     st.markdown("""<div class="form-header"><h3>Boltz-2 Filtering Configuration</h3></div>""", unsafe_allow_html=True)
 
     st.info("Boltz-2 filtering predicts protein-ligand structures and evaluates binding affinity. The filter uses spatial evaluation (any ligand atom within the docking box) and provides affinity predictions with confidence scores.")
+    
+    # Boltz-2 pocket constraints configuration
+    st.text_input(
+        "Pocket Constraint Residues (comma-separated)",
+        placeholder="e.g., 156,158,202,204",
+        help="Enter residue numbers (1-indexed) to define pocket constraints for Boltz-2. These residues will be used to guide the protein-ligand binding prediction. Leave empty to use no constraints.",
+        key="boltz_pocket_residues_input"
+    )
+    
+    st.caption("""
+    **Pocket Constraints:** Specify key residues that define the binding pocket for Boltz-2 structure prediction. 
+    These should be residue numbers (1-indexed) that are important for ligand binding. 
+    The constraints help guide the structural prediction to focus on the correct binding site.
+    """)
+    
+    st.info("💡 **Tip:** You can use the same residues from your DiffSBDD residue list or docking box generation residues as pocket constraints.")
 
     st.markdown("""<div class="form-header"><h3>Output Configuration</h3></div>""", unsafe_allow_html=True)
 
@@ -756,6 +812,10 @@ with col_dl:
         download_config["top_n"] = st.session_state.top_n_input
         download_config["max_variants"] = st.session_state.max_variants_input
         download_config["num_rounds"] = st.session_state.num_rounds_input
+        download_config["score_threshold"] = st.session_state.score_threshold_input
+        
+        # Add Boltz-2 configuration
+        download_config["boltz_pocket_residues"] = st.session_state.boltz_pocket_residues_input
         
         # Use output dir path for config value and extract name for filename
         output_dir_path_value = st.session_state.get("output_dir_path_input", "outputs/pipeline_output")
@@ -944,6 +1004,11 @@ if finalize_submitted:
             config["top_n"] = st.session_state.top_n_input
             config["max_variants"] = st.session_state.max_variants_input
             config["num_rounds"] = st.session_state.num_rounds_input
+            config["score_threshold"] = st.session_state.score_threshold_input
+            
+            # Add Boltz-2 configuration
+            config["boltz_pocket_residues"] = st.session_state.boltz_pocket_residues_input
+            
             config["out_dir"] = str(output_path) # Use the validated, absolute path
 
 

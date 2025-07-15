@@ -38,3 +38,5 @@ The project consists of a Python pipeline with both standalone execution capabil
 -   **Configuration**: Avoid hardcoding configuration values (e.g., paths, parameters). Use configuration files or environment variables instead.
 -   **Environment Activation**: When running scripts or commands in an automated fashion (e.g., via agent mode), ensure the `drug_pipeline` conda environment is activated first using `conda activate drug_pipeline`.
 -   **External Package Wrappers**: Where feasible, create wrapper functions or classes in `utils/` to interact with external packages. This provides an abstraction layer and simplifies potential future refactoring.
+
+-   **Streamlit Frontend** : When designing the streamlit frontend, be always remember the user would be in dark mode, and all colors chosen must be visible in drak mode and contrast well.

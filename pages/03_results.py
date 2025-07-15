@@ -84,10 +84,10 @@ def create_auto_scrolling_text_area(content, height=400):
     content = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     
     # Add syntax highlighting for common log patterns
-    content = content.replace("ERROR", '<span style="color: #ff6b6b;">ERROR</span>')
-    content = content.replace("WARNING", '<span style="color: #ffd93d;">WARNING</span>')
-    content = content.replace("INFO", '<span style="color: #6bff6b;">INFO</span>')
-    content = content.replace("DEBUG", '<span style="color: #6b6bff;">DEBUG</span>')
+    content = content.replace("ERROR", '<span style="color: #f56565;">ERROR</span>')
+    content = content.replace("WARNING", '<span style="color: #ed8936;">WARNING</span>')
+    content = content.replace("INFO", '<span style="color: #48bb78;">INFO</span>')
+    content = content.replace("DEBUG", '<span style="color: #63b3ed;">DEBUG</span>')
     
     # Add syntax highlighting for pipeline stages
     stages = [
@@ -101,7 +101,7 @@ def create_auto_scrolling_text_area(content, height=400):
     ]
     
     for stage in stages:
-        content = content.replace(stage, f'<span style="color: #ffa500;">{stage}</span>')
+        content = content.replace(stage, f'<span style="color: #ed8936;">{stage}</span>')
     
     html = f"""
         <div style="
@@ -983,8 +983,50 @@ st.markdown("""
         50% { opacity: 0.5; }
         100% { opacity: 1; }
     }
+    
+    <style>
+    .metric-card {
+        background: linear-gradient(90deg, #4a5568 0%, #2d3748 100%);
+        padding: 1rem;
+        border-radius: 10px;
+        color: white;
+        margin: 0.5rem 0;
+    }
+    .info-card {
+        border-left: 4px solid #4a5568;
+        color: #e2e8f0;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+    .info-card h3 {
+        color: #e2e8f0;
+        margin-top: 0;
+    }
+    .info-card p {
+        margin-bottom: 0;
+    }
+    .small-text {
+        font-size: 0.9em;
+        color: #a0aec0;
+    }
+    .status-running { background-color: #ed8936; }
+    .status-complete { background-color: #48bb78; }
+    .status-pending { background-color: #4a5568; }
+    .status-error { background-color: #f56565; }
+    
+    .log-container {
+        background: #1a202c;
+        border: 1px solid #4a5568;
+        border-radius: 8px;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+    .error-message {
+        color: #f56565;
+        font-weight: bold;
+    }
     </style>
-""", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
 # Initialize session state variables
 if "results" not in st.session_state:
@@ -1057,7 +1099,7 @@ with st.expander("🔧 Dashboard Features", expanded=False):
 # Check if configuration exists
 if not st.session_state.pipeline_config:
     st.markdown("""
-        <div style="text-align: center; padding: 2rem; background: #fff3cd; border-radius: 10px; margin: 2rem 0;">
+        <div style="text-align: center; padding: 2rem; background: #2d3748; border-radius: 10px; margin: 2rem 0; color: #ed8936;">
             <h3>🚀 No Active Pipeline Found</h3>
             <p>Please configure and run a pipeline first to start monitoring.</p>
             <p><strong>Next Steps:</strong> Go to the <strong>Configure & Run</strong> page to set up and launch a pipeline.</p>
@@ -1072,7 +1114,7 @@ output_dir_path = Path(output_dir) if output_dir else None
 # Validate output directory
 if not output_dir_path or not output_dir_path.exists():
     st.markdown("""
-        <div style="text-align: center; padding: 2rem; background: #f8d7da; border-radius: 10px; margin: 2rem 0;">
+        <div style="text-align: center; padding: 2rem; background: #1a202c; border-radius: 10px; margin: 2rem 0; color: #f56565;">
             <h3>❌ Output Directory Not Found</h3>
             <p>Output directory: <code>{}</code></p>
             <p>Please check if the pipeline has started running properly.</p>
@@ -1084,7 +1126,7 @@ if not output_dir_path or not output_dir_path.exists():
 status_col1, status_col2, status_col3 = st.columns([1, 2, 1])
 with status_col2:
     st.markdown("""
-        <div style="text-align: center; padding: 1rem; background: #d1ecf1; border-radius: 8px; margin: 1rem 0;">
+        <div style="text-align: center; padding: 1rem; background: #2d3748; border-radius: 8px; margin: 1rem 0; color: #63b3ed;">
             <h4>🔴 LIVE</h4>
             <p>Monitoring: <code>{}</code></p>
         </div>
@@ -1181,7 +1223,7 @@ if output_dir_path:
 # Enhanced Sidebar for navigation
 with st.sidebar:
     st.markdown("""
-        <div style="text-align: center; padding: 1rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; color: white; margin-bottom: 1rem;">
+        <div style="text-align: center; padding: 1rem; background: linear-gradient(135deg, #4a5568 0%, #2d3748 100%); border-radius: 10px; color: white; margin-bottom: 1rem;">
             <h3>🔴 LIVE DASHBOARD</h3>
             <p style="margin: 0; font-size: 0.9em;">Real-time monitoring</p>
         </div>
@@ -1320,7 +1362,7 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                 st.markdown(f"""
                     <div class="metric-container">
                         <h4>🧬 Compounds</h4>
-                        <h2 style="color: #667eea; margin: 0;">{compound_count}</h2>
+                        <h2 style="color: #48bb78; margin: 0;">{compound_count}</h2>
                         <small>Generated</small>
                     </div>
                 """, unsafe_allow_html=True)
@@ -1329,7 +1371,7 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                 st.markdown(f"""
                     <div class="metric-container">
                         <h4>⚗️ Variants</h4>
-                        <h2 style="color: #667eea; margin: 0;">{variant_count}</h2>
+                        <h2 style="color: #48bb78; margin: 0;">{variant_count}</h2>
                         <small>Synthesized</small>
                     </div>
                 """, unsafe_allow_html=True)
@@ -1340,7 +1382,7 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                 st.markdown(f"""
                     <div class="metric-container">
                         <h4>🔬 Filtered</h4>
-                        <h2 style="color: #667eea; margin: 0;">{filtered_count}</h2>
+                        <h2 style="color: #48bb78; margin: 0;">{filtered_count}</h2>
                         <small>Passed filters</small>
                     </div>
                 """, unsafe_allow_html=True)
@@ -1349,7 +1391,7 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                 st.markdown(f"""
                     <div class="metric-container">
                         <h4>🎯 Docked</h4>
-                        <h2 style="color: #667eea; margin: 0;">{docked_count}</h2>
+                        <h2 style="color: #48bb78; margin: 0;">{docked_count}</h2>
                         <small>Completed</small>
                     </div>
                 """, unsafe_allow_html=True)
@@ -1363,7 +1405,7 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                 st.markdown(f"""
                     <div class="metric-container">
                         <h4>🏆 Best Score</h4>
-                        <h2 style="color: #667eea; margin: 0;">{score_text}</h2>
+                        <h2 style="color: #48bb78; margin: 0;">{score_text}</h2>
                         <small>Lower = better</small>
                     </div>
                 """, unsafe_allow_html=True)
@@ -1416,29 +1458,53 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
             if "affinity_pred_value" in df.columns and df["affinity_pred_value"].notna().any():
                 st.subheader("🤖 Boltz-2 Affinity Analysis")
                 
+                # Add explanation of the two metrics
+                with st.expander("📖 Understanding Boltz-2 Affinity Predictions", expanded=False):
+                    st.markdown("""
+                    **Two Types of Predictions:**
+                    
+                    🎯 **Affinity Probability Binary** (0-1 scale):
+                    - Used for **hit discovery** to detect binders from decoys
+                    - Values closer to 1 indicate higher probability of binding
+                    - Threshold: >0.5 typically indicates a predicted binder
+                    
+                    📊 **Affinity Prediction Value** (log(IC50) scale):
+                    - Used for **ligand optimization** (hit-to-lead, lead-optimization)
+                    - Reports binding affinity as log(IC50) where IC50 is in μM
+                    - **Lower values = stronger binding**
+                    - Examples:
+                        - -3: Strong binder (IC50 ~ 10⁻⁹ M)
+                        - 0: Moderate binder (IC50 ~ 10⁻⁶ M) 
+                        - 2: Weak binder/decoy (IC50 ~ 10⁻⁴ M)
+                    
+                    🔄 **Conversions:**
+                    - To IC50 in μM: IC50 = 10^(log(IC50))
+                    - To pIC50 in kcal/mol: pIC50 = (6 - log(IC50)) × 1.364
+                    """)
+                
                 affinity_with_values = df[df["affinity_pred_value"].notna()]
                 if not affinity_with_values.empty:
-                    # Create metrics for affinity (IC50 in μM - lower is better)
+                    # Create metrics for affinity predictions
                     aff_col1, aff_col2, aff_col3, aff_col4 = st.columns(4)
                     with aff_col1:
-                        best_affinity = affinity_with_values["affinity_pred_value"].min()  # Lower IC50 is better
-                        st.metric("Best IC50 (lower=better)", f"{best_affinity:.3f} μM")
+                        best_affinity = affinity_with_values["affinity_pred_value"].min()  # Lower log(IC50) is better
+                        st.metric("Best log(IC50) (lower=better)", f"{best_affinity:.3f}")
                     with aff_col2:
                         avg_affinity = affinity_with_values["affinity_pred_value"].mean()
-                        st.metric("Average IC50", f"{avg_affinity:.3f} μM")
+                        st.metric("Average log(IC50)", f"{avg_affinity:.3f}")
                     with aff_col3:
                         if "affinity_probability_binary" in affinity_with_values.columns:
                             high_prob_count = len(affinity_with_values[affinity_with_values["affinity_probability_binary"] > 0.5])
-                            st.metric("High Confidence", f"{high_prob_count}/{len(affinity_with_values)}")
+                            st.metric("Predicted Binders", f"{high_prob_count}/{len(affinity_with_values)}")
                         else:
                             st.metric("Predictions", len(affinity_with_values))
                     with aff_col4:
-                        if "confidence_score" in affinity_with_values.columns:
-                            avg_confidence = affinity_with_values["confidence_score"].mean()
-                            st.metric("Avg Confidence", f"{avg_confidence:.3f}")
+                        if "affinity_probability_binary" in affinity_with_values.columns:
+                            avg_prob = affinity_with_values["affinity_probability_binary"].mean()
+                            st.metric("Avg Binding Prob", f"{avg_prob:.3f}")
                         else:
                             median_affinity = affinity_with_values["affinity_pred_value"].median()
-                            st.metric("Median IC50", f"{median_affinity:.3f} μM")
+                            st.metric("Median log(IC50)", f"{median_affinity:.3f}")
                     
                     # Create visualizations
                     viz_col1, viz_col2 = st.columns(2)
@@ -1449,9 +1515,9 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                             affinity_with_values,
                             x="affinity_pred_value",
                             nbins=20,
-                            title="Distribution of IC50 Predictions (Lower = Better)",
+                            title="Distribution of log(IC50) Predictions (Lower = Better)",
                             color_discrete_sequence=["#00cc96"],
-                            labels={"affinity_pred_value": "IC50 Prediction (μM)", "count": "Number of Compounds"}
+                            labels={"affinity_pred_value": "log(IC50) Prediction", "count": "Number of Compounds"}
                         )
                         fig_aff.update_layout(bargap=0.1)
                         st.plotly_chart(fig_aff, use_container_width=True)
@@ -1463,12 +1529,12 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                                 affinity_with_values,
                                 x="affinity_pred_value",
                                 y="affinity_probability_binary",
-                                title="IC50 Prediction vs Probability (Lower IC50 = Better)",
+                                title="log(IC50) vs Binding Probability (Lower log(IC50) = Better)",
                                 color="affinity_probability_binary",
                                 color_continuous_scale="viridis",
                                 labels={
-                                    "affinity_pred_value": "IC50 Prediction (μM)",
-                                    "affinity_probability_binary": "Binary Probability"
+                                    "affinity_pred_value": "log(IC50) Prediction",
+                                    "affinity_probability_binary": "Binding Probability"
                                 }
                             )
                             st.plotly_chart(fig_scatter, use_container_width=True)
@@ -1479,17 +1545,17 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                                     affinity_with_values,
                                     x="round",
                                     y="affinity_pred_value",
-                                    title="IC50 Predictions by Round (Lower = Better)",
-                                    color_discrete_sequence=["#00cc96"]
+                                    title="log(IC50) Predictions by Round (Lower = Better)",
+                                    color_discrete_sequence=["#48bb78"]
                                 )
                                 fig_box_aff.update_layout(
                                     xaxis_title="Round",
-                                    yaxis_title="IC50 Prediction (μM)"
+                                    yaxis_title="log(IC50) Prediction"
                                 )
                                 st.plotly_chart(fig_box_aff, use_container_width=True)
                             else:
                                 # Show affinity statistics
-                                st.markdown("**IC50 Statistics (μM):**")
+                                st.markdown("**log(IC50) Statistics:**")
                                 aff_stats = affinity_with_values["affinity_pred_value"].describe()
                                 aff_stats_df = pd.DataFrame({
                                     "Statistic": ["Count", "Mean", "Std", "Min", "25%", "50%", "75%", "Max"],
@@ -1506,25 +1572,45 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                                 })
                                 st.dataframe(aff_stats_df, use_container_width=True, hide_index=True)
                     
-                    # Show top affinity performers (lowest IC50 values are best)
-                    st.markdown("**🏆 Top 10 IC50 Predictions (Lowest/Best Values):**")
+                    # Show top affinity performers (lowest log(IC50) values are best)
+                    st.markdown("**🏆 Top 10 log(IC50) Predictions (Lowest/Best Values):**")
                     top_affinity = affinity_with_values.nsmallest(10, "affinity_pred_value")
-                    aff_display_cols = ["compound_id", "affinity_pred_value", "round"]
-                    if "variant_id" in top_affinity.columns:
-                        aff_display_cols.insert(1, "variant_id")
-                    if "barcode" in top_affinity.columns:
-                        aff_display_cols.insert(2, "barcode")
-                    if "affinity_probability_binary" in top_affinity.columns:
-                        aff_display_cols.insert(-1, "affinity_probability_binary")
-                    if "confidence_score" in top_affinity.columns:
-                        aff_display_cols.insert(-1, "confidence_score")
                     
-                    existing_aff_cols = [col for col in aff_display_cols if col in top_affinity.columns]
+                    # Add IC50 conversion column for better interpretation
+                    top_affinity_display = top_affinity.copy()
+                    # Convert log(IC50) to approximate IC50 in μM: IC50 ≈ 10^(log(IC50))
+                    top_affinity_display["estimated_IC50_uM"] = 10 ** top_affinity_display["affinity_pred_value"]
+                    # Convert to pIC50 in kcal/mol: pIC50 = (6 - log(IC50)) × 1.364
+                    top_affinity_display["pIC50_kcal_mol"] = (6 - top_affinity_display["affinity_pred_value"]) * 1.364
+                    
+                    aff_display_cols = ["compound_id", "affinity_pred_value", "estimated_IC50_uM", "pIC50_kcal_mol", "round"]
+                    if "variant_id" in top_affinity_display.columns:
+                        aff_display_cols.insert(1, "variant_id")
+                    if "barcode" in top_affinity_display.columns:
+                        aff_display_cols.insert(2, "barcode")
+                    if "affinity_probability_binary" in top_affinity_display.columns:
+                        aff_display_cols.insert(-1, "affinity_probability_binary")
+                    
+                    existing_aff_cols = [col for col in aff_display_cols if col in top_affinity_display.columns]
+                    
+                    # Format the dataframe for better display
+                    display_df = top_affinity_display[existing_aff_cols].copy()
+                    if "estimated_IC50_uM" in display_df.columns:
+                        display_df["estimated_IC50_uM"] = display_df["estimated_IC50_uM"].apply(lambda x: f"{x:.2e}")
+                    if "affinity_pred_value" in display_df.columns:
+                        display_df["affinity_pred_value"] = display_df["affinity_pred_value"].round(3)
+                    if "pIC50_kcal_mol" in display_df.columns:
+                        display_df["pIC50_kcal_mol"] = display_df["pIC50_kcal_mol"].round(3)
+                    if "affinity_probability_binary" in display_df.columns:
+                        display_df["affinity_probability_binary"] = display_df["affinity_probability_binary"].round(3)
+                    
                     st.dataframe(
-                        top_affinity[existing_aff_cols],
+                        display_df,
                         use_container_width=True,
                         hide_index=True
                     )
+                    
+                    st.caption("💡 estimated_IC50_uM = 10^(log(IC50)); pIC50_kcal_mol = (6 - log(IC50)) × 1.364")
 
             # Docking score distribution if available
             if "docking_score" in df.columns and df["docking_score"].notna().any():
@@ -1541,9 +1627,9 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                             docked_with_scores,
                             x="docking_score",
                             nbins=20,
-                            title="Distribution of Docking Scores (Lower = Better)",
-                            color_discrete_sequence=["#4287f5"],
-                            labels={"docking_score": "Docking Score (lower=better)", "count": "Number of Compounds"}
+                            title="Distribution of Docking Scores",
+                            color_discrete_sequence=["#63b3ed"],
+                            labels={"docking_score": "Docking Score", "count": "Number of Compounds"}
                         )
                         fig_hist.update_layout(bargap=0.1)
                         st.plotly_chart(fig_hist, use_container_width=True)
@@ -1556,7 +1642,7 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                                 x="round",
                                 y="docking_score",
                                 title="Docking Scores by Round",
-                                color_discrete_sequence=["#ff6b6b"]
+                                color_discrete_sequence=["#f56565"]
                             )
                             fig_box.update_layout(
                                 xaxis_title="Round",
@@ -1619,22 +1705,22 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                         x="docking_score",
                         y="affinity_pred_value",
                         color="affinity_probability_binary" if "affinity_probability_binary" in combined_data.columns else None,
-                        title="Docking Score vs IC50 Prediction (Both Lower = Better)",
+                        title="Docking Score vs log(IC50) Prediction (Both Lower = Better)",
                         hover_data=["compound_id", "barcode"] if "barcode" in combined_data.columns else ["compound_id"],
                         labels={
                             "docking_score": "Docking Score (lower=better)",
-                            "affinity_pred_value": "IC50 Prediction (μM, lower=better)",
-                            "affinity_probability_binary": "Affinity Probability"
+                            "affinity_pred_value": "log(IC50) Prediction (lower=better)",
+                            "affinity_probability_binary": "Binding Probability"
                         }
                     )
                     st.plotly_chart(fig_corr, use_container_width=True)
                     
                     # Show correlation coefficient
                     correlation = combined_data["docking_score"].corr(combined_data["affinity_pred_value"])
-                    st.info(f"Correlation between docking score and IC50: {correlation:.3f} (positive correlation means both values tend to move together)")
+                    st.info(f"Correlation between docking score and log(IC50): {correlation:.3f} (positive correlation means both values tend to move together)")
                     
                     # Show top combined performers
-                    st.markdown("**🎯 Best Combined Performance (Low IC50 + Low Docking Score):**")
+                    st.markdown("**🎯 Best Combined Performance (Low log(IC50) + Low Docking Score):**")
                     # Normalize scores for ranking (lower values are better for both)
                     combined_data_normalized = combined_data.copy()
                     combined_data_normalized["docking_score_norm"] = (
@@ -1650,16 +1736,27 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                         combined_data_normalized["affinity_norm"]
                     ) / 2
                     
+                    # Add estimated IC50 for better interpretation
+                    combined_data_normalized["estimated_IC50_uM"] = 10 ** combined_data_normalized["affinity_pred_value"]
+                    
                     top_combined = combined_data_normalized.nlargest(10, "combined_score")
-                    combined_display_cols = ["compound_id", "docking_score", "affinity_pred_value", "combined_score"]
+                    combined_display_cols = ["compound_id", "docking_score", "affinity_pred_value", "estimated_IC50_uM", "combined_score"]
                     if "variant_id" in top_combined.columns:
                         combined_display_cols.insert(1, "variant_id")
                     if "barcode" in top_combined.columns:
                         combined_display_cols.insert(2, "barcode")
+                    if "affinity_probability_binary" in top_combined.columns:
+                        combined_display_cols.insert(-1, "affinity_probability_binary")
                     
                     existing_combined_cols = [col for col in combined_display_cols if col in top_combined.columns]
+                    
+                    # Format the display
+                    display_combined = top_combined[existing_combined_cols].copy()
+                    if "estimated_IC50_uM" in display_combined.columns:
+                        display_combined["estimated_IC50_uM"] = display_combined["estimated_IC50_uM"].apply(lambda x: f"{x:.2e}")
+                    
                     st.dataframe(
-                        top_combined[existing_combined_cols].round(3),
+                        display_combined.round(3),
                         use_container_width=True,
                         hide_index=True
                     )
@@ -2086,18 +2183,31 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                                 # Show Boltz-2 affinity predictions
                                 if "affinity_pred_value" in result and not pd.isna(result["affinity_pred_value"]):
                                     st.markdown("**🤖 Boltz-2 Predictions:**")
+                                    log_ic50 = result['affinity_pred_value']
+                                    estimated_ic50 = 10 ** log_ic50
+                                    pic50_kcal_mol = (6 - log_ic50) * 1.364
+                                    
                                     affinity_data = {
-                                        "IC50": f"{result['affinity_pred_value']:.3f} μM",
+                                        "log(IC50)": f"{log_ic50:.3f}",
+                                        "Estimated IC50": f"{estimated_ic50:.2e} μM",
+                                        "pIC50": f"{pic50_kcal_mol:.3f} kcal/mol",
                                     }
                                     if "affinity_probability_binary" in result and not pd.isna(result["affinity_probability_binary"]):
                                         prob_val = result["affinity_probability_binary"]
-                                        confidence_text = "High" if prob_val > 0.5 else "Low"
-                                        affinity_data["Affinity Confidence"] = f"{prob_val:.3f} ({confidence_text})"
-                                    if "confidence_score" in result and not pd.isna(result["confidence_score"]):
-                                        affinity_data["Overall Confidence"] = f"{result['confidence_score']:.3f}"
+                                        confidence_text = "Predicted Binder" if prob_val > 0.5 else "Predicted Non-Binder"
+                                        affinity_data["Binding Probability"] = f"{prob_val:.3f} ({confidence_text})"
                                     
                                     for key, value in affinity_data.items():
                                         st.write(f"**{key}:** {value}")
+                                    
+                                    # Add interpretation
+                                    if log_ic50 < -1:
+                                        interpretation = "🟢 Strong Binder"
+                                    elif log_ic50 < 1:
+                                        interpretation = "🟡 Moderate Binder"
+                                    else:
+                                        interpretation = "🔴 Weak Binder/Decoy"
+                                    st.write(f"**Interpretation:** {interpretation}")
                                     
                                     st.divider()
                                 
@@ -2220,11 +2330,11 @@ with export_col3:
             stats["best_docking_score"] = float(df[df["docking_score"].notna()]["docking_score"].min())
         
         if "affinity_pred_value" in df.columns and df["affinity_pred_value"].notna().any():
-            stats["average_ic50_uM"] = float(df[df["affinity_pred_value"].notna()]["affinity_pred_value"].mean())
-            stats["best_ic50_uM"] = float(df[df["affinity_pred_value"].notna()]["affinity_pred_value"].min())  # Lower is better
+            stats["average_log_ic50"] = float(df[df["affinity_pred_value"].notna()]["affinity_pred_value"].mean())
+            stats["best_log_ic50"] = float(df[df["affinity_pred_value"].notna()]["affinity_pred_value"].min())  # Lower is better
             if "affinity_probability_binary" in df.columns:
-                high_conf_count = len(df[df["affinity_probability_binary"] > 0.5])
-                stats["high_confidence_ic50_predictions"] = high_conf_count
+                predicted_binders = len(df[df["affinity_probability_binary"] > 0.5])
+                stats["predicted_binders"] = predicted_binders
         
         st.json(stats)
 

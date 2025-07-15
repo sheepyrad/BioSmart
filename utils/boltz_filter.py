@@ -143,13 +143,15 @@ def _extract_protein_sequence_from_pdb(pdb_file: Path, log_cb: Callable[[str], N
         return ""
 
 
-def _create_boltz_yaml(yaml_path: Path, protein_sequence: str, smiles: str, log_cb: Callable[[str], None] | None = None) -> None:
+def _create_boltz_yaml(yaml_path: Path, protein_sequence: str, smiles: str, msa_path: str, pocket_residues: Union[List[int], None] = None, log_cb: Union[Callable[[str], None], None] = None) -> None:
     """Create YAML file for Boltz-2 prediction in the required format.
     
     Args:
         yaml_path: Path where the YAML file should be created.
         protein_sequence: Protein sequence string.
         smiles: SMILES string of the ligand.
+        msa_path: Path to the precomputed MSA file (.a3m format).
+        pocket_residues: List of residue indices (1-indexed) for pocket constraints.
         log_cb: Optional logging callback.
     """
     if not protein_sequence or not protein_sequence.strip():
@@ -169,7 +171,8 @@ def _create_boltz_yaml(yaml_path: Path, protein_sequence: str, smiles: str, log_
             {
                 'protein': {
                     'id': 'A',
-                    'sequence': protein_sequence
+                    'sequence': protein_sequence,
+                    'msa': msa_path
                 }
             },
             {
@@ -191,7 +194,27 @@ def _create_boltz_yaml(yaml_path: Path, protein_sequence: str, smiles: str, log_
     # Write YAML file
     try:
         with yaml_path.open('w', encoding='utf-8') as f:
+            # Write the base YAML structure (without constraints)
             yaml.dump(yaml_data, f, default_flow_style=False, sort_keys=False)
+            
+            # If pocket constraints exist, append them manually with correct format
+            if pocket_residues and len(pocket_residues) > 0:
+                # Append constraints section manually
+                f.write("constraints:\n")
+                f.write("- pocket:\n")
+                f.write("    binder: B\n")
+                f.write("    contacts: [")
+                
+                # Add each contact pair in the correct format
+                contact_strs = []
+                for res_idx in pocket_residues:
+                    contact_strs.append(f"[A, {res_idx}]")
+                
+                f.write(", ".join(contact_strs))
+                f.write("]\n")
+                
+                if log_cb:
+                    log_cb(f"[Boltz-2] Added pocket constraints for residues: {pocket_residues}")
         
         if log_cb:
             log_cb(f"[Boltz-2] Created YAML file: {yaml_path}")
@@ -348,6 +371,7 @@ def boltz_filter_variants(
     round_dir: Path,
     center: Tuple[float, float, float],
     box_size: Tuple[int, int, int],
+    pocket_residues: Union[List[int], None] = None,
     log_callback: Union[Callable[[str], None], None] = None,
 ) -> Tuple[List[dict], List[dict]]:
     """Run the Boltz-2 blind-docking filter over a list of variants.
@@ -363,6 +387,7 @@ def boltz_filter_variants(
         round_dir: Path corresponding to the current round directory (e.g., *.../round_1*).
         center: Docking box centre (x, y, z).
         box_size: Docking box dimensions (x, y, z).
+        pocket_residues: List of residue indices (1-indexed) for pocket constraints.
         log_callback: Optional logger function.
 
     Returns:
@@ -402,7 +427,8 @@ def boltz_filter_variants(
             input_yaml = var_root / "input.yaml"
 
             # Step 1 – Create YAML file --------------------------------------------
-            _create_boltz_yaml(input_yaml, protein_sequence, smiles, log_callback)
+            msa_path = "/home/conrad_hku/Drug_pipeline/msa/uniref_cleaned.a3m"
+            _create_boltz_yaml(input_yaml, protein_sequence, smiles, msa_path, pocket_residues, log_callback)
 
             # Step 2 – Run Boltz-2 prediction with --use_potentials -----------
             boltz_output_dir = var_root
@@ -418,7 +444,6 @@ def boltz_filter_variants(
                         "boltz", 
                         "predict", 
                         str(input_yaml), 
-                        "--use_msa_server",
                         "--use_potentials",
                         "--out_dir", 
                         str(boltz_output_dir)

@@ -18,6 +18,7 @@
     "top_n": 5,
     "max_variants": 5,
     "num_rounds": 2,
+    "score_threshold": 0.7,
     "boltz_evaluation_method": "any_atom",
     "out_dir": "outputs/P2M_tami_unidock"
 }

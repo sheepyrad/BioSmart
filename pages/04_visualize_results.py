@@ -317,7 +317,7 @@ def render_unidock_result_3d(result_file_path, receptor_file=None):
             script.onerror = function() {
                 console.error('Both 3Dmol CDNs failed to load');
                 document.getElementById('3dmolviewer_UNIQUE_ID').innerHTML = 
-                    '<div style="text-align:center; padding:50px; color:red;">' +
+                    '<div style="text-align:center; padding:50px; color:#f56565;">' +
                     '❌ 3Dmol.js failed to load from CDN<br>' +
                     'Please check your internet connection or browser settings</div>';
             };
@@ -691,7 +691,7 @@ def get_download_link(df, filename, text):
 
 # Page configuration
 st.set_page_config(
-    page_title="Results Analysis",
+    page_title="Visualize Results",
     page_icon="🔍",
     layout="wide"
 )
@@ -790,14 +790,63 @@ st.markdown("""
         color: #11998e;
         font-weight: bold;
     }
+    
+    <style>
+    .metric-card {
+        background: linear-gradient(90deg, #4a5568 0%, #2d3748 100%);
+        padding: 1rem;
+        border-radius: 10px;
+        color: white;
+        margin: 0.5rem 0;
+    }
+    .success-card {
+        background: linear-gradient(90deg, #38a169 0%, #48bb78 100%);
+        padding: 1rem;
+        border-radius: 10px;
+        color: white;
+        margin: 0.5rem 0;
+    }
+    .info-card {
+        border-left: 4px solid #38a169;
+        color: #e2e8f0;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+    .info-card h3 {
+        color: #e2e8f0;
+        margin-top: 0;
+    }
+    .info-card p {
+        margin-bottom: 0;
+    }
+    .small-text {
+        font-size: 0.9em;
+        color: #a0aec0;
+    }
+    .status-running { background-color: #ed8936; }
+    .status-complete { background-color: #48bb78; }
+    .status-pending { background-color: #4a5568; }
+    .status-error { background-color: #f56565; }
+    
+    .log-container {
+        background: #1a202c;
+        border: 1px solid #4a5568;
+        border-radius: 8px;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+    .highlight {
+        color: #38a169;
+        font-weight: bold;
+    }
     </style>
 """, unsafe_allow_html=True)
 
-# Header for analysis page
+# Header for visualization page
 st.markdown("""
     <div class="analysis-header">
-        <h1>🔍 Pipeline Results Analysis <span class="analysis-indicator">📈</span></h1>
-        <p>Comprehensive post-hoc analysis of completed pipeline runs</p>
+        <h1>🔍 Visualize Pipeline Results <span class="analysis-indicator">📈</span></h1>
+        <p>Load and explore any completed pipeline output directory</p>
     </div>
 """, unsafe_allow_html=True)
 
@@ -865,13 +914,13 @@ if "selected_view" not in st.session_state:
 # Directory selection
 st.markdown("## 📁 Select Pipeline Output Directory")
 
-st.info("Enter the path to any completed pipeline output directory for analysis")
+st.info("Enter the path to any completed pipeline output directory for visualization")
 
 # Enter path manually
 dir_path = st.text_input(
     "Output Directory Path:", 
     placeholder="/path/to/outputs/pipeline_run_name",
-    help="Enter the full path to a pipeline output directory containing results to analyze"
+    help="Enter the full path to a pipeline output directory containing results to visualize"
 )
 
 # Process manually entered path
@@ -880,47 +929,47 @@ if dir_path:
     if output_dir_path.exists() and output_dir_path.is_dir():
         st.success(f"✅ Directory Found: {output_dir_path}")
         st.session_state.output_dir = output_dir_path
-    else:
-        st.error(f"❌ Directory not found: {output_dir_path}")
-        st.session_state.output_dir = None
-
-# Load results if directory is available
-if st.session_state.output_dir:
-    st.info(f"📊 Ready to analyze: {st.session_state.output_dir.name}")
-    
-    if st.button("🔬 Load & Analyze Results", type="primary"):
-        with st.spinner("🔄 Loading and processing results data..."):
+        
+        # Auto-load results when valid directory is found
+        with st.spinner("🔄 Loading results..."):
             try:
                 results = load_results(st.session_state.output_dir)
-                if results is None:
-                    st.error("❌ Failed to load results - check if the directory contains valid pipeline output")
-                else:
+                if results is not None and results.get("tracking_report") is not None:
                     st.session_state.results_data = results
-                    st.balloons()
-                    st.success("✅ Successfully loaded results! Analysis dashboard is now available.")
+                    st.success("✅ Successfully loaded results!")
+                else:
+                    st.warning("⚠️ No tracking report found. The pipeline may still be running or incomplete.")
+                    st.session_state.results_data = results  # Keep partial results
             except Exception as e:
                 st.error(f"❌ Error processing results: {str(e)}")
                 import traceback
                 st.code(traceback.format_exc())
+    else:
+        st.error(f"❌ Directory not found: {output_dir_path}")
+        st.session_state.output_dir = None
+        st.session_state.results_data = None
 else:
-    st.warning("📁 Please enter a valid pipeline output directory path above to start your analysis.")
+    st.warning("📁 Please enter a valid pipeline output directory path above to start visualization.")
     st.info("💡 **Tip:** Look for directories containing 'master_tracking' or 'round_*' subdirectories.")
+    st.session_state.results_data = None
 
-# Navigation
-if st.session_state.results_data:
+# Navigation and main content
+if st.session_state.results_data and st.session_state.results_data.get("tracking_report") is not None:
+    df = st.session_state.results_data["tracking_report"]
+    
     # Enhanced Sidebar for navigation
     with st.sidebar:
         st.markdown("""
-            <div style="text-align: center; padding: 1rem; background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); border-radius: 10px; color: white; margin-bottom: 1rem;">
-                <h3>📊 ANALYSIS MODE</h3>
-                <p style="margin: 0; font-size: 0.9em;">Post-hoc exploration</p>
+            <div style="text-align: center; padding: 1rem; background: linear-gradient(135deg, #38a169 0%, #48bb78 100%); border-radius: 10px; color: white; margin-bottom: 1rem;">
+                <h3>📊 VISUALIZATION MODE</h3>
+                <p style="margin: 0; font-size: 0.9em;">Interactive exploration</p>
             </div>
         """, unsafe_allow_html=True)
         
         st.session_state.selected_view = st.radio(
-            "🔬 Analysis Views",
+            "📊 Dashboard Views",
             ["Summary", "Compounds", "Variants", "Docking Results"],
-            help="Select different analysis perspectives of your data"
+            help="Select different views of your pipeline data"
         )
         
         st.divider()
@@ -931,7 +980,7 @@ if st.session_state.results_data:
             "Receptor File Path",
             placeholder="Enter path to receptor file (.pdbqt or .pdb)",
             help="Set a global receptor file path to use for all 3D visualizations on this page",
-            key="global_receptor_path"
+            key="global_receptor_path_viz"
         )
         
         if global_receptor_path and global_receptor_path.strip():
@@ -951,872 +1000,1042 @@ if st.session_state.results_data:
         
         # Sidebar filtering options (global)
         st.subheader("🎛️ Global Filters")
-        df = st.session_state.results_data["tracking_report"]
         
         # Round filter (applies to all views)
-        # Filter out NaN values from options
-        round_options = sorted([r for r in df["round"].unique() if pd.notna(r)])
-        sidebar_rounds = st.multiselect(
-            "Filter by Round",
-            options=round_options,
-            default=round_options,
-            key="sidebar_rounds"
-        )
+        if "round" in df.columns:
+            try:
+                round_options = sorted([r for r in df["round"].unique() if pd.notna(r)])
+                sidebar_rounds = st.multiselect(
+                    "Filter by Round",
+                    options=round_options,
+                    default=round_options,
+                    key="sidebar_rounds_viz"
+                )
+            except Exception as e:
+                st.error(f"Error loading round options: {e}")
+                sidebar_rounds = []
+        else:
+            st.info("Round information not available for filtering")
+            sidebar_rounds = []
         
         # Status filter
-        status_options = sorted([s for s in df["status"].unique() if pd.notna(s)])
-        sidebar_status = st.multiselect(
-            "Filter by Status",
-            options=status_options,
-            default=status_options,
-            key="sidebar_status"
-        )
+        if "status" in df.columns:
+            try:
+                status_options = sorted([s for s in df["status"].unique() if pd.notna(s)])
+                sidebar_status = st.multiselect(
+                    "Filter by Status",
+                    options=status_options,
+                    default=status_options,
+                    key="sidebar_status_viz"
+                )
+            except Exception as e:
+                st.error(f"Error loading status options: {e}")
+                sidebar_status = []
+        else:
+            st.info("Status information not available for filtering")
+            sidebar_status = []
         
         # Apply global filters
-        if sidebar_rounds and sidebar_status:
-            filtered_df = df[df["round"].isin(sidebar_rounds) & df["status"].isin(sidebar_status)]
+        if sidebar_rounds and sidebar_status and "round" in df.columns and "status" in df.columns:
+            try:
+                filtered_df = df[df["round"].isin(sidebar_rounds) & df["status"].isin(sidebar_status)]
+            except Exception as e:
+                st.error(f"Error applying filters: {e}")
+                filtered_df = df
         else:
             filtered_df = df
             
-    # Main content based on selected view
-    if st.session_state.selected_view == "Summary":
-        st.markdown("## 📊 Pipeline Results Analysis")
-        
-        # Determine what pipeline stages have been reached
-        available_statuses = df["status"].unique() if "status" in df.columns else []
-        
-        # Enhanced Summary metrics with styling
-        st.markdown("### 🔢 Key Metrics")
-        col1, col2, col3, col4, col5 = st.columns(5)
-        with col1:
-            compound_count = len(df[df["status"] == "GENERATED"]) if "status" in df.columns else 0
-            st.markdown(f"""
-                <div class="metric-container">
-                    <h4>🧬 Compounds</h4>
-                    <h2 style="color: #11998e; margin: 0;">{compound_count}</h2>
-                    <small>Generated</small>
-                </div>
-            """, unsafe_allow_html=True)
-        with col2:
-            variant_count = len(df[df["status"] == "SYNTHETIZED"]) if "status" in df.columns else 0
-            st.markdown(f"""
-                <div class="metric-container">
-                    <h4>⚗️ Variants</h4>
-                    <h2 style="color: #11998e; margin: 0;">{variant_count}</h2>
-                    <small>Synthesized</small>
-                </div>
-            """, unsafe_allow_html=True)
-        with col3:
-            filtered_count = len(df[df["status"].isin(["PASSFILTER", "PASSBLINDDOCK"])]) if "status" in df.columns else 0
-            st.markdown(f"""
-                <div class="metric-container">
-                    <h4>🔬 Filtered</h4>
-                    <h2 style="color: #11998e; margin: 0;">{filtered_count}</h2>
-                    <small>Passed filters</small>
-                </div>
-            """, unsafe_allow_html=True)
-        with col4:
-            docked_count = len(df[df["status"] == "DOCKED"]) if "status" in df.columns else 0
-            st.markdown(f"""
-                <div class="metric-container">
-                    <h4>🎯 Docked</h4>
-                    <h2 style="color: #11998e; margin: 0;">{docked_count}</h2>
-                    <small>Completed</small>
-                </div>
-            """, unsafe_allow_html=True)
-        with col5:
-            # Show best docking score if available
-            if "docking_score" in df.columns and df["docking_score"].notna().any():
-                best_score = df[df["docking_score"].notna()]["docking_score"].min()
-                score_text = f"{best_score:.2f}"
-            else:
-                score_text = "N/A"
-            st.markdown(f"""
-                <div class="metric-container">
-                    <h4>🏆 Best Score</h4>
-                    <h2 style="color: #11998e; margin: 0;">{score_text}</h2>
-                    <small>Lower = better</small>
-                </div>
-            """, unsafe_allow_html=True)
-        
-        # Show pipeline progress information
-        progress_message = ""
-        if "GENERATED" in available_statuses and "SYNTHETIZED" not in available_statuses:
-            progress_message = "Pipeline has generated compounds but not yet completed retrosynthesis."
-        elif "SYNTHETIZED" in available_statuses and "PASSFILTER" not in available_statuses:
-            progress_message = "Pipeline has generated variants but not yet completed filtering."
-        elif "PASSFILTER" in available_statuses and "DOCKED" not in available_statuses:
-            progress_message = "Pipeline has filtered variants but not yet completed docking."
-        
-        if progress_message:
-            st.info(progress_message + " Some visualizations may not be available until those steps complete.")
-        
-        # Docking score distribution if available
-        if "docking_score" in df.columns and df["docking_score"].notna().any():
-            st.subheader("Docking Score Distribution")
+    # Add refresh button
+    if st.button("🔄 Refresh Data"):
+        if st.session_state.output_dir:
+            with st.spinner("Refreshing data..."):
+                results = load_results(st.session_state.output_dir)
+                if results is not None:
+                    st.session_state.results_data = results
+                    st.success("Data refreshed successfully!")
+                    st.rerun()
+                else:
+                    st.error("Failed to refresh data.")
             
-            # Just show regular histogram if only one type exists or if data is available
-            docked_with_scores = df[df["docking_score"].notna()]
-            if not docked_with_scores.empty:
-                fig = px.histogram(
-                    docked_with_scores,
-                    x="docking_score",
-                    nbins=20,
-                    title="Distribution of Docking Scores",
-                    color_discrete_sequence=["#4287f5"]
+    # Main content - Conditional rendering based on the selected view
+    # Check if we have any data at all
+    if df.empty:
+        st.warning("The tracking report is empty. The pipeline may still be in the initial stages.")
+    else:
+        # Continue with regular view rendering based on selected view
+        # Define available_statuses for use across all views
+        available_statuses = df["status"].unique() if "status" in df.columns else []
+                
+        if st.session_state.selected_view == "Summary":
+            st.markdown("## 📊 Pipeline Overview")
+            
+            # Enhanced Summary metrics with styling
+            st.markdown("### 🔢 Key Metrics")
+            col1, col2, col3, col4, col5 = st.columns(5)
+            with col1:
+                compound_count = len(df[df["status"] == "GENERATED"]) if "status" in df.columns else 0
+                st.markdown(f"""
+                    <div class="metric-container">
+                        <h4>🧬 Compounds</h4>
+                        <h2 style="color: #48bb78; margin: 0;">{compound_count}</h2>
+                        <small>Generated</small>
+                    </div>
+                """, unsafe_allow_html=True)
+            with col2:
+                variant_count = len(df[df["status"] == "SYNTHETIZED"]) if "status" in df.columns else 0
+                st.markdown(f"""
+                    <div class="metric-container">
+                        <h4>⚗️ Variants</h4>
+                        <h2 style="color: #48bb78; margin: 0;">{variant_count}</h2>
+                        <small>Synthesized</small>
+                    </div>
+                """, unsafe_allow_html=True)
+            with col3:
+                filtered_count = len(
+                    df[df["status"].isin(["PASSFILTER", "PASSBLINDDOCK"])]
+                ) if "status" in df.columns else 0
+                st.markdown(f"""
+                    <div class="metric-container">
+                        <h4>🔬 Filtered</h4>
+                        <h2 style="color: #48bb78; margin: 0;">{filtered_count}</h2>
+                        <small>Passed filters</small>
+                    </div>
+                """, unsafe_allow_html=True)
+            with col4:
+                docked_count = len(df[df["status"] == "DOCKED"]) if "status" in df.columns else 0
+                st.markdown(f"""
+                    <div class="metric-container">
+                        <h4>🎯 Docked</h4>
+                        <h2 style="color: #48bb78; margin: 0;">{docked_count}</h2>
+                        <small>Completed</small>
+                    </div>
+                """, unsafe_allow_html=True)
+            with col5:
+                # Show best docking score if available (lower is better)
+                if "docking_score" in df.columns and df["docking_score"].notna().any():
+                    best_score = df[df["docking_score"].notna()]["docking_score"].min()
+                    score_text = f"{best_score:.2f}"
+                else:
+                    score_text = "N/A"
+                st.markdown(f"""
+                    <div class="metric-container">
+                        <h4>🏆 Best Score</h4>
+                        <h2 style="color: #48bb78; margin: 0;">{score_text}</h2>
+                        <small>Lower = better</small>
+                    </div>
+                """, unsafe_allow_html=True)
+                        
+            # Workflow Progress Visualization
+            st.subheader("Workflow Progress")
+            
+            # Define workflow stages
+            workflow_stages = [
+                ("Generation", "GENERATED", "🧬"),
+                ("Retrosynthesis", "SYNTHETIZED", "⚗️"),
+                ("MedChem Filter", "PASSFILTER", "🔬"),
+                ("Boltz Filter", "PASSBLINDDOCK", "🤖"),
+                ("Docking", "DOCKED", "🎯")
+            ]
+            
+            # Create progress indicators
+            progress_cols = st.columns(len(workflow_stages))
+            
+            for i, (stage_name, status_key, emoji) in enumerate(workflow_stages):
+                with progress_cols[i]:
+                    count = len(df[df["status"] == status_key]) if "status" in df.columns else 0
+                    is_complete = status_key in available_statuses and count > 0
+                    
+                    if is_complete:
+                        st.success(f"{emoji} {stage_name}")
+                        st.write(f"**{count}** items")
+                    else:
+                        st.info(f"{emoji} {stage_name}")
+                        st.write("Pending")
+            
+            # Show detailed progress message
+            progress_message = ""
+            if "GENERATED" in available_statuses and "SYNTHETIZED" not in available_statuses:
+                progress_message = "Pipeline has generated compounds but not yet completed retrosynthesis."
+            elif "SYNTHETIZED" in available_statuses and "PASSFILTER" not in available_statuses:
+                progress_message = "Pipeline has generated variants but not yet completed filtering."
+            elif "PASSFILTER" in available_statuses and "DOCKED" not in available_statuses:
+                progress_message = "Pipeline has filtered variants but not yet completed docking."
+            elif "DOCKED" in available_statuses:
+                progress_message = "Pipeline has completed all major stages successfully!"
+            
+            if progress_message:
+                if "completed all major stages" in progress_message:
+                    st.success(progress_message)
+                else:
+                    st.info(progress_message + " Some visualizations may not be available until those steps complete.")
+            
+            # Affinity Analysis Section
+            if "affinity_pred_value" in df.columns and df["affinity_pred_value"].notna().any():
+                st.subheader("🤖 Boltz-2 Affinity Analysis")
+                
+                # Add explanation of the two metrics
+                with st.expander("📖 Understanding Boltz-2 Affinity Predictions", expanded=False):
+                    st.markdown("""
+                    **Two Types of Predictions:**
+                    
+                    🎯 **Affinity Probability Binary** (0-1 scale):
+                    - Used for **hit discovery** to detect binders from decoys
+                    - Values closer to 1 indicate higher probability of binding
+                    - Threshold: >0.5 typically indicates a predicted binder
+                    
+                    📊 **Affinity Prediction Value** (log(IC50) scale):
+                    - Used for **ligand optimization** (hit-to-lead, lead-optimization)
+                    - Reports binding affinity as log(IC50) where IC50 is in μM
+                    - **Lower values = stronger binding**
+                    - Examples:
+                        - -3: Strong binder (IC50 ~ 10⁻⁹ M)
+                        - 0: Moderate binder (IC50 ~ 10⁻⁶ M) 
+                        - 2: Weak binder/decoy (IC50 ~ 10⁻⁴ M)
+                    
+                    🔄 **Conversions:**
+                    - To IC50 in μM: IC50 = 10^(log(IC50))
+                    - To pIC50 in kcal/mol: pIC50 = (6 - log(IC50)) × 1.364
+                    """)
+                
+                affinity_with_values = df[df["affinity_pred_value"].notna()]
+                if not affinity_with_values.empty:
+                    # Create metrics for affinity predictions
+                    aff_col1, aff_col2, aff_col3, aff_col4 = st.columns(4)
+                    with aff_col1:
+                        best_affinity = affinity_with_values["affinity_pred_value"].min()  # Lower log(IC50) is better
+                        st.metric("Best log(IC50) (lower=better)", f"{best_affinity:.3f}")
+                    with aff_col2:
+                        avg_affinity = affinity_with_values["affinity_pred_value"].mean()
+                        st.metric("Average log(IC50)", f"{avg_affinity:.3f}")
+                    with aff_col3:
+                        if "affinity_probability_binary" in affinity_with_values.columns:
+                            high_prob_count = len(affinity_with_values[affinity_with_values["affinity_probability_binary"] > 0.5])
+                            st.metric("Predicted Binders", f"{high_prob_count}/{len(affinity_with_values)}")
+                        else:
+                            st.metric("Predictions", len(affinity_with_values))
+                    with aff_col4:
+                        if "affinity_probability_binary" in affinity_with_values.columns:
+                            avg_prob = affinity_with_values["affinity_probability_binary"].mean()
+                            st.metric("Avg Binding Prob", f"{avg_prob:.3f}")
+                        else:
+                            median_affinity = affinity_with_values["affinity_pred_value"].median()
+                            st.metric("Median log(IC50)", f"{median_affinity:.3f}")
+                    
+                    # Create visualizations
+                    viz_col1, viz_col2 = st.columns(2)
+                    
+                    with viz_col1:
+                        # Affinity value distribution
+                        fig_aff = px.histogram(
+                            affinity_with_values,
+                            x="affinity_pred_value",
+                            nbins=20,
+                            title="Distribution of log(IC50) Predictions (Lower = Better)",
+                            color_discrete_sequence=["#00cc96"],
+                            labels={"affinity_pred_value": "log(IC50) Prediction", "count": "Number of Compounds"}
+                        )
+                        fig_aff.update_layout(bargap=0.1)
+                        st.plotly_chart(fig_aff, use_container_width=True)
+                    
+                    with viz_col2:
+                        # Affinity vs Probability scatter plot if probability data exists
+                        if "affinity_probability_binary" in affinity_with_values.columns:
+                            fig_scatter = px.scatter(
+                                affinity_with_values,
+                                x="affinity_pred_value",
+                                y="affinity_probability_binary",
+                                title="log(IC50) vs Binding Probability (Lower log(IC50) = Better)",
+                                color="affinity_probability_binary",
+                                color_continuous_scale="viridis",
+                                labels={
+                                    "affinity_pred_value": "log(IC50) Prediction",
+                                    "affinity_probability_binary": "Binding Probability"
+                                }
+                            )
+                            st.plotly_chart(fig_scatter, use_container_width=True)
+                        else:
+                            # Show affinity by round if multiple rounds exist
+                            if "round" in affinity_with_values.columns and len(affinity_with_values["round"].unique()) > 1:
+                                fig_box_aff = px.box(
+                                    affinity_with_values,
+                                    x="round",
+                                    y="affinity_pred_value",
+                                    title="log(IC50) Predictions by Round (Lower = Better)",
+                                    color_discrete_sequence=["#48bb78"]
+                                )
+                                fig_box_aff.update_layout(
+                                    xaxis_title="Round",
+                                    yaxis_title="log(IC50) Prediction"
+                                )
+                                st.plotly_chart(fig_box_aff, use_container_width=True)
+                            else:
+                                # Show affinity statistics
+                                st.markdown("**log(IC50) Statistics:**")
+                                aff_stats = affinity_with_values["affinity_pred_value"].describe()
+                                aff_stats_df = pd.DataFrame({
+                                    "Statistic": ["Count", "Mean", "Std", "Min", "25%", "50%", "75%", "Max"],
+                                    "Value": [
+                                        f"{aff_stats['count']:.0f}",
+                                        f"{aff_stats['mean']:.3f}",
+                                        f"{aff_stats['std']:.3f}",
+                                        f"{aff_stats['min']:.3f}",
+                                        f"{aff_stats['25%']:.3f}",
+                                        f"{aff_stats['50%']:.3f}",
+                                        f"{aff_stats['75%']:.3f}",
+                                        f"{aff_stats['max']:.3f}"
+                                    ]
+                                })
+                                st.dataframe(aff_stats_df, use_container_width=True, hide_index=True)
+                    
+                    # Show top affinity performers (lowest log(IC50) values are best)
+                    st.markdown("**🏆 Top 10 log(IC50) Predictions (Lowest/Best Values):**")
+                    top_affinity = affinity_with_values.nsmallest(10, "affinity_pred_value")
+                    
+                    # Add IC50 conversion column for better interpretation
+                    top_affinity_display = top_affinity.copy()
+                    # Convert log(IC50) to approximate IC50 in μM: IC50 ≈ 10^(log(IC50))
+                    top_affinity_display["estimated_IC50_uM"] = 10 ** top_affinity_display["affinity_pred_value"]
+                    # Convert to pIC50 in kcal/mol: pIC50 = (6 - log(IC50)) × 1.364
+                    top_affinity_display["pIC50_kcal_mol"] = (6 - top_affinity_display["affinity_pred_value"]) * 1.364
+                    
+                    aff_display_cols = ["compound_id", "affinity_pred_value", "estimated_IC50_uM", "pIC50_kcal_mol", "round"]
+                    if "variant_id" in top_affinity_display.columns:
+                        aff_display_cols.insert(1, "variant_id")
+                    if "barcode" in top_affinity_display.columns:
+                        aff_display_cols.insert(2, "barcode")
+                    if "affinity_probability_binary" in top_affinity_display.columns:
+                        aff_display_cols.insert(-1, "affinity_probability_binary")
+                    
+                    existing_aff_cols = [col for col in aff_display_cols if col in top_affinity_display.columns]
+                    
+                    # Format the dataframe for better display
+                    display_df = top_affinity_display[existing_aff_cols].copy()
+                    if "estimated_IC50_uM" in display_df.columns:
+                        display_df["estimated_IC50_uM"] = display_df["estimated_IC50_uM"].apply(lambda x: f"{x:.2e}")
+                    if "affinity_pred_value" in display_df.columns:
+                        display_df["affinity_pred_value"] = display_df["affinity_pred_value"].round(3)
+                    if "pIC50_kcal_mol" in display_df.columns:
+                        display_df["pIC50_kcal_mol"] = display_df["pIC50_kcal_mol"].round(3)
+                    if "affinity_probability_binary" in display_df.columns:
+                        display_df["affinity_probability_binary"] = display_df["affinity_probability_binary"].round(3)
+                    
+                    st.dataframe(
+                        display_df,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    st.caption("💡 estimated_IC50_uM = 10^(log(IC50)); pIC50_kcal_mol = (6 - log(IC50)) × 1.364")
+
+            # Docking score distribution if available
+            if "docking_score" in df.columns and df["docking_score"].notna().any():
+                st.subheader("🎯 Docking Score Analysis")
+                
+                docked_with_scores = df[df["docking_score"].notna()]
+                if not docked_with_scores.empty:
+                    # Create two columns for different visualizations
+                    viz_col1, viz_col2 = st.columns(2)
+                    
+                    with viz_col1:
+                        # Histogram of docking scores
+                        fig_hist = px.histogram(
+                            docked_with_scores,
+                            x="docking_score",
+                            nbins=20,
+                            title="Distribution of Docking Scores",
+                            color_discrete_sequence=["#63b3ed"],
+                            labels={"docking_score": "Docking Score", "count": "Number of Compounds"}
+                        )
+                        fig_hist.update_layout(bargap=0.1)
+                        st.plotly_chart(fig_hist, use_container_width=True)
+                    
+                    with viz_col2:
+                        # Box plot by round if multiple rounds exist
+                        if "round" in docked_with_scores.columns and len(docked_with_scores["round"].unique()) > 1:
+                            fig_box = px.box(
+                                docked_with_scores,
+                                x="round",
+                                y="docking_score",
+                                title="Docking Scores by Round",
+                                color_discrete_sequence=["#f56565"]
+                            )
+                            fig_box.update_layout(
+                                xaxis_title="Round",
+                                yaxis_title="Docking Score"
+                            )
+                            st.plotly_chart(fig_box, use_container_width=True)
+                        else:
+                            # Show summary statistics instead
+                            st.markdown("**Summary Statistics:**")
+                            stats = docked_with_scores["docking_score"].describe()
+                            stats_df = pd.DataFrame({
+                                "Statistic": ["Count", "Mean", "Std", "Min", "25%", "50%", "75%", "Max"],
+                                "Value": [
+                                    f"{stats['count']:.0f}",
+                                    f"{stats['mean']:.2f}",
+                                    f"{stats['std']:.2f}",
+                                    f"{stats['min']:.2f}",
+                                    f"{stats['25%']:.2f}",
+                                    f"{stats['50%']:.2f}",
+                                    f"{stats['75%']:.2f}",
+                                    f"{stats['max']:.2f}"
+                                ]
+                            })
+                            st.dataframe(stats_df, use_container_width=True, hide_index=True)
+                
+                # Show top performers (lowest/best scores)
+                st.markdown("**🏆 Top 10 Docking Performers (Lowest/Best Scores):**")
+                top_performers = docked_with_scores.nsmallest(10, "docking_score")
+                display_cols = ["compound_id", "docking_score", "round"]
+                if "variant_id" in top_performers.columns:
+                    display_cols.insert(1, "variant_id")
+                if "barcode" in top_performers.columns:
+                    display_cols.insert(2, "barcode")
+                
+                existing_cols = [col for col in display_cols if col in top_performers.columns]
+                st.dataframe(
+                    top_performers[existing_cols],
+                    use_container_width=True,
+                    hide_index=True
                 )
-                fig.update_layout(bargap=0.1)
-                st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("No compounds with docking scores are available yet.")
-        else:
-            st.info("No docking scores available in the tracking report. This section will populate when docking completes.")
-    
-    elif st.session_state.selected_view == "Compounds":
-        st.header("Generated Compounds")
-        
-        # Check if we have any compounds at all
-        if "status" not in df.columns or not any(status for status in df["status"].unique() if status == "GENERATED"):
-            st.info("No compounds have been generated yet. This tab will populate when compound generation completes.")
-        else:
-            # Enhanced filter controls
-            filter_col1, filter_col2, filter_col3 = st.columns([2, 1, 1])
-            with filter_col1:
-                round_options_compounds = sorted([r for r in df["round"].unique() if pd.notna(r)])
-                selected_rounds = st.multiselect(
-                    "Filter by Round",
-                    options=round_options_compounds,
-                    default=round_options_compounds,
-                    key="compounds_rounds"
-                )
-            with filter_col2:
-                sort_options = ["compound_id", "generation"]
-                if "round" in df.columns:
-                    sort_options.insert(1, "round")
                 
-                sort_by = st.selectbox(
-                    "Sort by",
-                    options=sort_options,
-                    index=0,
-                    key="compounds_sort"
-                )
-            with filter_col3:
-                sort_order = st.radio(
-                    "Order",
-                    options=["Ascending", "Descending"],
-                    horizontal=True,
-                    key="compounds_order"
-                )
-            
-            # Filter and sort compounds
-            try:
-                # First filter by status
-                compounds_df = df[df["status"] == "GENERATED"]
+            # Combined Analysis Section - Show correlation if both affinity and docking data exist
+            if ("affinity_pred_value" in df.columns and df["affinity_pred_value"].notna().any() and
+                "docking_score" in df.columns and df["docking_score"].notna().any()):
                 
-                # Then apply round filter if selected
-                if selected_rounds:
-                    compounds_df = compounds_df[compounds_df["round"].isin(selected_rounds)]
+                st.subheader("🔬 Combined Affinity vs Docking Analysis")
                 
-                # Apply sorting if the column exists
-                if sort_by in compounds_df.columns:
-                    ascending = sort_order == "Ascending"
-                    compounds_df = compounds_df.sort_values(sort_by, ascending=ascending)
-            except Exception as e:
-                st.error(f"Error filtering compounds: {e}")
-                compounds_df = pd.DataFrame()
-            
-            # Display count
-            st.info(f"Displaying {len(compounds_df)} compounds")
-            
-            if compounds_df.empty:
-                st.warning("No compounds match the current filter criteria. Try adjusting the filters.")
-            else:
-                # Determine which columns to display
-                display_columns = ["compound_id"]
-                if "barcode" in compounds_df.columns:
-                    display_columns.append("barcode")
-                if "round" in compounds_df.columns:
-                    display_columns.append("round")
-                if "generation" in compounds_df.columns:
-                    display_columns.append("generation")
-                display_columns.append("smiles")
+                # Get compounds that have both affinity and docking data
+                combined_data = df[
+                    df["affinity_pred_value"].notna() & 
+                    df["docking_score"].notna()
+                ]
                 
-                # Only include columns that exist
-                existing_columns = [col for col in display_columns if col in compounds_df.columns]
-                
-                # First show the dataframe
-                st.dataframe(
-                    compounds_df[existing_columns],
-                    use_container_width=True,
-                    hide_index=True
-                )
-                
-                # Add download button for this filtered view
-                if not compounds_df.empty:
-                    st.download_button(
-                        "Download Filtered Compounds",
-                        data=compounds_df.to_csv(index=False).encode('utf-8'),
-                        file_name="filtered_compounds.csv",
-                        mime="text/csv"
+                if not combined_data.empty:
+                    # Create correlation plot
+                    fig_corr = px.scatter(
+                        combined_data,
+                        x="docking_score",
+                        y="affinity_pred_value",
+                        color="affinity_probability_binary" if "affinity_probability_binary" in combined_data.columns else None,
+                        title="Docking Score vs log(IC50) Prediction (Both Lower = Better)",
+                        hover_data=["compound_id", "barcode"] if "barcode" in combined_data.columns else ["compound_id"],
+                        labels={
+                            "docking_score": "Docking Score (lower=better)",
+                            "affinity_pred_value": "log(IC50) Prediction (lower=better)",
+                            "affinity_probability_binary": "Binding Probability"
+                        }
                     )
-                
-                # Then show expandable elements with molecule renderings
-                st.subheader("Compound Structures")
-                
-                # Add pagination for large datasets
-                if len(compounds_df) > 10:
-                    compounds_per_page = st.slider("Compounds per page", 5, 20, 10, key="compounds_per_page")
-                    page_number = st.number_input("Page", min_value=1, max_value=max(1, len(compounds_df) // compounds_per_page + 1), step=1, key="compounds_page")
-                    start_idx = (page_number - 1) * compounds_per_page
-                    end_idx = min(start_idx + compounds_per_page, len(compounds_df))
-                    paginated_df = compounds_df.iloc[start_idx:end_idx]
-                else:
-                    paginated_df = compounds_df
-                
-                for _, compound in paginated_df.iterrows():
-                    with st.expander(f"Compound {compound.get('compound_id', 'Unknown')}"):
-                        col1, col2 = st.columns([1, 2])
-                        
-                        with col1:
-                            # Display 2D structure
-                            if "smiles" in compound and not pd.isna(compound["smiles"]):
-                                mol_img = render_mol(compound["smiles"])
-                                if mol_img:
-                                    st.image(mol_img, caption="2D Structure", width=200)
-                                else:
-                                    st.info("Could not render molecule structure")
-                            else:
-                                st.warning("No SMILES data available for this compound")
-                        
-                        with col2:
-                            # Compound details
-                            details_tab, variants_tab = st.tabs(["Details", "Related Variants"])
-                            
-                            with details_tab:
-                                # Build details dict with only non-NA values
-                                details = {}
-                                for field in ["compound_id", "barcode", "generation", "round", "smiles", "source", "timestamp"]:
-                                    if field in compound and not pd.isna(compound[field]):
-                                        details[field.replace("_", " ").title()] = compound[field]
-                                st.json(details)
-                            
-                            with variants_tab:
-                                # Find related variants
-                                if "parent_id" in df.columns:
-                                    compound_id = compound.get("compound_id", "")
-                                    if compound_id:
-                                        related_variants = df[df["parent_id"] == compound_id]
-                                        
-                                        if not related_variants.empty:
-                                            # Determine what fields to show in the related variants table
-                                            variant_columns = ["variant_id", "status"]
-                                            if "score" in related_variants.columns:
-                                                variant_columns.append("score")
-                                            if "docking_score" in related_variants.columns:
-                                                variant_columns.append("docking_score")
-                                                
-                                            # Only use columns that exist
-                                            existing_var_columns = [col for col in variant_columns if col in related_variants.columns]
-                                            
-                                            st.dataframe(
-                                                related_variants[existing_var_columns],
-                                                use_container_width=True,
-                                                hide_index=True
-                                            )
-                                            
-                                            # Add helpful status information
-                                            variant_statuses = related_variants["status"].unique() if "status" in related_variants.columns else []
-                                            if "DOCKED" in variant_statuses:
-                                                st.success("✅ Some variants have been docked")
-                                            elif "PASSFILTER" in variant_statuses:
-                                                st.info("⏳ Variants have been filtered but not yet docked")
-                                            elif "SYNTHETIZED" in variant_statuses:
-                                                st.info("⏳ Variants have been synthesized but not yet filtered or docked")
-                                        else:
-                                            st.info("No related variants found")
-                                    else:
-                                        st.info("Compound ID not available to find related variants")
-                                else:
-                                    st.info("Parent-variant relationship not available")
-    
-    elif st.session_state.selected_view == "Variants":
-        st.header("Synthesized Variants")
-        
-        # Check if we have any variants at all
-        if "status" in df.columns and not any(status for status in df["status"].unique() if status in ["SYNTHETIZED", "PASSFILTER", "PASSBLINDDOCK"]):
-            st.info("No variants have been synthesized yet. This tab will populate when retrosynthesis completes.")
-            
-            # Show what stages have been reached
-            available_statuses = df["status"].unique() if "status" in df.columns else []
-            if "GENERATED" in available_statuses:
-                st.success("✅ Compounds have been generated")
-                st.info("⏳ Waiting for retrosynthesis to complete")
-        else:
-            # Enhanced filter controls
-            filter_col1, filter_col2, filter_col3 = st.columns(3)
-            with filter_col1:
-                status_options = sorted([s for s in df["status"].unique() if pd.notna(s) and s in ["SYNTHETIZED", "PASSFILTER", "PASSBLINDDOCK", "DOCKED"]])
-                default_status = [s for s in status_options if s in ["SYNTHETIZED", "PASSFILTER", "PASSBLINDDOCK"]]
-                selected_status = st.multiselect(
-                    "Filter by Status",
-                    options=status_options,
-                    default=default_status if default_status else status_options,
-                    key="variants_status"
-                )
-            with filter_col2:
-                round_options_var = sorted([r for r in df["round"].unique() if pd.notna(r)])
-                selected_rounds_var = st.multiselect(
-                    "Filter by Round",
-                    options=round_options_var,
-                    default=round_options_var,
-                    key="variants_rounds"
-                )
-            with filter_col3:
-                if "score" in df.columns and df["score"].notna().any():
-                    valid_scores = df["score"].dropna()
-                    if not valid_scores.empty:
-                        min_score, max_score = float(valid_scores.min()), float(valid_scores.max())
-                    else:
-                        min_score, max_score = 0.0, 1.0
-                        
-                    score_range = st.slider(
-                        "Score Range",
-                        min_value=min_score,
-                        max_value=max_score,
-                        value=(min_score, max_score),
-                        key="variants_score"
-                    )
-                    score_filter = (df["score"] >= score_range[0]) & (df["score"] <= score_range[1])
-                else:
-                    score_filter = pd.Series(True, index=df.index)
-                    if "score" not in df.columns:
-                        st.info("No score data available in variants")
-            
-            # Add sorting options
-            sort_col1, sort_col2 = st.columns(2)
-            with sort_col1:
-                sort_options = ["variant_id", "round", "generation"]
-                if "score" in df.columns:
-                    sort_options.append("score")
+                    st.plotly_chart(fig_corr, use_container_width=True)
                     
-                sort_by_var = st.selectbox(
-                    "Sort by",
-                    options=sort_options,
-                    index=0,
-                    key="variants_sort"
-                )
-            with sort_col2:
-                sort_order_var = st.radio(
-                    "Order",
-                    options=["Ascending", "Descending"],
-                    horizontal=True,
-                    key="variants_order"
-                )
-            
-            # Filter and display variants
-            try:
-                if selected_status and selected_rounds_var:
-                    variants_df = df[
-                        (df["status"].isin(selected_status)) &
-                        (df["round"].isin(selected_rounds_var))
-                    ]
-                    # Apply score filter if it exists
-                    if "score" in df.columns:
-                        variants_df = variants_df[score_filter]
-                        
-                    # Sort values if possible
-                    if sort_by_var in variants_df.columns:
-                        ascending_var = sort_order_var == "Ascending"
-                        variants_df = variants_df.sort_values(sort_by_var, ascending=ascending_var)
+                    # Show correlation coefficient
+                    correlation = combined_data["docking_score"].corr(combined_data["affinity_pred_value"])
+                    st.info(f"Correlation between docking score and log(IC50): {correlation:.3f} (positive correlation means both values tend to move together)")
+                    
+                    # Show top combined performers
+                    st.markdown("**🎯 Best Combined Performance (Low log(IC50) + Low Docking Score):**")
+                    # Normalize scores for ranking (lower values are better for both)
+                    combined_data_normalized = combined_data.copy()
+                    combined_data_normalized["docking_score_norm"] = (
+                        (combined_data["docking_score"].max() - combined_data["docking_score"]) / 
+                        (combined_data["docking_score"].max() - combined_data["docking_score"].min())
+                    )
+                    combined_data_normalized["affinity_norm"] = (
+                        (combined_data["affinity_pred_value"].max() - combined_data["affinity_pred_value"]) / 
+                        (combined_data["affinity_pred_value"].max() - combined_data["affinity_pred_value"].min())
+                    )
+                    combined_data_normalized["combined_score"] = (
+                        combined_data_normalized["docking_score_norm"] + 
+                        combined_data_normalized["affinity_norm"]
+                    ) / 2
+                    
+                    # Add estimated IC50 for better interpretation
+                    combined_data_normalized["estimated_IC50_uM"] = 10 ** combined_data_normalized["affinity_pred_value"]
+                    
+                    top_combined = combined_data_normalized.nlargest(10, "combined_score")
+                    combined_display_cols = ["compound_id", "docking_score", "affinity_pred_value", "estimated_IC50_uM", "combined_score"]
+                    if "variant_id" in top_combined.columns:
+                        combined_display_cols.insert(1, "variant_id")
+                    if "barcode" in top_combined.columns:
+                        combined_display_cols.insert(2, "barcode")
+                    if "affinity_probability_binary" in top_combined.columns:
+                        combined_display_cols.insert(-1, "affinity_probability_binary")
+                    
+                    existing_combined_cols = [col for col in combined_display_cols if col in top_combined.columns]
+                    
+                    # Format the display
+                    display_combined = top_combined[existing_combined_cols].copy()
+                    if "estimated_IC50_uM" in display_combined.columns:
+                        display_combined["estimated_IC50_uM"] = display_combined["estimated_IC50_uM"].apply(lambda x: f"{x:.2e}")
+                    
+                    st.dataframe(
+                        display_combined.round(3),
+                        use_container_width=True,
+                        hide_index=True
+                    )
                 else:
-                    variants_df = pd.DataFrame()
-            except Exception as e:
-                st.error(f"Error filtering variants: {e}")
-                variants_df = pd.DataFrame()
+                    st.info("No compounds have both affinity and docking data for correlation analysis.")
+
+        elif st.session_state.selected_view == "Compounds":
+            st.header("Generated Compounds")
             
-            # Display count
-            st.info(f"Displaying {len(variants_df)} variants")
-            
-            if variants_df.empty:
-                st.warning("No variants match the current filter criteria. Try adjusting the filters.")
+            # Check if we have any compounds at all
+            if "status" not in df.columns or not any(status for status in df["status"].unique() if status == "GENERATED"):
+                st.info("No compounds have been generated yet. This tab will populate when compound generation completes.")
             else:
-                # Show the dataframe with columns that exist
-                display_columns = ["variant_id", "round", "generation", "status", "smiles"]
-                if "parent_id" in variants_df.columns:
-                    display_columns.insert(1, "parent_id")
-                if "score" in variants_df.columns:
-                    display_columns.insert(-1, "score")
-                
-                # Only include columns that exist
-                existing_columns = [col for col in display_columns if col in variants_df.columns]
-                
-                st.dataframe(
-                    variants_df[existing_columns],
-                    use_container_width=True,
-                    hide_index=True
-                )
-                
-                # Add download button for this filtered view
-                if not variants_df.empty:
-                    st.download_button(
-                        "Download Filtered Variants",
-                        data=variants_df.to_csv(index=False).encode('utf-8'),
-                        file_name="filtered_variants.csv",
-                        mime="text/csv"
+                # Enhanced filter controls
+                filter_col1, filter_col2, filter_col3 = st.columns([2, 1, 1])
+                with filter_col1:
+                    round_options_compounds = sorted([r for r in df["round"].unique() if pd.notna(r)])
+                    selected_rounds = st.multiselect(
+                        "Filter by Round",
+                        options=round_options_compounds,
+                        default=round_options_compounds,
+                        key="compounds_rounds"
+                    )
+                with filter_col2:
+                    sort_options = ["compound_id", "generation"]
+                    if "round" in df.columns:
+                        sort_options.insert(1, "round")
+                    
+                    sort_by = st.selectbox(
+                        "Sort by",
+                        options=sort_options,
+                        index=0,
+                        key="compounds_sort"
+                    )
+                with filter_col3:
+                    sort_order = st.radio(
+                        "Order",
+                        options=["Ascending", "Descending"],
+                        horizontal=True,
+                        key="compounds_order"
                     )
                 
-                # Variant Structures
-                st.subheader("Variant Structures")
+                # Filter and sort compounds
+                try:
+                    # First filter by status
+                    compounds_df = df[df["status"] == "GENERATED"]
+                    
+                    # Then apply round filter if selected
+                    if selected_rounds:
+                        compounds_df = compounds_df[compounds_df["round"].isin(selected_rounds)]
+                    
+                    # Apply sorting if the column exists
+                    if sort_by in compounds_df.columns:
+                        ascending = sort_order == "Ascending"
+                        compounds_df = compounds_df.sort_values(sort_by, ascending=ascending)
+                except Exception as e:
+                    st.error(f"Error filtering compounds: {e}")
+                    compounds_df = pd.DataFrame()
                 
-                # Add pagination for large datasets
-                if len(variants_df) > 10:
-                    variants_per_page = st.slider("Variants per page", 5, 20, 10, key="variants_per_page")
-                    page_number = st.number_input("Page", min_value=1, max_value=max(1, len(variants_df) // variants_per_page + 1), step=1, key="variants_page")
-                    start_idx = (page_number - 1) * variants_per_page
-                    end_idx = min(start_idx + variants_per_page, len(variants_df))
-                    paginated_var_df = variants_df.iloc[start_idx:end_idx]
+                # Display count
+                st.info(f"Displaying {len(compounds_df)} compounds")
+                
+                if compounds_df.empty:
+                    st.warning("No compounds match the current filter criteria. Try adjusting the filters.")
                 else:
-                    paginated_var_df = variants_df
-                
-                for _, variant in paginated_var_df.iterrows():
-                    with st.expander(f"Variant {variant.get('variant_id', 'Unknown')}"):
-                        col1, col2 = st.columns([1, 2])
+                    # Determine which columns to display
+                    display_columns = ["compound_id"]
+                    if "barcode" in compounds_df.columns:
+                        display_columns.append("barcode")
+                    if "round" in compounds_df.columns:
+                        display_columns.append("round")
+                    if "generation" in compounds_df.columns:
+                        display_columns.append("generation")
+                    display_columns.append("smiles")
+                    
+                    # Only include columns that exist
+                    existing_columns = [col for col in display_columns if col in compounds_df.columns]
+                    
+                    # First show the dataframe
+                    st.dataframe(
+                        compounds_df[existing_columns],
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    # Add download button for this filtered view
+                    if not compounds_df.empty:
+                        st.download_button(
+                            "Download Filtered Compounds",
+                            data=compounds_df.to_csv(index=False).encode('utf-8'),
+                            file_name="filtered_compounds.csv",
+                            mime="text/csv"
+                        )
                         
-                        with col1:
-                            # Display 2D structure
-                            if "smiles" in variant and not pd.isna(variant["smiles"]):
-                                mol_img = render_mol(variant["smiles"])
-                                if mol_img:
-                                    st.image(mol_img, caption="2D Structure", width=200)
-                                else:
-                                    st.info("Could not render molecule structure")
-                            else:
-                                st.info("No SMILES data available for this variant")
-                            
-                            # If parent molecule exists, display it for comparison
-                            has_parent_data = "parent_id" in variant and not pd.isna(variant["parent_id"])
-                            
-                            if has_parent_data:
-                                st.subheader("Parent Structure")
-                                if "source_smiles" in variant and not pd.isna(variant["source_smiles"]):
-                                    parent_mol_img = render_mol(variant["source_smiles"])
-                                    if parent_mol_img:
-                                        st.image(parent_mol_img, caption="Parent Structure", width=200)
-                                    else:
-                                        st.info("Could not render parent molecule structure")
-                                else:
-                                    # Try to find parent SMILES in the dataframe
-                                    parent_id = variant.get("parent_id", "")
-                                    if parent_id and parent_id in df["compound_id"].values:
-                                        parent_smiles = df[df["compound_id"] == parent_id]["smiles"].values[0]
-                                        parent_mol_img = render_mol(parent_smiles)
-                                        if parent_mol_img:
-                                            st.image(parent_mol_img, caption="Parent Structure", width=200)
-                                    else:
-                                        st.info("Parent structure not available")
-                        
-                        with col2:
-                            # Variant details
-                            details = {
-                                "Variant ID": variant.get("variant_id", ""),
-                                "Status": variant.get("status", ""),
-                                "Generation": variant.get("generation", ""),
-                                "Round": variant.get("round", ""),
-                                "Source": variant.get("source", "")
-                            }
-                            
-                            # Only add optional fields if they exist and are not NA
-                            if "parent_id" in variant and not pd.isna(variant["parent_id"]):
-                                details["Parent Compound"] = variant["parent_id"]
-                            
-                            if "timestamp" in variant and not pd.isna(variant["timestamp"]):
-                                details["Timestamp"] = variant["timestamp"]
-                                
-                            if "score" in variant and not pd.isna(variant["score"]):
-                                details["Retrosynthesis Score"] = variant["score"]
-                                
-                            st.json(details)
-                            
-                            # Link to parent only if parent_id exists and is valid
-                            if "parent_id" in variant and not pd.isna(variant["parent_id"]):
-                                parent_id = variant.get("parent_id", "")
-                                if parent_id and parent_id in df["compound_id"].values:
-                                    parent_smiles = df[df["compound_id"] == parent_id]["smiles"].values[0]
-                                    st.markdown(f"**Parent SMILES**: `{parent_smiles}`")
-                                    
-                            # Show docking results if available
-                            if variant.get("status") == "DOCKED" and "docking_score" in variant and not pd.isna(variant["docking_score"]):
-                                st.success(f"Docking Score: {variant['docking_score']:.2f}")
-                                if "best_pose" in variant and not pd.isna(variant["best_pose"]):
-                                    st.info(f"Best Pose: {variant['best_pose']}")
-    
-    elif st.session_state.selected_view == "Docking Results":
-        st.header("Docking Results")
-        
-        if "docking_score" not in df.columns or df["docking_score"].notna().sum() == 0:
-            st.info("No docking scores available in the tracking report yet. This tab will populate when docking completes.")
+        elif st.session_state.selected_view == "Variants":
+            st.header("Synthesized Variants")
             
-            # Show what stages have been reached
-            if "status" in df.columns:
-                available_statuses = df["status"].unique()
+            # Check if we have any variants at all
+            if "status" in df.columns and not any(status for status in df["status"].unique() if status in ["SYNTHETIZED", "PASSFILTER", "PASSBLINDDOCK"]):
+                st.info("No variants have been synthesized yet. This tab will populate when retrosynthesis completes.")
+                
+                # Show what stages have been reached
+                available_statuses = df["status"].unique() if "status" in df.columns else []
                 if "GENERATED" in available_statuses:
                     st.success("✅ Compounds have been generated")
-                if "SYNTHETIZED" in available_statuses:
-                    st.success("✅ Variants have been synthesized")
-                if "PASSFILTER" in available_statuses:
-                    st.success("✅ Variants have been filtered")
-                if "DOCKED" not in available_statuses:
-                    st.warning("⏳ Docking has not yet completed")
-        else:
-            # Enhanced filter controls for docking
-            filter_col1, filter_col2 = st.columns(2)
-            with filter_col1:
-                round_options_dock = sorted([r for r in df["round"].unique() if pd.notna(r)])
-                selected_rounds_dock = st.multiselect(
-                    "Filter by Round",
-                    options=round_options_dock,
-                    default=round_options_dock,
-                    key="docking_rounds"
-                )
-            with filter_col2:
-                # Safely get min/max values
-                valid_scores = df["docking_score"].dropna() 
-                if not valid_scores.empty:
-                    min_score, max_score = float(valid_scores.min()), float(valid_scores.max())
-                else:
-                    min_score, max_score = 0.0, 0.0
-                    
-                score_range_dock = st.slider(
-                    "Docking Score Range",
-                    min_value=min_score,
-                    max_value=max_score,
-                    value=(min_score, max_score),
-                    key="docking_score_range"
-                )
-            
-            # Filter docked compounds
-            try:
-                docked_df = df[
-                    (df["status"] == "DOCKED") &
-                    (df["round"].isin(selected_rounds_dock)) &
-                    (df["docking_score"] >= score_range_dock[0]) &
-                    (df["docking_score"] <= score_range_dock[1])
-                ].sort_values("docking_score")
-            except Exception as e:
-                st.error(f"Error filtering docked compounds: {e}")
-                docked_df = pd.DataFrame()
-            
-            if docked_df.empty:
-                st.info("No docked compounds match the current filter criteria.")
+                    st.info("⏳ Waiting for retrosynthesis to complete")
             else:
-                # Docking statistics
-                stats_cols = st.columns(4)
-                with stats_cols[0]:
-                    st.metric("Best Score", f"{docked_df['docking_score'].min():.2f}")
-                with stats_cols[1]:
-                    st.metric("Average Score", f"{docked_df['docking_score'].mean():.2f}")
-                with stats_cols[2]:
-                    st.metric("Median Score", f"{docked_df['docking_score'].median():.2f}")
-                with stats_cols[3]:
-                    st.metric("Total Docked", len(docked_df))
-                
-                # Score distribution
-                st.subheader("Score Distribution")
-                try:
-                    fig = px.scatter(
-                        docked_df,
-                        x="round",
-                        y="docking_score",
-                        color="docking_score",
-                        hover_data=["compound_id", "smiles"],
-                        title="Docking Scores by Round",
-                        color_continuous_scale="viridis"
+                # Enhanced filter controls
+                filter_col1, filter_col2, filter_col3 = st.columns(3)
+                with filter_col1:
+                    status_options = sorted([
+                        s
+                        for s in df["status"].unique()
+                        if pd.notna(s)
+                        and s
+                        in [
+                            "SYNTHETIZED",
+                            "PASSFILTER",
+                            "PASSBLINDDOCK",
+                            "DOCKED",
+                        ]
+                    ])
+                    default_status = [s for s in status_options if s in ["SYNTHETIZED", "PASSFILTER"]]
+                    selected_status = st.multiselect(
+                        "Filter by Status",
+                        options=status_options,
+                        default=default_status if default_status else status_options,
+                        key="variants_status"
                     )
-                    st.plotly_chart(fig, use_container_width=True)
-                except Exception as e:
-                    st.error(f"Error creating score distribution plot: {e}")
-                
-                # Full docking results table
-                st.subheader("All Docking Results")
-                # Ensure required columns exist
-                table_columns = ["compound_id", "round", "docking_score", "status", "smiles"]
-                if "variant_id" in docked_df.columns:
-                    table_columns.insert(1, "variant_id")
-                if "barcode" in docked_df.columns:
-                    table_columns.insert(2, "barcode")
-                if "pose_count" in docked_df.columns:
-                    table_columns.insert(-1, "pose_count")
-                    
-                # Only include columns that exist
-                existing_columns = [col for col in table_columns if col in docked_df.columns]
-                
-                st.dataframe(
-                    docked_df[existing_columns],
-                    use_container_width=True,
-                    hide_index=True
-                )
-                
-                # Add download button and 3D visualization option
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.download_button(
-                        "Download Filtered Docking Results",
-                        data=docked_df.to_csv(index=False).encode('utf-8'),
-                        file_name="filtered_docking_results.csv",
-                        mime="text/csv"
+                with filter_col2:
+                    round_options_var = sorted([r for r in df["round"].unique() if pd.notna(r)])
+                    selected_rounds_var = st.multiselect(
+                        "Filter by Round",
+                        options=round_options_var,
+                        default=round_options_var,
+                        key="variants_rounds"
                     )
-                with col2:
-                    if st.button("🧬 View 3D Structures", help="View 3D molecular structures for top results", key="viz_3d_btn"):
-                        st.session_state.show_3d_viz = True
-                
-                # 3D Structure Viewer Section
-                if st.session_state.get('show_3d_viz', False):
-                    st.subheader("🧬 3D Molecular Structures")
-                    
-                    # Allow user to select which compounds to visualize
-                    st.markdown("Select compounds to visualize in 3D:")
-                    
-                    # Create a selection interface
-                    top_10_results = docked_df.head(10)
-                    
-                    selected_indices = []
-                    for idx, result in top_10_results.iterrows():
-                        variant_id = result.get('variant_id', result.get('compound_id', 'Unknown'))
-                        score = result.get('docking_score', 0)
-                        
-                        if st.checkbox(f"{variant_id} (Score: {score:.2f})", key=f"viz_3d_select_{variant_id}"):
-                            selected_indices.append(idx)
-                    
-                    # Display 3D structures for selected compounds
-                    if selected_indices:
-                        for idx in selected_indices:
-                            result = docked_df.loc[idx]
-                            variant_id = result.get('variant_id', result.get('compound_id', 'Unknown'))
+                with filter_col3:
+                    if "score" in df.columns and df["score"].notna().any():
+                        valid_scores = df["score"].dropna()
+                        if not valid_scores.empty:
+                            min_score, max_score = float(valid_scores.min()), float(valid_scores.max())
+                        else:
+                            min_score, max_score = 0.0, 1.0
                             
-                            st.markdown(f"### 🎯 {variant_id}")
-                            create_interactive_3d_viewer(result, st.session_state.output_dir)
-                            st.divider()
+                        score_range = st.slider(
+                            "Score Range",
+                            min_value=min_score,
+                            max_value=max_score,
+                            value=(min_score, max_score),
+                            key="variants_score"
+                        )
+                        score_filter = (df["score"] >= score_range[0]) & (df["score"] <= score_range[1])
                     else:
-                        st.info("Select compounds above to view their 3D structures")
-                    
-                    # Add button to hide 3D structures
-                    if st.button("Hide 3D Structures", key="viz_hide_3d"):
-                        st.session_state.show_3d_viz = False
-                        st.rerun()
+                        score_filter = pd.Series(True, index=df.index)
+                        if "score" not in df.columns:
+                            st.info("No score data available in variants")
                 
-                # Top results
-                st.subheader("Top Docking Results")
+                # Add sorting options
+                sort_col1, sort_col2 = st.columns(2)
+                with sort_col1:
+                    sort_options = ["variant_id", "round", "generation"]
+                    if "score" in df.columns:
+                        sort_options.append("score")
+                        
+                    sort_by_var = st.selectbox(
+                        "Sort by",
+                        options=sort_options,
+                        index=0,
+                        key="variants_sort"
+                    )
+                with sort_col2:
+                    sort_order_var = st.radio(
+                        "Order",
+                        options=["Ascending", "Descending"],
+                        horizontal=True,
+                        key="variants_order"
+                    )
                 
-                # Add pagination for large datasets
-                if len(docked_df) > 10:
-                    top_n = st.slider("Show top N results", 5, min(30, len(docked_df)), 10, key="docking_top_n")
-                    top_results = docked_df.head(top_n)
+                # Filter and display variants
+                try:
+                    if selected_status and selected_rounds_var:
+                        variants_df = df[
+                            (df["status"].isin(selected_status)) &
+                            (df["round"].isin(selected_rounds_var))
+                        ]
+                        # Apply score filter if it exists
+                        if "score" in df.columns:
+                            variants_df = variants_df[score_filter]
+                            
+                        # Sort values if possible
+                        if sort_by_var in variants_df.columns:
+                            ascending_var = sort_order_var == "Ascending"
+                            variants_df = variants_df.sort_values(sort_by_var, ascending=ascending_var)
+                    else:
+                        variants_df = pd.DataFrame()
+                except Exception as e:
+                    st.error(f"Error filtering variants: {e}")
+                    variants_df = pd.DataFrame()
+                
+                # Display count
+                st.info(f"Displaying {len(variants_df)} variants")
+                
+                if variants_df.empty:
+                    st.warning("No variants match the current filter criteria. Try adjusting the filters.")
                 else:
-                    top_results = docked_df
-                
-                for _, result in top_results.iterrows():
-                    # Use variant_id if available, otherwise fallback to compound_id
-                    display_id = result.get('variant_id', result.get('compound_id', 'Unknown'))
+                    # Show the dataframe with columns that exist
+                    display_columns = ["variant_id", "round", "generation", "status", "smiles"]
+                    if "parent_id" in variants_df.columns:
+                        display_columns.insert(1, "parent_id")
+                    if "score" in variants_df.columns:
+                        display_columns.insert(-1, "score")
                     
-                    with st.expander(f"{display_id} (Score: {result.get('docking_score', 0):.2f})"):
-                        # Create tabs for 2D, 3D, and details
-                        tab1, tab2, tab3 = st.tabs(["2D Structure", "3D Visualization", "Details"])
+                    # Only include columns that exist
+                    existing_columns = [col for col in display_columns if col in variants_df.columns]
+                    
+                    st.dataframe(
+                        variants_df[existing_columns],
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    # Add download button for this filtered view
+                    if not variants_df.empty:
+                        st.download_button(
+                            "Download Filtered Variants",
+                            data=variants_df.to_csv(index=False).encode('utf-8'),
+                            file_name="filtered_variants.csv",
+                            mime="text/csv"
+                        )
                         
-                        with tab1:
-                            mol_img = render_mol(result["smiles"])
-                            if mol_img:
-                                st.image(mol_img, caption="2D Structure", width=200)
-                            else:
-                                st.info("Could not render molecule structure")
+        elif st.session_state.selected_view == "Docking Results":
+            st.header("Docking Results")
+            
+            if "docking_score" not in df.columns or df["docking_score"].notna().sum() == 0:
+                st.info("No docking scores available in the tracking report yet. This tab will populate when docking completes.")
+                
+                # Show what stages have been reached
+                if "status" in df.columns:
+                    available_statuses = df["status"].unique()
+                    if "GENERATED" in available_statuses:
+                        st.success("✅ Compounds have been generated")
+                    if "SYNTHETIZED" in available_statuses:
+                        st.success("✅ Variants have been synthesized")
+                    if "PASSFILTER" in available_statuses:
+                        st.success("✅ Variants have been filtered")
+                    if "DOCKED" not in available_statuses:
+                        st.warning("⏳ Docking has not yet completed")
+            else:
+                # Enhanced filter controls for docking
+                filter_col1, filter_col2 = st.columns(2)
+                with filter_col1:
+                    round_options_dock = sorted([r for r in df["round"].unique() if pd.notna(r)])
+                    selected_rounds_dock = st.multiselect(
+                        "Filter by Round",
+                        options=round_options_dock,
+                        default=round_options_dock,
+                        key="docking_rounds"
+                    )
+                with filter_col2:
+                    valid_scores = df["docking_score"].dropna()
+                    if valid_scores.empty:
+                        st.info("No valid docking scores found to create a filter range.")
+                        score_min_filter = score_max_filter = 0.0
+                        score_range_dock = None
+                    else:
+                        min_score, max_score = float(valid_scores.min()), float(valid_scores.max())
+                        if min_score == max_score:
+                            st.info(f"All filtered compounds have a docking score of {min_score:.2f}.")
+                            score_min_filter = score_max_filter = min_score
+                            score_range_dock = None
+                        else:
+                            score_range_dock = st.slider(
+                                "Docking Score Range",
+                                min_value=min_score,
+                                max_value=max_score,
+                                value=(min_score, max_score),
+                                key="docking_score_range",
+                            )
+                            score_min_filter, score_max_filter = score_range_dock
+
+                # Filter docked compounds
+                try:
+                    # Base filter for status and round
+                    docked_df = df[
+                        (df["status"] == "DOCKED") &
+                        (df["round"].isin(selected_rounds_dock))
+                    ]
+                    # Apply score filter only if there are valid scores
+                    if not valid_scores.empty:
+                         docked_df = docked_df[
+                             (docked_df["docking_score"] >= score_min_filter) &
+                             (docked_df["docking_score"] <= score_max_filter)
+                         ]
+                     
+                    # Sort the final filtered df
+                    docked_df = docked_df.sort_values("docking_score")
+
+                except Exception as e:
+                    st.error(f"Error filtering docked compounds: {e}")
+                
+                if docked_df.empty:
+                    st.info("No docked compounds match the current filter criteria.")
+                else:
+                    # Docking statistics (lower scores are better)
+                    stats_cols = st.columns(4)
+                    with stats_cols[0]:
+                        st.metric("Best Score (lower=better)", f"{docked_df['docking_score'].min():.2f}")
+                    with stats_cols[1]:
+                        st.metric("Average Score", f"{docked_df['docking_score'].mean():.2f}")
+                    with stats_cols[2]:
+                        st.metric("Median Score", f"{docked_df['docking_score'].median():.2f}")
+                    with stats_cols[3]:
+                        st.metric("Total Docked", len(docked_df))
                         
-                        with tab2:
-                            # 3D visualization
-                            create_interactive_3d_viewer(result, st.session_state.output_dir)
+                    # Score distribution
+                    st.subheader("Score Distribution (Lower = Better)")
+                    try:
+                        fig = px.scatter(
+                            docked_df,
+                            x="round",
+                            y="docking_score",
+                            color="docking_score",
+                            hover_data=["compound_id", "smiles"],
+                            title="Docking Scores by Round (Lower = Better)",
+                            color_continuous_scale="viridis_r",  # Reverse scale so lower values are brighter
+                            labels={"docking_score": "Docking Score (lower=better)"}
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Error creating score distribution plot: {e}")
+                    
+                    # Full docking results table
+                    st.subheader("All Docking Results")
+                    # Ensure required columns exist
+                    table_columns = ["compound_id", "round", "docking_score", "status", "smiles"]
+                    if "variant_id" in docked_df.columns:
+                        table_columns.insert(1, "variant_id")
+                    if "barcode" in docked_df.columns:
+                        table_columns.insert(2, "barcode")
+                    if "pose_count" in docked_df.columns:
+                        table_columns.insert(-1, "pose_count")
+                    if "all_scores" in docked_df.columns:
+                        table_columns.insert(-1, "all_scores")
                         
-                        with tab3:
-                            # Use .get() for safer access to ensure no KeyError if fields are missing
-                            details = {
-                                "Compound ID": result.get("compound_id", ""),
-                                "Variant ID": result.get("variant_id", ""),
-                                "Barcode": result.get("barcode", ""),
-                                "Round": result.get("round", ""),
-                                "Docking Score": result.get("docking_score", ""),
-                                "SMILES": result.get("smiles", "")
-                            }
+                    # Only include columns that exist
+                    existing_columns = [col for col in table_columns if col in docked_df.columns]
+                    
+                    st.dataframe(
+                        docked_df[existing_columns],
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    # Add download button for this filtered view
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.download_button(
+                            "Download Filtered Docking Results",
+                            data=docked_df.to_csv(index=False).encode('utf-8'),
+                            file_name="filtered_docking_results.csv",
+                            mime="text/csv"
+                        )
+                    with col2:
+                        # Add option to view 3D structures for selected compounds
+                        if st.button("🧬 View 3D Structures", help="View 3D molecular structures for top results"):
+                            st.session_state.show_3d_structures = True
+
+                    # 3D Structure Viewer Section
+                    if st.session_state.get('show_3d_structures', False):
+                        st.subheader("🧬 3D Molecular Structures")
+                        
+                        # Allow user to select which compounds to visualize
+                        st.markdown("Select compounds to visualize in 3D:")
+                        
+                        # Create a selection interface
+                        top_10_results = docked_df.head(10)
+                        
+                        selected_indices = []
+                        for idx, result in top_10_results.iterrows():
+                            variant_id = result.get('variant_id', result.get('compound_id', 'Unknown'))
+                            score = result.get('docking_score', 0)
                             
-                            # Add Unidock-specific information
-                            if "pose_count" in result and not pd.isna(result["pose_count"]):
-                                details["Pose Count"] = result["pose_count"]
-                            
-                            if "all_scores" in result and not pd.isna(result["all_scores"]):
-                                try:
-                                    # Parse all_scores if it's a string representation of a list
-                                    all_scores_str = str(result["all_scores"])
-                                    if all_scores_str.startswith('[') and all_scores_str.endswith(']'):
-                                        import ast
-                                        all_scores = ast.literal_eval(all_scores_str)
-                                        if len(all_scores) > 1:
-                                            details["Score Range"] = f"{min(all_scores):.2f} to {max(all_scores):.2f}"
-                                            details["All Scores"] = all_scores_str
-                                except:
-                                    pass
-                            
-                            if "result_file" in result and not pd.isna(result["result_file"]):
-                                details["Result File"] = str(Path(result["result_file"]).name)
-                            
-                            # Only add best_pose if it exists (legacy support)
-                            if "best_pose" in result and not pd.isna(result["best_pose"]):
-                                details["Best Pose"] = result["best_pose"]
+                            if st.checkbox(f"{variant_id} (Score: {score:.2f})", key=f"3d_select_{variant_id}"):
+                                selected_indices.append(idx)
+                        
+                        # Display 3D structures for selected compounds
+                        if selected_indices:
+                            for idx in selected_indices:
+                                result = docked_df.loc[idx]
+                                variant_id = result.get('variant_id', result.get('compound_id', 'Unknown'))
                                 
-                            st.json(details)
+                                st.markdown(f"### 🎯 {variant_id}")
+                                create_interactive_3d_viewer(result, st.session_state.output_dir)
+                                st.divider()
+                        else:
+                            st.info("Select compounds above to view their 3D structures")
+                        
+                        # Add button to hide 3D structures
+                        if st.button("Hide 3D Structures"):
+                            st.session_state.show_3d_structures = False
+                            st.rerun()
+                    
+                    # Detailed docking results with 3D visualization
+                    st.subheader("Top Docking Results with 3D Visualization")
+                    
+                    # Show top 5 results with detailed information
+                    top_results = docked_df.head(5)
+                    
+                    for idx, result in top_results.iterrows():
+                        variant_id = result.get('variant_id', result.get('compound_id', 'Unknown'))
+                        barcode = result.get('barcode', 'Unknown')
+                        
+                        with st.expander(f"🏆 {variant_id} - Score: {result.get('docking_score', 0):.2f}"):
+                            col1, col2 = st.columns([1, 2])
                             
-                            # Download options for 3D files
-                            if "barcode" in result and not pd.isna(result.get("barcode")) and "round" in result:
-                                try:
-                                    # Safely handle non-existent directories
-                                    variant_dir = Path(st.session_state.output_dir) / f"round_{result['round']}" / "docking_results" / f"variant_{result['barcode']}"
+                            with col1:
+                                # Render 2D structure
+                                if "smiles" in result and not pd.isna(result["smiles"]):
+                                    mol_img = render_mol(result["smiles"])
+                                    if mol_img:
+                                        st.image(mol_img, caption="2D Structure", width=200)
+                                
+                                # Show Boltz-2 affinity predictions
+                                if "affinity_pred_value" in result and not pd.isna(result["affinity_pred_value"]):
+                                    st.markdown("**🤖 Boltz-2 Predictions:**")
+                                    log_ic50 = result['affinity_pred_value']
+                                    estimated_ic50 = 10 ** log_ic50
+                                    pic50_kcal_mol = (6 - log_ic50) * 1.364
                                     
-                                    has_valid_pose = False
-                                    pose_file = None
+                                    affinity_data = {
+                                        "log(IC50)": f"{log_ic50:.3f}",
+                                        "Estimated IC50": f"{estimated_ic50:.2e} μM",
+                                        "pIC50": f"{pic50_kcal_mol:.3f} kcal/mol",
+                                    }
+                                    if "affinity_probability_binary" in result and not pd.isna(result["affinity_probability_binary"]):
+                                        prob_val = result["affinity_probability_binary"]
+                                        confidence_text = "Predicted Binder" if prob_val > 0.5 else "Predicted Non-Binder"
+                                        affinity_data["Binding Probability"] = f"{prob_val:.3f} ({confidence_text})"
                                     
-                                    # Only try to parse best_pose if the field exists
-                                    if "best_pose" in result and not pd.isna(result["best_pose"]):
-                                        try:
-                                            best_pose_num = int(float(result["best_pose"]))
-                                            pose_file = variant_dir / f"pose_{best_pose_num}.pdbqt"
-                                            if pose_file.exists():
-                                                has_valid_pose = True
-                                        except (ValueError, TypeError):
-                                            # If conversion fails, we'll look for any pose files below
-                                            pass
+                                    for key, value in affinity_data.items():
+                                        st.write(f"**{key}:** {value}")
                                     
-                                    # Get receptor file path from the input directory
-                                    receptor_file = Path(st.session_state.output_dir).parent / "input" / "NS5_test.pdbqt"
-                                    
-                                    # Check if pose file exists and we can actually read it
-                                    if has_valid_pose and pose_file.exists():
-                                        try:
-                                            with open(pose_file, 'rb') as f:
-                                                pose_data = f.read()
-                                            
-                                            # Download buttons for the best pose and receptor
-                                            st.download_button(
-                                                "Download Best Pose",
-                                                data=pose_data,
-                                                file_name=pose_file.name,
-                                                mime="application/octet-stream",
-                                                key=f"dl_best_pose_{display_id}"
-                                            )
-                                            
-                                            if receptor_file.exists():
-                                                with open(receptor_file, 'rb') as f:
-                                                    receptor_data = f.read()
-                                                
-                                                st.download_button(
-                                                    "Download Receptor File",
-                                                    data=receptor_data,
-                                                    file_name=receptor_file.name,
-                                                    mime="application/octet-stream",
-                                                    key=f"dl_receptor_best_{display_id}"
-                                                )
-                                        except Exception as e:
-                                            st.error(f"Error reading pose file: {e}")
+                                    # Add interpretation
+                                    if log_ic50 < -1:
+                                        interpretation = "🟢 Strong Binder"
+                                    elif log_ic50 < 1:
+                                        interpretation = "🟡 Moderate Binder"
                                     else:
-                                        # Try to find all available pose files in the variant directory
-                                        if variant_dir.exists():
-                                            try:
-                                                pose_files = list(variant_dir.glob("pose_*.pdbqt"))
-                                                if pose_files:
-                                                    st.info(f"Found {len(pose_files)} pose files")
-                                                    
-                                                    # Extract pose numbers and sort them
-                                                    pose_numbers = []
-                                                    for p in pose_files:
-                                                        try:
-                                                            # Extract number from pose_X.pdbqt
-                                                            pose_num = int(p.stem.split('_')[1])
-                                                            pose_numbers.append((pose_num, p))
-                                                        except (ValueError, IndexError):
-                                                            continue
-                                                    
-                                                    if pose_numbers:
-                                                        # Sort poses by number
-                                                        pose_numbers.sort()
-                                                        sorted_poses = [p[1] for p in pose_numbers]
-                                                        
-                                                        # Create a selection for the poses
-                                                        pose_options = [f"Pose {p[0]}" for p in pose_numbers]
-                                                        selected_pose_idx = st.selectbox(
-                                                            "Select pose", 
-                                                            range(len(pose_options)),
-                                                            format_func=lambda i: pose_options[i],
-                                                            key=f"pose_select_{display_id}"
-                                                        )
-                                                        
-                                                        selected_file = sorted_poses[selected_pose_idx]
-                                                        
-                                                        try:
-                                                            with open(selected_file, 'rb') as f:
-                                                                pose_data = f.read()
-                                                                
-                                                            # Download buttons for the selected pose and receptor
-                                                            st.download_button(
-                                                                "Download Selected Pose",
-                                                                data=pose_data,
-                                                                file_name=selected_file.name,
-                                                                mime="application/octet-stream",
-                                                                key=f"dl_pose_{display_id}"
-                                                            )
-                                                            
-                                                            if receptor_file.exists():
-                                                                with open(receptor_file, 'rb') as f:
-                                                                    receptor_data = f.read()
-                                                                    
-                                                                st.download_button(
-                                                                    "Download Receptor File",
-                                                                    data=receptor_data,
-                                                                    file_name=receptor_file.name,
-                                                                    mime="application/octet-stream",
-                                                                    key=f"dl_receptor_{display_id}"
-                                                                )
-                                                        except Exception as file_err:
-                                                            st.error(f"Error reading pose file: {file_err}")
-                                                    else:
-                                                        st.info("No valid pose files found")
-                                                else:
-                                                    st.info(f"No pose files found in {variant_dir}")
-                                            except Exception as e:
-                                                st.error(f"Error accessing pose files: {e}")
-                                        else:
-                                            st.info(f"Variant directory not found: {variant_dir}. Docking results may still be processing.")
-                                except Exception as e:
-                                    st.error(f"Error processing docking results: {e}")
-                            else:
-                                st.info("Barcode or round information missing for 3D structure visualization")
+                                        interpretation = "🔴 Weak Binder/Decoy"
+                                    st.write(f"**Interpretation:** {interpretation}")
+                                    
+                                    st.divider()
+                                
+                                # Show docking statistics
+                                st.markdown("**🎯 Docking Statistics:**")
+                                stats_data = {
+                                    "Score": f"{result.get('docking_score', 'N/A'):.2f}" if pd.notna(result.get('docking_score')) else "N/A",
+                                    "Poses": result.get('pose_count', 'N/A'),
+                                    "Round": result.get('round', 'N/A'),
+                                    "Status": result.get('status', 'N/A')
+                                }
+                                
+                                if "all_scores" in result and not pd.isna(result["all_scores"]):
+                                    try:
+                                        # Parse all_scores if it's a string representation of a list
+                                        all_scores_str = str(result["all_scores"])
+                                        if all_scores_str.startswith('[') and all_scores_str.endswith(']'):
+                                            import ast
+                                            all_scores = ast.literal_eval(all_scores_str)
+                                            if len(all_scores) > 1:
+                                                stats_data["Score Range"] = f"{min(all_scores):.2f} to {max(all_scores):.2f}"
+                                    except:
+                                        pass
+                                
+                                for key, value in stats_data.items():
+                                    st.write(f"**{key}:** {value}")
+                            
+                            with col2:
+                                # Create comprehensive 3D visualization
+                                create_interactive_3d_viewer(result, st.session_state.output_dir)
     
     # Enhanced Export options
     st.divider()
     st.markdown("## 💾 Export & Download Options")
-    st.markdown("Export your analyzed data for further research or sharing")
-    
-    # Add download button for complete dataset
-    if st.button("Export All Results"):
-        st.download_button(
-            "📥 Download Complete Dataset",
-            data=df.to_csv(index=False).encode('utf-8'),
-            file_name="all_results.csv",
-            mime="text/csv"
-        )
+    st.markdown("Export your analyzed data for external analysis or sharing")
 
-    # Analysis footer
+    export_col1, export_col2, export_col3 = st.columns(3)
+
+    with export_col1:
+        if st.button("Export All Results"):
+            st.download_button(
+                "📥 Download Complete Dataset",
+                data=df.to_csv(index=False).encode('utf-8'),
+                file_name="all_results.csv",
+                mime="text/csv"
+            )
+
+    with export_col2:
+        if (st.button("Export Docking Results") 
+            and "docking_score" in df.columns):
+            
+            docked_df = df[df["status"] == "DOCKED"]
+            st.download_button(
+                "📥 Download Docking Results",
+                data=docked_df.to_csv(index=False).encode('utf-8'),
+                file_name="docking_results.csv",
+                mime="text/csv"
+            )
+
+    with export_col3:
+        if st.button("Export Summary Statistics"):
+            stats = {
+                "total_compounds": len(df[df["status"] == "GENERATED"]),
+                "total_variants": len(df[df["status"] == "SYNTHETIZED"]),
+                "filtered_variants": len(df[df["status"] == "PASSFILTER"]),
+                "docked_compounds": len(df[df["status"] == "DOCKED"]),
+                }
+            
+            if "docking_score" in df.columns and df["docking_score"].notna().any():
+                stats["average_docking_score"] = float(df[df["docking_score"].notna()]["docking_score"].mean())
+                stats["best_docking_score"] = float(df[df["docking_score"].notna()]["docking_score"].min())
+            
+            if "affinity_pred_value" in df.columns and df["affinity_pred_value"].notna().any():
+                stats["average_log_ic50"] = float(df[df["affinity_pred_value"].notna()]["affinity_pred_value"].mean())
+                stats["best_log_ic50"] = float(df[df["affinity_pred_value"].notna()]["affinity_pred_value"].min())  # Lower is better
+                if "affinity_probability_binary" in df.columns:
+                    predicted_binders = len(df[df["affinity_probability_binary"] > 0.5])
+                    stats["predicted_binders"] = predicted_binders
+            
+            st.json(stats)
+
+    # Dashboard footer
     st.divider()
     st.markdown("""
         <div style="text-align: center; padding: 2rem; background: #f8f9fa; border-radius: 10px; margin: 2rem 0;">
             <p style="margin: 0; color: #6c757d;">
-                <strong>Pipeline Results Analysis</strong> | Comprehensive post-hoc exploration<br>
-                📊 Advanced analytics | 🔬 Detailed visualizations | 💾 Flexible export options
+                <strong>Visualize Pipeline Results</strong> | Comprehensive exploration and analysis<br>
+                🔄 Interactive visualizations | 📊 Advanced analytics | 🧬 3D molecular viewers
             </p>
         </div>
     """, unsafe_allow_html=True)
 else:
-    st.info("Please select an output directory and load results to view visualizations.") 
+    # No results data available
+    st.info("Please select an output directory and load results to view visualizations.")
+    
+    # Show help information when no data is loaded
+    st.markdown("### 💡 Getting Started")
+    st.markdown("""
+    **To start visualizing your pipeline results:**
+    
+    1. **Enter the output directory path** in the text field above
+    2. **Wait for automatic loading** of the tracking report
+    3. **Explore different views** using the sidebar navigation
+    
+    **Supported Directory Structures:**
+    - Pipeline output directories with `master_tracking/` folder
+    - Round-specific directories with `round_*/` folders
+    - Directories containing tracking reports (CSV files)
+    
+    **Features Available:**
+    - 📊 Summary dashboard with key metrics
+    - 🧬 Compound and variant exploration
+    - 🎯 Docking results with 3D visualization
+    - 🤖 Boltz-2 affinity predictions analysis
+    - 💾 Export and download capabilities
+    """) 

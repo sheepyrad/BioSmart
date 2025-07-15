@@ -127,3 +127,7 @@ synthesis_paths/
 !input/
 !tests/data/
 !examples/data/ 
+
+# Unidock stuff
+receptor_grids/
+receptor_reader/

@@ -10,7 +10,7 @@ import logging
 import os
 import shlex
 from pathlib import Path
-from typing import List, Dict, Optional, Union, Tuple, Any
+from typing import List, Dict, Optional, Union, Tuple, Any, Callable
 import threading
 import time
 import select
@@ -25,7 +25,7 @@ TOOL_ENVIRONMENTS = {
     "cgflow": "cgflow-env",
     "synformer": "synformer-env",
     "boltz": "boltz-env",
-    "unidock": "base",  # temporarily run in base environment to avoid cuda error
+    "unidock": "unidock-env",  # unidock command is in unidock-env
     "unidocktools": "unidock-env",  # unidocktools is in unidock-env
     "unigbsa": "unigbsa-env"
 }
@@ -114,7 +114,7 @@ class EnvironmentManager:
         capture_output: bool = True,
         text: bool = True,
         check: bool = False,
-        log_callback: Optional[callable] = None,
+        log_callback: Optional[Callable[[str], None]] = None,
         stream_output: bool = False
     ) -> subprocess.CompletedProcess:
         """
@@ -222,7 +222,7 @@ class EnvironmentManager:
         capture_output: bool = True,
         text: bool = True,
         check: bool = False,
-        log_callback: Optional[callable] = None,
+        log_callback: Optional[Callable[[str], None]] = None,
         stream_output: bool = False
     ) -> subprocess.CompletedProcess:
         """
@@ -264,7 +264,7 @@ class EnvironmentManager:
         command: Union[str, List[str]],
         cwd: Optional[Union[str, Path]] = None,
         timeout: Optional[int] = None,
-        log_callback: Optional[callable] = None,
+        log_callback: Optional[Callable[[str], None]] = None,
         result_storage: Optional[Dict[str, Any]] = None,
         stream_output: bool = True
     ) -> threading.Thread:

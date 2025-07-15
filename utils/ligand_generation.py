@@ -13,12 +13,31 @@ import shutil
 import yaml  # Add yaml import
 import random # Import random module for seed generation
 from rdkit import Chem
+import gc
 
 # Import the new environment manager
 from .environment_manager import env_manager
 
+# Try to import torch for CUDA memory management
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+
 # Define a timeout for the subprocess (e.g., 2 hours)
 SUBPROCESS_TIMEOUT = 7200 
+
+def clear_gpu_memory():
+    """Clear GPU memory cache to prevent memory leaks."""
+    if TORCH_AVAILABLE and torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            # Force garbage collection
+            gc.collect()
+        except Exception as e:
+            print(f"Failed to clear GPU memory cache: {e}", file=sys.stderr)
 
 def run_pocket2mol(pdbfile, center, bbox_size, out_dir, n_samples, log_callback=None):
     """
@@ -121,6 +140,11 @@ def run_pocket2mol(pdbfile, center, bbox_size, out_dir, n_samples, log_callback=
         result_storage = {}
         
         try:
+            # Clear GPU memory before starting Pocket2Mol
+            if log_callback:
+                log_callback("Clearing GPU memory before Pocket2Mol execution...")
+            clear_gpu_memory()
+            
             # Use the environment manager to run Pocket2Mol with streaming output
             thread = env_manager.run_tool_async(
                 tool_name="pocket2mol",
@@ -134,6 +158,11 @@ def run_pocket2mol(pdbfile, center, bbox_size, out_dir, n_samples, log_callback=
             
             # Wait for the thread to complete
             thread.join()
+            
+            # Clear GPU memory after Pocket2Mol execution
+            if log_callback:
+                log_callback("Clearing GPU memory after Pocket2Mol execution...")
+            clear_gpu_memory()
             
             # Check results
             status = result_storage.get("status", "unknown")
@@ -199,15 +228,19 @@ def run_pocket2mol(pdbfile, center, bbox_size, out_dir, n_samples, log_callback=
                 except Exception:
                     print(f"Error in molecule generation process: {e}", file=sys.stderr)
         
-        # Delete temporary config file if it was created and used
-        if final_config_to_use == temp_config_path and os.path.exists(temp_config_path):
-            try:
-                os.remove(temp_config_path)
-                if log_callback:
-                    log_callback(f"Removed temporary config file: {temp_config_path}")
-            except Exception as e:
-                # Use print instead of log_callback as it might be unavailable here
-                print(f"Error removing temporary config file {temp_config_path}: {e}", file=sys.stderr)
+        finally:
+            # Always clear GPU memory when done
+            clear_gpu_memory()
+            
+            # Delete temporary config file if it was created and used
+            if final_config_to_use == temp_config_path and os.path.exists(temp_config_path):
+                try:
+                    os.remove(temp_config_path)
+                    if log_callback:
+                        log_callback(f"Removed temporary config file: {temp_config_path}")
+                except Exception as e:
+                    # Use print instead of log_callback as it might be unavailable here
+                    print(f"Error removing temporary config file {temp_config_path}: {e}", file=sys.stderr)
     
     thread = threading.Thread(target=run_process)
     thread.daemon = True  # Make thread a daemon so it doesn't block program exit

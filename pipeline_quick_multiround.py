@@ -33,6 +33,7 @@ import threading
 import json
 from datetime import datetime
 from typing import List
+import gc
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
@@ -53,10 +54,13 @@ from utils.logging_utils import setup_logging, ThreadSafeRotatingFileHandler
 # Import the environment manager for conda environment handling
 from utils.environment_manager import env_manager
 
+# Import centralized GPU memory management
+from utils.gpu_memory_manager import clear_gpu_memory, log_gpu_memory_usage, gpu_memory_manager
+
 def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_list=None, 
          n_samples=200, sanitize=True, center=(114.817, 75.602, 82.416), box_size=(38, 70, 58),
          bbox_size=23.0, exhaustiveness="balance", top_n=5, max_variants=5, num_rounds=1, 
-         stop_flag=None):
+         score_threshold=0.7, boltz_pocket_residues=None, stop_flag=None):
     """
     Multi-round quick pipeline main function with batch filtering optimization.
     
@@ -75,6 +79,8 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         top_n: Number of top compounds to process
         max_variants: Maximum number of variants per compound
         num_rounds: Number of rounds to run
+        score_threshold: Minimum retrosynthesis score threshold for variants (default: 0.7)
+        boltz_pocket_residues: Comma-separated string of residue indices for Boltz-2 pocket constraints
         stop_flag: Dictionary containing status information for stopping the pipeline
     """
     # Set up output directories
@@ -120,6 +126,10 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
     # Log the model being used
     logger.info(f"Using {model_choice.upper()} model for molecule generation")
     
+    # Log initial GPU memory usage
+    if model_choice == 'pocket2mol':
+        log_gpu_memory_usage()
+    
     # Create tracking report files
     master_dir = out_dir / "master_tracking"
     master_dir.mkdir(exist_ok=True)
@@ -140,6 +150,10 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             break
             
         logger.info(f"============= STARTING ROUND {round_num}/{num_rounds} =============")
+        
+        # Log GPU memory usage at start of round
+        if model_choice == 'pocket2mol':
+            log_gpu_memory_usage()
         
         # Create round-specific directories
         round_dir = out_dir / f"round_{round_num}"
@@ -179,6 +193,11 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                 log_callback=logger.info
             )
             lg_thread.join()
+            
+            # Clear GPU memory after Pocket2Mol execution
+            logger.info(f"Round {round_num}: Clearing GPU memory after Pocket2Mol execution...")
+            clear_gpu_memory()
+            log_gpu_memory_usage()
             
             # Combine Pocket2Mol outputs into a single SDF file
             logger.info(f"Round {round_num}: Combining Pocket2Mol outputs into a single SDF file...")
@@ -272,18 +291,45 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         
         # End of loop processing initial compounds and their variants
 
-        # Step 4: Batch filtering of all variants using pass-count method
-        logger.info(f"\nRound {round_num}: Starting MedChem filtering (pass-count) for {len(all_variants)} generated variants...")
-        # Define thresholds (could be made arguments later)
-        rule_threshold = 13
-        struct_threshold = 27
+        # Step 4: Score-based filtering (pre-filter before MedChem)
+        logger.info(f"\nRound {round_num}: Starting score-based filtering for {len(all_variants)} generated variants...")
+        logger.info(f"Score threshold: >= {score_threshold}")
+        
         if not all_variants: # Handle case where no variants were generated
              logger.warning(f"Round {round_num}: No variants generated from retrosynthesis. Skipping filtering and subsequent steps for this round.")
              continue # Skip to next round
 
+        # Filter variants by score threshold
+        score_filtered_variants = []
+        for variant in all_variants:
+            score = variant.get("score")
+            if score is not None and score >= score_threshold:
+                score_filtered_variants.append(variant)
+                # Update status for variants that passed score filter
+                variant["status"] = "PASSSCORE"
+                update_tracking_report(round_report, variant, "variant_status_update")
+                update_tracking_report(master_report, variant, "variant_status_update")
+            else:
+                # Update status for variants that failed score filter
+                variant["status"] = "FAILSCORE"
+                update_tracking_report(round_report, variant, "variant_status_update")
+                update_tracking_report(master_report, variant, "variant_status_update")
+
+        logger.info(f"Round {round_num}: After score filtering (>= {score_threshold}), {len(score_filtered_variants)} variants remain")
+        
+        if not score_filtered_variants:
+            logger.warning(f"Round {round_num}: No variants passed score filtering. Skipping MedChem filtering and subsequent steps for this round.")
+            continue # Skip to next round
+
+        # Step 5: Batch filtering of score-filtered variants using MedChem pass-count method
+        logger.info(f"\nRound {round_num}: Starting MedChem filtering (pass-count) for {len(score_filtered_variants)} score-filtered variants...")
+        # Define thresholds (could be made arguments later)
+        rule_threshold = 13
+        struct_threshold = 27
+
         # Call filter_by_pass_count and capture both return values
         filtered_variants, filter_results_df = filter_by_pass_count(
-            input_variants=all_variants,
+            input_variants=score_filtered_variants,
             rule_threshold=rule_threshold,
             structural_threshold=struct_threshold,
             smiles_key='smiles' # Ensure this matches the key used in variant dictionaries
@@ -307,18 +353,34 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             update_tracking_report(master_report, variant, "variant_status_update")
 
         # ------------------------------------------------------------------
-        # Step 5: Boltz-2 blind-docking filter with affinity prediction
+        # Step 6: Boltz-2 blind-docking filter with affinity prediction
         # ------------------------------------------------------------------
         logger.info(
             f"Round {round_num}: Running Boltz-2 blind-docking filter on {len(filtered_variants)} variants"
         )
 
+        # Parse pocket residues if provided
+        pocket_residues_list = None
+        if boltz_pocket_residues and boltz_pocket_residues.strip():
+            try:
+                pocket_residues_list = [int(x.strip()) for x in boltz_pocket_residues.split(',') if x.strip()]
+                logger.info(f"Round {round_num}: Using Boltz-2 pocket constraints for residues: {pocket_residues_list}")
+            except ValueError as e:
+                logger.warning(f"Round {round_num}: Invalid pocket residues format '{boltz_pocket_residues}': {e}. Proceeding without constraints.")
+                pocket_residues_list = None
+
+        # Ensure pdbfile is valid before calling boltz_filter_variants
+        if pdbfile is None:
+            logger.error(f"Round {round_num}: PDB file is None, cannot run Boltz-2 filter. Skipping this round.")
+            continue
+            
         passed_variants, failed_variants = boltz_filter_variants(
             variants=filtered_variants,
             pdb_file=pdbfile,
             round_dir=round_dir,
             center=center,
             box_size=box_size,
+            pocket_residues=pocket_residues_list,
             log_callback=logger.info,
         )
 
@@ -348,7 +410,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         if stop_flag and not stop_flag.get("running", True):
             break
             
-        # Step 6: Sequential docking
+        # Step 7: Sequential docking
         logger.info(f"Round {round_num}: Starting docking of {len(filtered_variants)} filtered variants")
         
         # Prepare docking parameters (simplified for direct unidock command)
@@ -499,7 +561,19 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         logger.info(f"Round {round_num}: Finished processing docking for {len(filtered_variants)} variants.")
         logger.info(f"Round {round_num}: Successfully docked and processed {len(round_redock_results)} variants.")
 
+        # Clear GPU memory at the end of each round
+        if model_choice == 'pocket2mol':
+            logger.info(f"Round {round_num}: Clearing GPU memory at end of round...")
+            clear_gpu_memory()
+            log_gpu_memory_usage()
+
         logger.info(f"============= COMPLETED ROUND {round_num}/{num_rounds} =============")
+    
+    # Final GPU memory cleanup
+    if model_choice == 'pocket2mol':
+        logger.info("Final GPU memory cleanup...")
+        clear_gpu_memory()
+        log_gpu_memory_usage()
     
     if stop_flag and not stop_flag.get("running", True):
         logger.info("Pipeline stopped by user request")
@@ -547,6 +621,10 @@ if __name__ == "__main__":
                         help="Maximum number of variants per compound")
     parser.add_argument("--num_rounds", type=int, default=1,
                         help="Number of rounds to run the pipeline")
+    parser.add_argument("--score_threshold", type=float, default=0.7,
+                        help="Minimum retrosynthesis score threshold for variants (default: 0.7)")
+    parser.add_argument("--boltz_pocket_residues", type=str, default="",
+                        help="Comma-separated residue indices for Boltz-2 pocket constraints (e.g., '156,158,202')")
 
     
     args = parser.parse_args()
@@ -565,5 +643,7 @@ if __name__ == "__main__":
         exhaustiveness=args.exhaustiveness,
         top_n=args.top_n,
         max_variants=args.max_variants,
-        num_rounds=args.num_rounds
+        num_rounds=args.num_rounds,
+        score_threshold=args.score_threshold,
+        boltz_pocket_residues=args.boltz_pocket_residues
     )
