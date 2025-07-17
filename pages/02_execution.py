@@ -242,6 +242,10 @@ def run_pipeline(config, status_dict, stop_event):
             "score_threshold": config.get("score_threshold", 0.7),  # Add score threshold with default
             "boltz_pocket_residues": config.get("boltz_pocket_residues", ""),  # Add Boltz-2 pocket residues
             
+            # Add MedChem filter thresholds
+            "medchem_rule_threshold": config.get("medchem_rule_threshold", 13),
+            "medchem_structural_threshold": config.get("medchem_structural_threshold", 27),
+            
             "stop_flag": status_dict  # Pass the status dict for stop checking
         }
         

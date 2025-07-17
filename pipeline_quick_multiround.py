@@ -60,7 +60,8 @@ from utils.gpu_memory_manager import clear_gpu_memory, log_gpu_memory_usage, gpu
 def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_list=None, 
          n_samples=200, sanitize=True, center=(114.817, 75.602, 82.416), box_size=(38, 70, 58),
          bbox_size=23.0, exhaustiveness="balance", top_n=5, max_variants=5, num_rounds=1, 
-         score_threshold=0.7, boltz_pocket_residues=None, stop_flag=None):
+         score_threshold=0.7, boltz_pocket_residues=None, medchem_rule_threshold=13, 
+         medchem_structural_threshold=27, stop_flag=None):
     """
     Multi-round quick pipeline main function with batch filtering optimization.
     
@@ -81,6 +82,8 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         num_rounds: Number of rounds to run
         score_threshold: Minimum retrosynthesis score threshold for variants (default: 0.7)
         boltz_pocket_residues: Comma-separated string of residue indices for Boltz-2 pocket constraints
+        medchem_rule_threshold: Minimum number of medicinal chemistry rules a compound must pass (default: 13)
+        medchem_structural_threshold: Minimum number of structural/functional filters a compound must pass (default: 27)
         stop_flag: Dictionary containing status information for stopping the pipeline
     """
     # Set up output directories
@@ -323,15 +326,14 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
 
         # Step 5: Batch filtering of score-filtered variants using MedChem pass-count method
         logger.info(f"\nRound {round_num}: Starting MedChem filtering (pass-count) for {len(score_filtered_variants)} score-filtered variants...")
-        # Define thresholds (could be made arguments later)
-        rule_threshold = 13
-        struct_threshold = 27
+        # Use configurable thresholds instead of hardcoded values
+        logger.info(f"Rule threshold >= {medchem_rule_threshold}, Structural threshold >= {medchem_structural_threshold}")
 
         # Call filter_by_pass_count and capture both return values
         filtered_variants, filter_results_df = filter_by_pass_count(
             input_variants=score_filtered_variants,
-            rule_threshold=rule_threshold,
-            structural_threshold=struct_threshold,
+            rule_threshold=medchem_rule_threshold,
+            structural_threshold=medchem_structural_threshold,
             smiles_key='smiles' # Ensure this matches the key used in variant dictionaries
         )
         
@@ -625,6 +627,10 @@ if __name__ == "__main__":
                         help="Minimum retrosynthesis score threshold for variants (default: 0.7)")
     parser.add_argument("--boltz_pocket_residues", type=str, default="",
                         help="Comma-separated residue indices for Boltz-2 pocket constraints (e.g., '156,158,202')")
+    parser.add_argument("--medchem_rule_threshold", type=int, default=13,
+                        help="Minimum number of medicinal chemistry rules a compound must pass (default: 13)")
+    parser.add_argument("--medchem_structural_threshold", type=int, default=27,
+                        help="Minimum number of structural/functional filters a compound must pass (default: 27)")
 
     
     args = parser.parse_args()
@@ -645,5 +651,7 @@ if __name__ == "__main__":
         max_variants=args.max_variants,
         num_rounds=args.num_rounds,
         score_threshold=args.score_threshold,
-        boltz_pocket_residues=args.boltz_pocket_residues
+        boltz_pocket_residues=args.boltz_pocket_residues,
+        medchem_rule_threshold=args.medchem_rule_threshold,
+        medchem_structural_threshold=args.medchem_structural_threshold
     )

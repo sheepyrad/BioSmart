@@ -9,18 +9,15 @@ import gc
 import logging
 import sys
 import time
-from typing import Optional, Dict, Any
+import subprocess
+import json
+from typing import Optional, Dict, Any, Tuple
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
 
-# Try to import torch for CUDA memory management
-try:
-    import torch
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
-    logger.warning("PyTorch not available - GPU memory management will be disabled")
+# Import environment manager for running commands in specific environments
+from .environment_manager import env_manager
 
 class GPUMemoryManager:
     """Manages GPU memory to prevent memory leaks during pipeline execution."""
@@ -34,7 +31,54 @@ class GPUMemoryManager:
         """
         self.enable_logging = enable_logging
         self.memory_snapshots = []
+        self.pocket2mol_env = env_manager.get_environment_for_tool("pocket2mol")
         
+    def _run_torch_command(self, command: str) -> Tuple[bool, str]:
+        """
+        Run a torch command in the pocket2mol environment.
+        
+        Args:
+            command: Python command to run
+            
+        Returns:
+            Tuple of (success, output)
+        """
+        try:
+            python_cmd = ["python", "-c", command]
+            result = env_manager.run_in_env(
+                env_name=self.pocket2mol_env,
+                command=python_cmd,
+                timeout=30,
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode == 0:
+                return True, result.stdout.strip()
+            else:
+                return False, result.stderr.strip()
+                
+        except Exception as e:
+            if self.enable_logging:
+                logger.debug(f"Error running torch command: {e}")
+            return False, str(e)
+    
+    def _check_torch_availability(self) -> bool:
+        """Check if PyTorch with CUDA is available in the pocket2mol environment."""
+        command = """
+                import sys
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        print("CUDA_AVAILABLE")
+                    else:
+                        print("CUDA_NOT_AVAILABLE")
+                except ImportError:
+                    print("TORCH_NOT_AVAILABLE")
+                """
+        success, output = self._run_torch_command(command)
+        return success and output == "CUDA_AVAILABLE"
+    
     def clear_memory(self) -> bool:
         """
         Clear GPU memory cache and run garbage collection.
@@ -42,21 +86,36 @@ class GPUMemoryManager:
         Returns:
             True if memory was cleared successfully, False otherwise
         """
-        if not TORCH_AVAILABLE or not torch.cuda.is_available():
-            return False
-            
         try:
-            # Clear PyTorch CUDA cache
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            
-            # Force Python garbage collection
+            # First run local garbage collection
             gc.collect()
             
-            if self.enable_logging:
-                logger.debug("GPU memory cache cleared successfully")
-            return True
+            # Run torch memory clearing in pocket2mol environment
+            command = """
+import gc
+try:
+    import torch
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        gc.collect()
+        print("SUCCESS")
+    else:
+        print("NO_CUDA")
+except ImportError:
+    print("NO_TORCH")
+"""
+            success, output = self._run_torch_command(command)
             
+            if success and output == "SUCCESS":
+                if self.enable_logging:
+                    logger.debug("GPU memory cache cleared successfully")
+                return True
+            else:
+                if self.enable_logging:
+                    logger.debug(f"GPU memory clearing result: {output}")
+                return False
+                
         except Exception as e:
             if self.enable_logging:
                 logger.warning(f"Failed to clear GPU memory cache: {e}")
@@ -69,21 +128,38 @@ class GPUMemoryManager:
         Returns:
             Dictionary containing memory usage information in GB
         """
-        if not TORCH_AVAILABLE or not torch.cuda.is_available():
-            return {"allocated": 0.0, "reserved": 0.0, "total": 0.0, "free": 0.0}
-            
         try:
-            allocated = torch.cuda.memory_allocated() / 1024**3  # GB
-            reserved = torch.cuda.memory_reserved() / 1024**3   # GB
-            total = torch.cuda.get_device_properties(0).total_memory / 1024**3  # GB
-            free = total - allocated
+            command = """
+import json
+try:
+    import torch
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024**3
+        reserved = torch.cuda.memory_reserved() / 1024**3
+        total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        free = total - allocated
+        
+        result = {
+            "allocated": allocated,
+            "reserved": reserved, 
+            "total": total,
+            "free": free
+        }
+        print(json.dumps(result))
+    else:
+        print(json.dumps({"allocated": 0.0, "reserved": 0.0, "total": 0.0, "free": 0.0}))
+except ImportError:
+    print(json.dumps({"allocated": 0.0, "reserved": 0.0, "total": 0.0, "free": 0.0}))
+"""
+            success, output = self._run_torch_command(command)
             
-            return {
-                "allocated": allocated,
-                "reserved": reserved,
-                "total": total,
-                "free": free
-            }
+            if success:
+                try:
+                    return json.loads(output)
+                except json.JSONDecodeError:
+                    pass
+            
+            return {"allocated": 0.0, "reserved": 0.0, "total": 0.0, "free": 0.0}
             
         except Exception as e:
             if self.enable_logging:
@@ -191,6 +267,15 @@ class GPUMemoryManager:
             
         return False
     
+    def is_gpu_available(self) -> bool:
+        """
+        Check if GPU with CUDA is available.
+        
+        Returns:
+            True if GPU is available, False otherwise
+        """
+        return self._check_torch_availability()
+    
     def __enter__(self):
         """Context manager entry."""
         self.take_memory_snapshot("context_start")
@@ -223,4 +308,8 @@ def take_gpu_memory_snapshot(label: str):
 
 def force_cleanup_if_needed(max_memory_gb: float = 20.0) -> bool:
     """Force cleanup if memory usage exceeds threshold."""
-    return gpu_memory_manager.force_cleanup_if_needed(max_memory_gb) 
+    return gpu_memory_manager.force_cleanup_if_needed(max_memory_gb)
+
+def is_gpu_available() -> bool:
+    """Check if GPU with CUDA is available."""
+    return gpu_memory_manager.is_gpu_available() 

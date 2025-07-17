@@ -18,26 +18,11 @@ import gc
 # Import the new environment manager
 from .environment_manager import env_manager
 
-# Try to import torch for CUDA memory management
-try:
-    import torch
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
+# Import centralized GPU memory management
+from .gpu_memory_manager import clear_gpu_memory, log_gpu_memory_usage
 
 # Define a timeout for the subprocess (e.g., 2 hours)
-SUBPROCESS_TIMEOUT = 7200 
-
-def clear_gpu_memory():
-    """Clear GPU memory cache to prevent memory leaks."""
-    if TORCH_AVAILABLE and torch.cuda.is_available():
-        try:
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            # Force garbage collection
-            gc.collect()
-        except Exception as e:
-            print(f"Failed to clear GPU memory cache: {e}", file=sys.stderr)
+SUBPROCESS_TIMEOUT = 7200
 
 def run_pocket2mol(pdbfile, center, bbox_size, out_dir, n_samples, log_callback=None):
     """

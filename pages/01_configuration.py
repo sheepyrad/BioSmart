@@ -124,6 +124,12 @@ if "boltz_pocket_residues_input" not in st.session_state:
 if "generate_box_residues_input" not in st.session_state:
     st.session_state.generate_box_residues_input = ""
 
+# MedChem Filter Thresholds
+if "medchem_rule_threshold" not in st.session_state:
+    st.session_state.medchem_rule_threshold = 13
+if "medchem_structural_threshold" not in st.session_state:
+    st.session_state.medchem_structural_threshold = 27
+
 # --- Control flow for applying loaded config ---
 if "_apply_loaded_config_on_next_run" not in st.session_state:
     st.session_state._apply_loaded_config_on_next_run = False
@@ -158,6 +164,10 @@ if st.session_state._apply_loaded_config_on_next_run:
             
             # Load Boltz-2 configuration
             st.session_state.boltz_pocket_residues_input = pending_config.get("boltz_pocket_residues", st.session_state.boltz_pocket_residues_input)
+
+            # Load MedChem filter thresholds
+            st.session_state.medchem_rule_threshold = int(pending_config.get("medchem_rule_threshold", st.session_state.medchem_rule_threshold))
+            st.session_state.medchem_structural_threshold = int(pending_config.get("medchem_structural_threshold", st.session_state.medchem_structural_threshold))
 
             if "out_dir" in pending_config:
                 st.session_state.output_dir_path_input = pending_config["out_dir"]
@@ -723,6 +733,40 @@ with tab3:
     
     st.info("💡 **Tip:** You can use the same residues from your DiffSBDD residue list or docking box generation residues as pocket constraints.")
 
+    st.markdown("""<div class="form-header"><h3>MedChem Filtering Configuration</h3></div>""", unsafe_allow_html=True)
+
+    st.info("MedChem filtering evaluates compounds against medicinal chemistry rules and structural alerts. Compounds must pass the minimum number of specified filters to proceed to docking.")
+    
+    col_medchem1, col_medchem2 = st.columns(2)
+    
+    with col_medchem1:
+        st.number_input(
+            "Minimum Rules Passed",
+            min_value=0,
+            max_value=20,
+            step=1,
+            help="Minimum number of medicinal chemistry rules a compound must pass (e.g., Lipinski's Rule of 5, Ghose, Veber, etc.). Default: 13 out of ~15 total rules.",
+            key="medchem_rule_threshold"
+        )
+    
+    with col_medchem2:
+        st.number_input(
+            "Minimum Structural Filters Passed",
+            min_value=0,
+            max_value=40,
+            step=1,
+            help="Minimum number of structural/functional filters a compound must pass (e.g., PAINS, Glaxo alerts, NIBR filter, etc.). Default: 27 out of ~30 total filters.",
+            key="medchem_structural_threshold"
+        )
+    
+    st.caption("""
+    **Filter Categories:**
+    - **Rules:** Druglikeness rules (Lipinski, Ghose, Veber, REOS, etc.)
+    - **Structural Filters:** Alert filters (PAINS, Glaxo, BMS, etc.) and functional filters (NIBR, Bredt, etc.)
+    
+    Higher thresholds are more restrictive and will filter out more compounds. Lower thresholds are more permissive.
+    """)
+
     st.markdown("""<div class="form-header"><h3>Output Configuration</h3></div>""", unsafe_allow_html=True)
 
     col16, col17 = st.columns(2) # Use different column variables
@@ -816,6 +860,10 @@ with col_dl:
         
         # Add Boltz-2 configuration
         download_config["boltz_pocket_residues"] = st.session_state.boltz_pocket_residues_input
+        
+        # Add MedChem filter thresholds
+        download_config["medchem_rule_threshold"] = st.session_state.medchem_rule_threshold
+        download_config["medchem_structural_threshold"] = st.session_state.medchem_structural_threshold
         
         # Use output dir path for config value and extract name for filename
         output_dir_path_value = st.session_state.get("output_dir_path_input", "outputs/pipeline_output")
@@ -1008,6 +1056,10 @@ if finalize_submitted:
             
             # Add Boltz-2 configuration
             config["boltz_pocket_residues"] = st.session_state.boltz_pocket_residues_input
+            
+            # Add MedChem filter thresholds
+            config["medchem_rule_threshold"] = st.session_state.medchem_rule_threshold
+            config["medchem_structural_threshold"] = st.session_state.medchem_structural_threshold
             
             config["out_dir"] = str(output_path) # Use the validated, absolute path
 

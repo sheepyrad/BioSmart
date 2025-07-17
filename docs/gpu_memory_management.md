@@ -24,8 +24,13 @@ The error occurs due to **GPU memory accumulation** over multiple rounds without
 - Memory usage grows incrementally over many rounds
 - The error happens during model initialization/sampling phases
 - Most GPU memory appears to be "reserved" rather than "allocated"
+- PyTorch with CUDA is only available in the `pocket2mol-env` environment, not in the main pipeline environment
 
 ## Solution Implementation
+
+### Environment-Aware Approach
+
+The key insight is that PyTorch with CUDA support is only available in the `pocket2mol-env` environment, while the main pipeline runs in the `drug_pipeline` environment. Therefore, the GPU memory management must use the environment manager to run torch commands in the appropriate conda environment.
 
 ### 1. Pipeline-Level Memory Management
 
@@ -68,7 +73,7 @@ clear_gpu_memory()
 
 **File**: `utils/gpu_memory_manager.py`
 
-Created a comprehensive GPU memory management utility:
+Created a comprehensive GPU memory management utility that uses the environment manager to run torch commands in the appropriate conda environment:
 
 ```python
 class GPUMemoryManager:
@@ -76,18 +81,32 @@ class GPUMemoryManager:
     
     def clear_memory(self) -> bool:
         """Clear GPU memory cache and run garbage collection."""
-        if not TORCH_AVAILABLE or not torch.cuda.is_available():
-            return False
-            
         try:
-            # Clear PyTorch CUDA cache
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            
-            # Force Python garbage collection
+            # First run local garbage collection
             gc.collect()
             
-            return True
+            # Run torch memory clearing in pocket2mol environment
+            command = """
+import gc
+try:
+    import torch
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        gc.collect()
+        print("SUCCESS")
+    else:
+        print("NO_CUDA")
+except ImportError:
+    print("NO_TORCH")
+"""
+            success, output = self._run_torch_command(command)
+            
+            if success and output == "SUCCESS":
+                return True
+            else:
+                return False
+                
         except Exception as e:
             logger.warning(f"Failed to clear GPU memory cache: {e}")
             return False
@@ -234,17 +253,39 @@ gpu_memory_manager.force_cleanup_if_needed(max_memory_gb=20.0)
 
 ## Testing and Validation
 
-### 1. Memory Leak Testing
+### 1. Quick Test
+
+Use the provided test script to verify GPU memory management works:
+
+```bash
+python test_gpu_memory.py
+```
+
+Expected output:
+```
+2025-01-15 19:00:00,000 - __main__ - INFO - Testing GPU memory management...
+2025-01-15 19:00:00,000 - __main__ - INFO - Checking GPU availability...
+2025-01-15 19:00:01,000 - __main__ - INFO - GPU available: True
+2025-01-15 19:00:01,000 - __main__ - INFO - Getting memory info...
+2025-01-15 19:00:02,000 - __main__ - INFO - Memory info: {'allocated': 0.12, 'reserved': 0.25, 'total': 23.68, 'free': 23.56}
+2025-01-15 19:00:02,000 - utils.gpu_memory_manager - INFO - GPU Memory - Test - Allocated: 0.12GB, Reserved: 0.25GB, Free: 23.56GB, Total: 23.68GB
+2025-01-15 19:00:02,000 - __main__ - INFO - Clearing GPU memory...
+2025-01-15 19:00:03,000 - __main__ - INFO - Memory clear result: True
+2025-01-15 19:00:03,000 - utils.gpu_memory_manager - INFO - GPU Memory - After Clear - Allocated: 0.05GB, Reserved: 0.15GB, Free: 23.63GB, Total: 23.68GB
+2025-01-15 19:00:03,000 - __main__ - INFO - GPU memory management test completed successfully!
+```
+
+### 2. Memory Leak Testing
 - Run pipeline for extended periods (>100 rounds)
 - Monitor memory usage trends
 - Verify that memory is stable over time
 
-### 2. Performance Testing
+### 3. Performance Testing
 - Measure pipeline execution time with and without memory management
 - Compare memory usage patterns
 - Validate that memory clearing doesn't impact model performance
 
-### 3. Integration Testing
+### 4. Integration Testing
 - Test with different model configurations
 - Verify compatibility with different GPU types
 - Test graceful degradation when GPU is not available
