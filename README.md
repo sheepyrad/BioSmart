@@ -46,6 +46,7 @@ pip install gmx_MMPBSA
 pip install torch==2.6.0+cu126 torchvision==0.21.0+cu126 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu126
 pip install pyg-lib torch-scatter torch-sparse torch-cluster torch-spline-conv -f https://data.pyg.org/whl/torch-2.6.0+cu126.html
 pip install torch-geometric
+pip install lightning
 ```
 6. Install boltz
 

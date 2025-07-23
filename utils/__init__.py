@@ -5,23 +5,22 @@ This package contains various utilities for different stages of the drug discove
 - Ligand generation
 - Retrosynthesis
 - MedChem filtering
-- Redocking
+- Redocking (now using Unidock)
 - Energy minimization ## Deprecated
 - Pose evaluation ## Deprecated
 - Molecule processing
 - Tracking and reporting
 - Logging
-- Boltz-1x filtering
+- Boltz-2 filtering with affinity prediction
 """
 
 # Import main utilities
 from utils.ligand_generation import run_ligand_generation, combine_pocket2mol_outputs
-from utils.redocking import redock_compound, vfu_dir, vfu_wrapper_script
+from utils.redocking import redock_compound
 from utils.retrosynformer import run_retrosynthesis
 from utils.medchem_filter import filter_by_pass_count, generate_filter_plots
 from utils.energy_minimization import optimize_ligand_in_pocket
 from utils.pose_evaluation import run_posebuster
-from utils.vfu_subprocess_wrapper import run_vfu_from_wrapper
 
 # Import new utilities
 from utils.molecule_processing import extract_smiles_from_sdf, smiles_to_sdf, extract_best_pose_and_score
@@ -30,27 +29,31 @@ from utils.tracking import generate_tracking_report, update_tracking_report
 from utils.logging_utils import setup_logging, ThreadSafeRotatingFileHandler
 from utils.boltz_filter import boltz_filter_variants
 
+# Export all utilities
 __all__ = [
     # Ligand generation
     'run_ligand_generation', 'combine_pocket2mol_outputs',
     
-    # Redocking
-    'redock_compound', 'vfu_dir', 'vfu_wrapper_script', 'run_vfu_from_wrapper',
+    # Redocking (now Unidock-based)
+    'redock_compound',
     
     # Retrosynthesis
-    'run_retrosynthesis', 'extract_variants_from_retrosynthesis', 'run_retrosynthesis_with_timeout',
+    'run_retrosynthesis',
     
     # MedChem filtering
     'filter_by_pass_count', 'generate_filter_plots',
     
-    # Energy minimization ## DEPRECATED
+    # Energy minimization (deprecated)
     'optimize_ligand_in_pocket',
     
-    # Pose evaluation ## DEPRECATED 
-    'evaluate_poses',
+    # Pose evaluation (deprecated)
+    'run_posebuster',
     
     # Molecule processing
     'extract_smiles_from_sdf', 'smiles_to_sdf', 'extract_best_pose_and_score',
+    
+    # Retro utilities
+    'extract_variants_from_retrosynthesis', 'run_retrosynthesis_with_timeout',
     
     # Tracking and reporting
     'generate_tracking_report', 'update_tracking_report',
@@ -58,6 +61,6 @@ __all__ = [
     # Logging
     'setup_logging', 'ThreadSafeRotatingFileHandler',
     
-    # Boltz-1x filtering
-    'boltz_filter_variants'
+    # Boltz filtering
+    'boltz_filter_variants',
 ] 

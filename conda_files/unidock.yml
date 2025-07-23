@@ -1,0 +1,14 @@
+name: unidock-env
+channels:
+  - conda-forge
+  - bioconda
+  - nvidia
+dependencies:
+  - python=3.10
+  - unidock
+  - ambertools
+  - reduce
+  - cuda-toolkit
+  - pip
+  - pip:
+    - git+https://github.com/dptech-corp/Uni-Dock.git#subdirectory=unidock_tools 

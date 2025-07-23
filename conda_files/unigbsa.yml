@@ -1,0 +1,13 @@
+name: unigbsa-env
+channels:
+  - conda-forge
+dependencies:
+  - acpype
+  - openmpi
+  - mpi4py
+  - gromacs
+  - gmx_mmpbsa>=1.5.6
+  - pip
+  - pip:
+    - unigbsa
+    - lickit 

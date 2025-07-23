@@ -1,0 +1,16 @@
+name: cgflow-env
+channels:
+  - conda-forge
+  - pytorch
+  - nvidia
+  - pyg
+dependencies:
+  - python=3.11
+  - notebook
+  - unidock
+  - gdown
+  - pip
+  - cuda-toolkit=12.4
+  - cuda-nvcc=12.4
+  - cuda-cudart-dev=12.4
+  - pytorch-cuda=12.4 

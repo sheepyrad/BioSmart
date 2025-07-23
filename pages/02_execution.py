@@ -49,8 +49,7 @@ if "pipeline_status" not in st.session_state:
         "running": False,
         "current_round": 0,
         "total_rounds": 0,
-        "progress": 0,
-        "last_log_position": 0  # Track last read position in log file
+        "progress": 0
     }
 
 if "pipeline_thread" not in st.session_state:
@@ -65,20 +64,23 @@ if "log_container" not in st.session_state:
 if "last_refresh" not in st.session_state:
     st.session_state.last_refresh = 0
 
-def read_log_file(log_path):
-    """Read a log file with error handling and position tracking"""
+def read_log_file(log_path, max_lines=200):
+    """Read a log file with error handling and keep only the last N lines"""
     try:
         if not Path(log_path).exists():
             return None
             
         with open(log_path, 'r') as f:
-            # Seek to last read position
-            f.seek(st.session_state.pipeline_status["last_log_position"])
-            # Read new content
-            new_content = f.read()
-            # Update last read position
-            st.session_state.pipeline_status["last_log_position"] = f.tell()
-            return new_content
+            # Read all lines
+            lines = f.readlines()
+            
+            # Keep only the last max_lines
+            if len(lines) > max_lines:
+                lines = lines[-max_lines:]
+            
+            # Join lines back to content
+            content = ''.join(lines)
+            return content
     except Exception as e:
         st.error(f"Error reading log file {log_path}: {str(e)}")
         return None
@@ -136,10 +138,10 @@ def create_auto_scrolling_text_area(content, height=400):
     content = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     
     # Add syntax highlighting for common log patterns
-    content = content.replace("ERROR", '<span style="color: #ff6b6b;">ERROR</span>')
-    content = content.replace("WARNING", '<span style="color: #ffd93d;">WARNING</span>')
-    content = content.replace("INFO", '<span style="color: #6bff6b;">INFO</span>')
-    content = content.replace("DEBUG", '<span style="color: #6b6bff;">DEBUG</span>')
+    content = content.replace("ERROR", '<span style="color: #f56565;">ERROR</span>')
+    content = content.replace("WARNING", '<span style="color: #ed8936;">WARNING</span>')
+    content = content.replace("INFO", '<span style="color: #48bb78;">INFO</span>')
+    content = content.replace("DEBUG", '<span style="color: #63b3ed;">DEBUG</span>')
     
     # Add syntax highlighting for pipeline stages
     stages = [
@@ -153,7 +155,7 @@ def create_auto_scrolling_text_area(content, height=400):
     ]
     
     for stage in stages:
-        content = content.replace(stage, f'<span style="color: #ffa500;">{stage}</span>')
+        content = content.replace(stage, f'<span style="color: #ed8936;">{stage}</span>')
     
     html = f"""
         <div style="
@@ -219,9 +221,9 @@ def run_pipeline(config, status_dict, stop_event):
         status_dict["total_rounds"] = config["num_rounds"]
         status_dict["progress"] = 0
         
-        # Check for receptor file
-        if "receptor" not in config or not config["receptor"]:
-            logger.warning("No receptor file provided. Docking steps will be skipped or may fail.")
+        # Check for PDB file (used for both generation and docking)
+        if "pdbfile" not in config or not config["pdbfile"]:
+            logger.warning("No PDB file provided. Pipeline may fail.")
             
         # Determine which model is being used
         model_choice = config.get("model", "diffsbdd").lower()
@@ -233,16 +235,17 @@ def run_pipeline(config, status_dict, stop_event):
             "pdbfile": config["pdbfile"],
             "n_samples": config["n_samples"],
             "center": config["center"],
-            "receptor": config.get("receptor"),
-            "program_choice": config["program_choice"],
-            "scoring_function": config["scoring_function"],
-            "exhaustiveness": config["exhaustiveness"],
-            "is_selfies": config["is_selfies"],
-            "is_peptide": config["is_peptide"],
+            "exhaustiveness": config["exhaustiveness_level"],
             "top_n": config["top_n"],
             "max_variants": config["max_variants"],
             "num_rounds": config["num_rounds"],
-            "boltz_evaluation_method": config.get("boltz_evaluation_method", "combined"),
+            "score_threshold": config.get("score_threshold", 0.7),  # Add score threshold with default
+            "boltz_pocket_residues": config.get("boltz_pocket_residues", ""),  # Add Boltz-2 pocket residues
+            
+            # Add MedChem filter thresholds
+            "medchem_rule_threshold": config.get("medchem_rule_threshold", 13),
+            "medchem_structural_threshold": config.get("medchem_structural_threshold", 27),
+            
             "stop_flag": status_dict  # Pass the status dict for stop checking
         }
         
@@ -302,8 +305,7 @@ col4, col5 = st.columns(2)
 with col4:
     start_disabled = st.session_state.pipeline_status["running"]
     if st.button("Start Pipeline", type="primary", disabled=start_disabled):
-        # Reset log position and container
-        st.session_state.pipeline_status["last_log_position"] = 0
+        # Reset log container
         st.session_state.log_container = ""
         # Create a copy of the configuration for the thread
         thread_config = dict(st.session_state.pipeline_config)
@@ -337,13 +339,13 @@ if st.session_state.pipeline_status["running"]:
 # Log viewer
 st.header("Execution Log")
 
-# Read new log content
-new_log_content = read_log_file(Path(st.session_state.pipeline_config["out_dir"]) / "logs" / "quick_pipeline.log")
-if new_log_content:
-    # Append new content to existing log
-    st.session_state.log_container += new_log_content
+# Read log content (last 200 lines)
+log_content = read_log_file(Path(st.session_state.pipeline_config["out_dir"]) / "logs" / "quick_pipeline.log")
+if log_content:
+    # Update log container with the last 200 lines
+    st.session_state.log_container = log_content
     # Update progress based on log content
-    update_progress_from_log(new_log_content)
+    update_progress_from_log(log_content)
 
 # Display log with auto-scroll and syntax highlighting
 create_auto_scrolling_text_area(st.session_state.log_container)

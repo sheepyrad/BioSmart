@@ -69,8 +69,6 @@ if "model_update_requested" not in st.session_state:
 # File Inputs (paths stored here, file objects handled temporarily)
 if "pdb_path_input" not in st.session_state:
     st.session_state.pdb_path_input = ""
-if "receptor_path_input" not in st.session_state:
-    st.session_state.receptor_path_input = ""
 
 # DiffSBDD Specific
 if "diffsbdd_resi_list" not in st.session_state:
@@ -105,30 +103,32 @@ if "center_z" not in st.session_state:
 # Common Basic/Advanced Params
 if "n_samples_input" not in st.session_state:
     st.session_state.n_samples_input = 5
-if "program_choice_input" not in st.session_state:
-    st.session_state.program_choice_input = "qvina"
-if "scoring_function_input" not in st.session_state:
-    st.session_state.scoring_function_input = "nnscore2"
-if "exhaustiveness_input" not in st.session_state:
-    st.session_state.exhaustiveness_input = 32
-if "is_selfies_input" not in st.session_state:
-    st.session_state.is_selfies_input = False
-if "is_peptide_input" not in st.session_state:
-    st.session_state.is_peptide_input = False
+if "exhaustiveness_level_input" not in st.session_state:
+    st.session_state.exhaustiveness_level_input = "balance"
 if "num_rounds_input" not in st.session_state:
     st.session_state.num_rounds_input = 1
 if "top_n_input" not in st.session_state:
     st.session_state.top_n_input = 5
 if "max_variants_input" not in st.session_state:
     st.session_state.max_variants_input = 5
-if "output_dir_name_input" not in st.session_state:
-    st.session_state.output_dir_name_input = "pipeline_output"
-if "boltz_evaluation_method_input" not in st.session_state:
-    st.session_state.boltz_evaluation_method_input = "combined"
+if "output_dir_path_input" not in st.session_state:
+    st.session_state.output_dir_path_input = "outputs/pipeline_output"
+if "score_threshold_input" not in st.session_state:
+    st.session_state.score_threshold_input = 0.7
+
+# Boltz-2 Specific
+if "boltz_pocket_residues_input" not in st.session_state:
+    st.session_state.boltz_pocket_residues_input = ""
 
 # Box Generation Input
 if "generate_box_residues_input" not in st.session_state:
     st.session_state.generate_box_residues_input = ""
+
+# MedChem Filter Thresholds
+if "medchem_rule_threshold" not in st.session_state:
+    st.session_state.medchem_rule_threshold = 13
+if "medchem_structural_threshold" not in st.session_state:
+    st.session_state.medchem_structural_threshold = 27
 
 # --- Control flow for applying loaded config ---
 if "_apply_loaded_config_on_next_run" not in st.session_state:
@@ -148,7 +148,7 @@ if st.session_state._apply_loaded_config_on_next_run:
             current_model_loaded = st.session_state.model_selection
 
             st.session_state.pdb_path_input = pending_config.get("pdbfile", st.session_state.pdb_path_input)
-            st.session_state.receptor_path_input = pending_config.get("receptor", st.session_state.receptor_path_input)
+            # Note: receptor field in config will be the same as pdbfile, so no separate handling needed
 
             if "center" in pending_config and len(pending_config["center"]) == 3:
                 st.session_state.center_x = float(pending_config["center"][0])
@@ -156,18 +156,21 @@ if st.session_state._apply_loaded_config_on_next_run:
                 st.session_state.center_z = float(pending_config["center"][2])
 
             st.session_state.n_samples_input = int(pending_config.get("n_samples", st.session_state.n_samples_input))
-            st.session_state.program_choice_input = pending_config.get("program_choice", st.session_state.program_choice_input)
-            st.session_state.scoring_function_input = pending_config.get("scoring_function", st.session_state.scoring_function_input)
-            st.session_state.exhaustiveness_input = int(pending_config.get("exhaustiveness", st.session_state.exhaustiveness_input))
-            st.session_state.is_selfies_input = bool(pending_config.get("is_selfies", st.session_state.is_selfies_input))
-            st.session_state.is_peptide_input = bool(pending_config.get("is_peptide", st.session_state.is_peptide_input))
+            st.session_state.exhaustiveness_level_input = pending_config.get("exhaustiveness_level", st.session_state.exhaustiveness_level_input)
             st.session_state.top_n_input = int(pending_config.get("top_n", st.session_state.top_n_input))
             st.session_state.max_variants_input = int(pending_config.get("max_variants", st.session_state.max_variants_input))
             st.session_state.num_rounds_input = int(pending_config.get("num_rounds", st.session_state.num_rounds_input))
-            st.session_state.boltz_evaluation_method_input = pending_config.get("boltz_evaluation_method", st.session_state.boltz_evaluation_method_input)
+            st.session_state.score_threshold_input = float(pending_config.get("score_threshold", st.session_state.score_threshold_input))
+            
+            # Load Boltz-2 configuration
+            st.session_state.boltz_pocket_residues_input = pending_config.get("boltz_pocket_residues", st.session_state.boltz_pocket_residues_input)
+
+            # Load MedChem filter thresholds
+            st.session_state.medchem_rule_threshold = int(pending_config.get("medchem_rule_threshold", st.session_state.medchem_rule_threshold))
+            st.session_state.medchem_structural_threshold = int(pending_config.get("medchem_structural_threshold", st.session_state.medchem_structural_threshold))
 
             if "out_dir" in pending_config:
-                st.session_state.output_dir_name_input = Path(pending_config["out_dir"]).name
+                st.session_state.output_dir_path_input = pending_config["out_dir"]
 
             if current_model_loaded == "diffsbdd":
                 st.session_state.diffsbdd_resi_list = pending_config.get("resi_list", st.session_state.diffsbdd_resi_list)
@@ -355,6 +358,9 @@ def visualize_protein_residues(pdb_content, selected_residues=None, center=None,
 
     view.zoomTo()
 
+    # Critical: render before generating HTML
+    view.render()
+
     # Get the HTML representation
     html = view._make_html()
 
@@ -404,18 +410,36 @@ tab1, tab2, tab3 = st.tabs(["Basic Configuration", "Box Settings", "Advanced Set
 with tab1:
     st.markdown("""<div class="form-header"><h3>File Uploads and Parameters</h3></div>""", unsafe_allow_html=True)
 
+    # Single PDB file upload section
+    st.subheader("Target Protein PDB File")    
+    
+    # Add PDB indexing reminder
+    st.warning("""
+    **⚠️ Important PDB Indexing Requirement:**
+    
+    The input protein PDB file **must be 1-indexed** (residue numbering starts from 1). 
+    If your PDB file uses non-standard indexing (e.g., starting from 0 or with gaps), 
+    please use [pdb-tools](https://www.bonvinlab.org/pdb-tools/) to renumber it before uploading:
+    
+    ```bash
+    pdb_reres -1 input.pdb > output_reindexed.pdb
+    ```
+    
+    The pipeline does not currently support automatic renumbering of non-1-indexed PDB files.
+    """)
+    
     col1, col2 = st.columns(2)
 
     with col1:
         # PDB File upload
-        st.subheader("PDB File")
-        pdb_file = st.file_uploader( # No key needed for file uploader state? Streamlit handles it.
+        pdb_file = st.file_uploader(
             "Upload PDB File",
             type=["pdb"],
             help="Upload the target protein PDB file",
-            key="pdb_file_uploader" # Keep key if used elsewhere, e.g. reading content
+            key="pdb_file_uploader"
         )
 
+    with col2:
         # PDB Path Input - uses key 'pdb_path_input'
         st.text_input(
             "OR Enter PDB File Path *",
@@ -424,27 +448,12 @@ with tab1:
             key="pdb_path_input"
         )
 
-    with col2:
-        # Receptor File upload
-        st.subheader("Receptor File")
-        receptor_file = st.file_uploader( # No key needed for file uploader state?
-            "Upload Receptor File",
-            type=["pdbqt"],
-            help="Upload the receptor file for docking (optional)",
-             key="receptor_file_uploader" # Keep key if used elsewhere
-        )
-
-        # Receptor Path Input - uses key 'receptor_path_input'
-        st.text_input(
-            "OR Enter Receptor File Path",
-            placeholder="Path to PDBQT file on server",
-            help="Specify the path to the PDBQT receptor file on the server",
-            key="receptor_path_input"
-        )
-
-    # Use widget keys directly to check state
-    if not st.session_state.get("receptor_file_uploader") and not st.session_state.receptor_path_input:
-        st.warning("⚠️ No receptor file uploaded or specified. Docking steps may be skipped or fail. Upload or specify a PDBQT receptor file if you want to perform docking.")
+    # Check if PDB file is provided (required)
+    pdb_file_state = st.session_state.get("pdb_file_uploader")
+    pdb_path_state = st.session_state.get("pdb_path_input", "")
+    
+    if not pdb_file_state and not pdb_path_state:
+        st.error("⚠️ **Required**: Please upload a PDB file or specify a PDB file path. This file will be used for both molecule generation and docking.")
 
     st.markdown("""<div class="form-header"><h3>Model Parameters</h3></div>""", unsafe_allow_html=True)
 
@@ -468,7 +477,7 @@ with tab1:
         # Display a message for Pocket2Mol
         st.info("Pocket2Mol uses 3D pocket information instead of residue lists. The bounding box settings can be configured in the 'Box Settings' tab.")
 
-    # Common parameters
+    # Common parameters - simplified since Unidock handles program choice and scoring
     col3, col4 = st.columns(2)
 
     with col3:
@@ -483,25 +492,7 @@ with tab1:
         )
 
     with col4:
-        # Docking Program Selectbox - uses key 'program_choice_input'
-        st.selectbox(
-            "Docking Program",
-            options=["qvina"],
-            # index=0, # No longer needed with key
-            help="Select the docking program to use",
-            key="program_choice_input"
-        )
-
-        # Scoring Function Selectbox - uses key 'scoring_function_input'
-        st.selectbox(
-            "Scoring Function",
-            options=["nnscore2"],
-            # index=0, # No longer needed with key
-            help="Select the scoring function for docking",
-            key="scoring_function_input"
-        )
-
-    # No need for "Save Basic Config" button if not using forms for state saving
+        pass
 
 with tab2:
     # --- Box Generation Expander (Moved outside the form) ---
@@ -683,31 +674,20 @@ with tab3:
     col14, col15 = st.columns(2) # Use different column variables
 
     with col14:
-        # Exhaustiveness Input - uses key 'exhaustiveness_input'
-        st.number_input(
-            "Exhaustiveness",
-            min_value=1,
-            max_value=100, # Adjust if needed
-            step=1,
-            help="Docking exhaustiveness parameter",
-            key="exhaustiveness_input"
-        )
-
-        # SELFIES Checkbox - uses key 'is_selfies_input'
-        st.checkbox(
-            "Use SELFIES Representation",
-            help="Use SELFIES molecular representation (if applicable model supports)",
-            key="is_selfies_input"
+        # Exhaustiveness Input - uses key 'exhaustiveness_level_input'
+        st.selectbox(
+            "Exhaustiveness Level",
+            options=["fast", "balance", "detail"],
+            format_func=lambda x: {
+                "fast": "Fast (128) - Quick docking for screening",
+                "balance": "Balance (384) - Good balance of speed and accuracy", 
+                "detail": "Detail (512) - Thorough search for final results"
+            }[x],
+            help="Select the exhaustiveness level for docking. Higher levels provide more thorough search but take longer.",
+            key="exhaustiveness_level_input"
         )
 
     with col15:
-        # Peptide Checkbox - uses key 'is_peptide_input'
-        st.checkbox(
-            "Ligand is Peptide",
-            help="Check if the ligand is a peptide (may affect downstream processing)",
-            key="is_peptide_input"
-        )
-
         # Number of Rounds Input - uses key 'num_rounds_input'
         st.number_input(
             "Number of Rounds",
@@ -718,67 +698,94 @@ with tab3:
             key="num_rounds_input"
         )
 
-    st.markdown("""<div class="form-header"><h3>Boltz-1x Filtering Configuration</h3></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="form-header"><h3>Retrosynthesis Filtering Configuration</h3></div>""", unsafe_allow_html=True)
+
+    col_score, col_empty = st.columns(2)
+    with col_score:
+        # Score Threshold Input - uses key 'score_threshold_input'
+        st.number_input(
+            "Retrosynthesis Score Threshold",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.1,
+            format="%.1f",
+            help="Minimum retrosynthesis score threshold for filtering variants. Only variants with scores >= this threshold will proceed to MedChem filtering. Higher values are more restrictive.",
+            key="score_threshold_input"
+        )
+
+    st.markdown("""<div class="form-header"><h3>Boltz-2 Filtering Configuration</h3></div>""", unsafe_allow_html=True)
+
+    st.info("Boltz-2 filtering predicts protein-ligand structures and evaluates binding affinity. The filter uses spatial evaluation (any ligand atom within the docking box) and provides affinity predictions with confidence scores.")
     
-    # Boltz-1x Evaluation Method Selection
-    st.selectbox(
-        "Boltz-1x Evaluation Method",
-        options=["any_atom", "geometric_center", "majority_atoms", "bounding_box_overlap", "combined"],
-        format_func=lambda x: {
-            "any_atom": "Any Atom - Passes if ANY ligand atom is inside the docking box",
-            "geometric_center": "Geometric Center - Passes if ligand center is inside the box", 
-            "majority_atoms": "Majority Atoms - Passes if >50% of ligand atoms are inside",
-            "bounding_box_overlap": "Bounding Box Overlap - Passes if >10% volume overlap",
-            "combined": "Combined (Recommended) - Uses multiple criteria for robust evaluation"
-        }[x],
-        help="Method for evaluating whether predicted ligand positions are acceptable. 'Combined' is recommended as it balances sensitivity and specificity.",
-        key="boltz_evaluation_method_input"
+    # Boltz-2 pocket constraints configuration
+    st.text_input(
+        "Pocket Constraint Residues (comma-separated)",
+        placeholder="e.g., 156,158,202,204",
+        help="Enter residue numbers (1-indexed) to define pocket constraints for Boltz-2. These residues will be used to guide the protein-ligand binding prediction. Leave empty to use no constraints.",
+        key="boltz_pocket_residues_input"
     )
     
-    # Add detailed information about evaluation methods
-    with st.expander("ℹ️ Detailed Evaluation Method Information"):
-        st.markdown("""
-        **Choose the evaluation method that best fits your research needs:**
-        
-        **🎯 Any Atom** - Most permissive approach
-        - Passes if ANY ligand atom is inside the docking box
-        - Good for initial screening and high sensitivity
-        - May accept ligands that are mostly outside the target region
-        
-        **📍 Geometric Center** - Balanced approach  
-        - Passes if the geometric center (centroid) of the ligand is inside the box
-        - Good balance between sensitivity and specificity
-        - Ensures the ligand is generally positioned in the target region
-        
-        **📊 Majority Atoms** - High specificity
-        - Passes if more than 50% of ligand atoms are inside the docking box
-        - Ensures significant binding site occupancy
-        - May be too strict for large ligands or edge binding cases
-        
-        **📦 Bounding Box Overlap** - Shape-aware evaluation
-        - Passes if more than 10% of ligand bounding box overlaps with docking box
-        - Accounts for ligand shape and size
-        - Good for irregularly shaped molecules
-        
-        **🎯 Combined (Recommended)** - Multi-criteria approach
-        - Passes if: center inside OR >30% bounding box overlap OR >60% atoms inside
-        - Robust across different ligand types and binding scenarios
-        - Balances sensitivity and specificity effectively
-        """)
-        
-        st.info("💡 **Recommendation**: Use 'Combined' for most applications as it provides robust filtering across various ligand shapes and binding modes while maintaining good specificity for the target region.")
+    st.caption("""
+    **Pocket Constraints:** Specify key residues that define the binding pocket for Boltz-2 structure prediction. 
+    These should be residue numbers (1-indexed) that are important for ligand binding. 
+    The constraints help guide the structural prediction to focus on the correct binding site.
+    """)
+    
+    st.info("💡 **Tip:** You can use the same residues from your DiffSBDD residue list or docking box generation residues as pocket constraints.")
+
+    st.markdown("""<div class="form-header"><h3>MedChem Filtering Configuration</h3></div>""", unsafe_allow_html=True)
+
+    st.info("MedChem filtering evaluates compounds against medicinal chemistry rules and structural alerts. Compounds must pass the minimum number of specified filters to proceed to docking.")
+    
+    col_medchem1, col_medchem2 = st.columns(2)
+    
+    with col_medchem1:
+        st.number_input(
+            "Minimum Rules Passed",
+            min_value=0,
+            max_value=20,
+            step=1,
+            help="Minimum number of medicinal chemistry rules a compound must pass (e.g., Lipinski's Rule of 5, Ghose, Veber, etc.). Default: 13 out of ~15 total rules.",
+            key="medchem_rule_threshold"
+        )
+    
+    with col_medchem2:
+        st.number_input(
+            "Minimum Structural Filters Passed",
+            min_value=0,
+            max_value=40,
+            step=1,
+            help="Minimum number of structural/functional filters a compound must pass (e.g., PAINS, Glaxo alerts, NIBR filter, etc.). Default: 27 out of ~30 total filters.",
+            key="medchem_structural_threshold"
+        )
+    
+    st.caption("""
+    **Filter Categories:**
+    - **Rules:** Druglikeness rules (Lipinski, Ghose, Veber, REOS, etc.)
+    - **Structural Filters:** Alert filters (PAINS, Glaxo, BMS, etc.) and functional filters (NIBR, Bredt, etc.)
+    
+    Higher thresholds are more restrictive and will filter out more compounds. Lower thresholds are more permissive.
+    """)
 
     st.markdown("""<div class="form-header"><h3>Output Configuration</h3></div>""", unsafe_allow_html=True)
 
     col16, col17 = st.columns(2) # Use different column variables
 
     with col16:
-        # Output Directory Name Input - uses key 'output_dir_name_input'
+        # Output Directory Path Input - uses key 'output_dir_path_input'
         st.text_input(
-            "Output Directory Name *",
-            help="Name of the output directory where results will be stored (relative to 'outputs/' folder)",
-            key="output_dir_name_input"
+            "Output Directory Path *",
+            help="Path to the output directory where results will be stored. Can be absolute (e.g., '/home/user/results') or relative to project root (e.g., 'outputs/my_experiment')",
+            key="output_dir_path_input"
         )
+        
+        # Add helpful information about path formats
+        st.caption("""
+        **Path Examples:**
+        - Relative: `outputs/my_experiment` (relative to project root)
+        - Absolute: `/home/user/drug_discovery_results`
+        - With subdirectories: `outputs/experiments/2024/january`
+        """)
 
         # Top N Input - uses key 'top_n_input'
         st.number_input(
@@ -811,7 +818,7 @@ col_dl, col_ul = st.columns(2)
 with col_dl:
     # Download button - Create config dynamically from current state for download
     # Disable if required fields (like output dir name) are missing
-    config_ready_for_download = bool(st.session_state.get("output_dir_name_input"))
+    config_ready_for_download = bool(st.session_state.get("output_dir_path_input"))
     config_json_data = ""
     download_filename = "pipeline_config.json" # Default filename
     if config_ready_for_download:
@@ -819,9 +826,10 @@ with col_dl:
         download_config = {}
         download_config["model"] = st.session_state.model_selection
         
-        # Files (store paths from state)
-        download_config["pdbfile"] = st.session_state.pdb_path_input
-        download_config["receptor"] = st.session_state.receptor_path_input # May be empty
+        # Files (store paths from state) - use PDB file for both generation and docking
+        pdb_path = st.session_state.pdb_path_input
+        download_config["pdbfile"] = pdb_path
+        download_config["receptor"] = pdb_path  # Use same file as receptor
 
         # Model specific
         if download_config["model"] == "diffsbdd":
@@ -843,21 +851,26 @@ with col_dl:
 
         # Common parameters
         download_config["n_samples"] = st.session_state.n_samples_input
-        download_config["program_choice"] = st.session_state.program_choice_input
-        download_config["scoring_function"] = st.session_state.scoring_function_input
         download_config["center"] = [st.session_state.center_x, st.session_state.center_y, st.session_state.center_z]
-        download_config["exhaustiveness"] = st.session_state.exhaustiveness_input
-        download_config["is_selfies"] = st.session_state.is_selfies_input
-        download_config["is_peptide"] = st.session_state.is_peptide_input
+        download_config["exhaustiveness_level"] = st.session_state.exhaustiveness_level_input
         download_config["top_n"] = st.session_state.top_n_input
         download_config["max_variants"] = st.session_state.max_variants_input
         download_config["num_rounds"] = st.session_state.num_rounds_input
-        download_config["boltz_evaluation_method"] = st.session_state.boltz_evaluation_method_input
+        download_config["score_threshold"] = st.session_state.score_threshold_input
         
-        # Use output dir name for filename and construct full path for config value
-        output_dir_name_value = st.session_state.get("output_dir_name_input", "pipeline_output")
-        download_config["out_dir"] = f"outputs/{output_dir_name_value}"
-        download_filename = f"{output_dir_name_value}.json"
+        # Add Boltz-2 configuration
+        download_config["boltz_pocket_residues"] = st.session_state.boltz_pocket_residues_input
+        
+        # Add MedChem filter thresholds
+        download_config["medchem_rule_threshold"] = st.session_state.medchem_rule_threshold
+        download_config["medchem_structural_threshold"] = st.session_state.medchem_structural_threshold
+        
+        # Use output dir path for config value and extract name for filename
+        output_dir_path_value = st.session_state.get("output_dir_path_input", "outputs/pipeline_output")
+        download_config["out_dir"] = output_dir_path_value
+        # Extract just the directory name for the filename
+        output_dir_name = Path(output_dir_path_value).name
+        download_filename = f"{output_dir_name}.json"
 
         try:
             config_json_data = json.dumps(download_config, indent=4)
@@ -947,14 +960,34 @@ if finalize_submitted:
         error_messages.append("Please fill in the residue list for DiffSBDD.")
         validation_error = True
 
-    # Validate output directory name
-    output_dir_name_state = st.session_state.get("output_dir_name_input", "").strip()
-    if not output_dir_name_state:
-        error_messages.append("Please specify an Output Directory Name.")
+    # Validate output directory path
+    output_dir_path_state = st.session_state.get("output_dir_path_input", "").strip()
+    if not output_dir_path_state:
+        error_messages.append("Please specify an Output Directory Path.")
         validation_error = True
-    elif not re.match(r"^[a-zA-Z0-9_.-]+$", output_dir_name_state):
-         error_messages.append("Output Directory Name contains invalid characters. Use only letters, numbers, underscore, dot, or hyphen.")
-         validation_error = True
+    else:
+        # Convert to Path object for validation
+        try:
+            output_path = Path(output_dir_path_state)
+            
+            # If it's a relative path, make it relative to the project root
+            if not output_path.is_absolute():
+                project_root = Path(__file__).resolve().parent.parent
+                output_path = project_root / output_path
+            
+            # Resolve the path to handle any .. or . components
+            output_path = output_path.resolve()
+            
+            # Validate that the parent directory exists or can be created
+            try:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+            except (OSError, PermissionError) as e:
+                error_messages.append(f"Cannot create parent directories for output path: {e}")
+                validation_error = True
+                
+        except (OSError, ValueError) as e:
+            error_messages.append(f"Invalid output directory path: {e}")
+            validation_error = True
 
 
     if validation_error:
@@ -962,59 +995,36 @@ if finalize_submitted:
             st.error(msg)
     else:
         # Check if output directory already exists
-        project_root = Path(__file__).resolve().parent.parent
-        output_path = project_root / "outputs" / output_dir_name_state
         if output_path.exists():
-            st.error(f"Output directory 'outputs/{output_dir_name_state}' already exists. Please choose a different name.")
+            st.error(f"Output directory '{output_path}' already exists. Please choose a different path.")
         else:
             # Create the final configuration dictionary
             config = {}
             
             # Create a temporary directory *only* if we have uploaded files to save
             temp_dir_path = None
-            if pdb_file_state or st.session_state.get("receptor_file_uploader"):
+            if pdb_file_state:
                  temp_dir_path = Path(tempfile.mkdtemp())
                  logger.info(f"Created temp dir for uploads: {temp_dir_path}")
-
 
             # --- Populate config dictionary from session state ---
             config["model"] = current_model_final
 
-            # Handle PDB file
+            # Handle PDB file (used for both generation and docking)
             if pdb_file_state:
                 pdb_save_path = temp_dir_path / pdb_file_state.name
                 try:
                     with open(pdb_save_path, "wb") as f:
                         f.write(pdb_file_state.getbuffer())
                     config["pdbfile"] = str(pdb_save_path)
+                    config["receptor"] = str(pdb_save_path)  # Use same file as receptor
                     logger.info(f"Saved uploaded PDB to temp file: {pdb_save_path}")
                 except Exception as e:
                     st.error(f"Failed to save uploaded PDB file: {e}")
                     logger.error(f"Failed to save uploaded PDB file: {e}", exc_info=True)
-                    # Potentially stop config saving here?
             elif final_pdb_source: # Should be the validated path
                 config["pdbfile"] = final_pdb_source
-            
-            # Handle Receptor file
-            receptor_file_state = st.session_state.get("receptor_file_uploader")
-            receptor_path_state = st.session_state.get("receptor_path_input", "")
-            if receptor_file_state:
-                 receptor_save_path = temp_dir_path / receptor_file_state.name
-                 try:
-                     with open(receptor_save_path, "wb") as f:
-                         f.write(receptor_file_state.getbuffer())
-                     config["receptor"] = str(receptor_save_path)
-                     logger.info(f"Saved uploaded receptor to temp file: {receptor_save_path}")
-                 except Exception as e:
-                     st.error(f"Failed to save uploaded receptor file: {e}")
-                     logger.error(f"Failed to save uploaded receptor file: {e}", exc_info=True)
-            elif receptor_path_state and os.path.exists(receptor_path_state):
-                 config["receptor"] = receptor_path_state
-            elif receptor_path_state: # Path provided but doesn't exist
-                 st.warning(f"Specified receptor path does not exist: {receptor_path_state}. It will not be included in the config.")
-                 config["receptor"] = None # Explicitly set to None or omit key
-            else:
-                 config["receptor"] = None # No receptor specified
+                config["receptor"] = final_pdb_source  # Use same file as receptor
 
             # Add model-specific parameters
             if current_model_final == "diffsbdd":
@@ -1037,22 +1047,31 @@ if finalize_submitted:
 
             # Add common parameters
             config["n_samples"] = st.session_state.n_samples_input
-            config["program_choice"] = st.session_state.program_choice_input
-            config["scoring_function"] = st.session_state.scoring_function_input
             config["center"] = [st.session_state.center_x, st.session_state.center_y, st.session_state.center_z]
-            config["exhaustiveness"] = st.session_state.exhaustiveness_input
-            config["is_selfies"] = st.session_state.is_selfies_input
-            config["is_peptide"] = st.session_state.is_peptide_input
+            config["exhaustiveness_level"] = st.session_state.exhaustiveness_level_input
             config["top_n"] = st.session_state.top_n_input
             config["max_variants"] = st.session_state.max_variants_input
             config["num_rounds"] = st.session_state.num_rounds_input
-            config["boltz_evaluation_method"] = st.session_state.boltz_evaluation_method_input
+            config["score_threshold"] = st.session_state.score_threshold_input
+            
+            # Add Boltz-2 configuration
+            config["boltz_pocket_residues"] = st.session_state.boltz_pocket_residues_input
+            
+            # Add MedChem filter thresholds
+            config["medchem_rule_threshold"] = st.session_state.medchem_rule_threshold
+            config["medchem_structural_threshold"] = st.session_state.medchem_structural_threshold
+            
             config["out_dir"] = str(output_path) # Use the validated, absolute path
 
 
             # --- Save final configuration in session state ---
             st.session_state.pipeline_config = config
             st.success(f"Configuration saved successfully! Output will be in '{output_path}'. Proceed to the Execution page.")
+            
+            # Show the resolved path if it's different from what the user entered
+            if str(output_path) != output_dir_path_state:
+                st.info(f"Resolved path: `{output_path}`")
+            
             logger.info(f"Finalized pipeline config: {config}")
             # We might want to store the temp_dir_path if files were uploaded,
             # so they can be cleaned up later, but managing temp dirs across sessions/pages is tricky.

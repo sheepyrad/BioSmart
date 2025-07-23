@@ -33,13 +33,14 @@ import threading
 import json
 from datetime import datetime
 from typing import List
+import gc
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
 
 # Import functions from the utils modules
 from utils.ligand_generation import run_ligand_generation, combine_pocket2mol_outputs
-from utils.redocking import redock_compound, vfu_dir
+from utils.redocking import redock_compound
 from utils.retrosynformer import run_retrosynthesis
 from utils.medchem_filter import filter_by_pass_count, generate_filter_plots
 from utils.boltz_filter import boltz_filter_variants
@@ -50,11 +51,17 @@ from utils.retro_utils import extract_variants_from_retrosynthesis, run_retrosyn
 from utils.tracking import generate_tracking_report, update_tracking_report
 from utils.logging_utils import setup_logging, ThreadSafeRotatingFileHandler
 
+# Import the environment manager for conda environment handling
+from utils.environment_manager import env_manager
+
+# Import centralized GPU memory management
+from utils.gpu_memory_manager import clear_gpu_memory, log_gpu_memory_usage, gpu_memory_manager
+
 def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_list=None, 
          n_samples=200, sanitize=True, center=(114.817, 75.602, 82.416), box_size=(38, 70, 58),
-         bbox_size=23.0, receptor=None, program_choice="qvina", scoring_function="nnscore2",
-         exhaustiveness=10, is_selfies=False, is_peptide=False, 
-         top_n=5, max_variants=5, num_rounds=1, boltz_evaluation_method="combined", stop_flag=None):
+         bbox_size=23.0, exhaustiveness="balance", top_n=5, max_variants=5, num_rounds=1, 
+         score_threshold=0.7, boltz_pocket_residues=None, medchem_rule_threshold=13, 
+         medchem_structural_threshold=27, stop_flag=None):
     """
     Multi-round quick pipeline main function with batch filtering optimization.
     
@@ -62,32 +69,56 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         out_dir: Output directory for results
         model_choice: Model to use for molecule generation ('diffsbdd' or 'pocket2mol')
         checkpoint: Path to model checkpoint (DiffSBDD only)
-        pdbfile: Path to target protein PDB file
+        pdbfile: Path to target protein PDB file (used for both generation and docking)
         resi_list: Residue identifiers (DiffSBDD only)
         n_samples: Number of samples to generate
         sanitize: Whether to sanitize generated molecules (DiffSBDD only)
         center: Center coordinates (x, y, z) for docking box or Pocket2Mol
         box_size: Box dimensions (x, y, z) for docking 
         bbox_size: Single box size value for Pocket2Mol
-        receptor: Receptor file for docking
-        program_choice: Docking program choice
-        scoring_function: Scoring function for docking
-        exhaustiveness: Docking exhaustiveness parameter
-        is_selfies: Whether to use SELFIES representation
-        is_peptide: Whether the ligand is a peptide
+        exhaustiveness: Docking exhaustiveness level ("fast", "balance", or "detail")
         top_n: Number of top compounds to process
         max_variants: Maximum number of variants per compound
         num_rounds: Number of rounds to run
-        boltz_evaluation_method: Boltz-1x evaluation method ("any_atom", "geometric_center", 
-                                "majority_atoms", "bounding_box_overlap", or "combined")
+        score_threshold: Minimum retrosynthesis score threshold for variants (default: 0.7)
+        boltz_pocket_residues: Comma-separated string of residue indices for Boltz-2 pocket constraints
+        medchem_rule_threshold: Minimum number of medicinal chemistry rules a compound must pass (default: 13)
+        medchem_structural_threshold: Minimum number of structural/functional filters a compound must pass (default: 27)
         stop_flag: Dictionary containing status information for stopping the pipeline
     """
     # Set up output directories
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     
+    # Use exhaustiveness level directly (no mapping needed for Unidock)
+    logger.info(f"Using exhaustiveness level '{exhaustiveness}' for Unidock search mode")
+    
     # Set up logging first
     setup_logging(out_dir)
+    
+    # Check conda environments availability
+    logger.info("Checking conda environments availability...")
+    env_status = env_manager.check_all_environments()
+    
+    # Check if required environments are available based on model choice
+    required_envs = ["synformer", "boltz", "unidock", "unidocktools"]  # Always needed for docking
+    if model_choice.lower() == "diffsbdd":
+        required_envs.append("diffsbdd")
+    elif model_choice.lower() == "pocket2mol":
+        required_envs.append("pocket2mol")
+    
+    missing_envs = []
+    for tool in required_envs:
+        env_name = env_manager.get_environment_for_tool(tool)
+        if not env_status.get(env_name, False):
+            missing_envs.append(env_name)
+    
+    if missing_envs:
+        error_msg = f"Required conda environments are not available: {missing_envs}. Please run './setup.sh' to create them."
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+    
+    logger.info("All required conda environments are available.")
     
     # Check model choice
     model_choice = model_choice.lower()
@@ -97,6 +128,10 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
     
     # Log the model being used
     logger.info(f"Using {model_choice.upper()} model for molecule generation")
+    
+    # Log initial GPU memory usage
+    if model_choice == 'pocket2mol':
+        log_gpu_memory_usage()
     
     # Create tracking report files
     master_dir = out_dir / "master_tracking"
@@ -118,6 +153,10 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             break
             
         logger.info(f"============= STARTING ROUND {round_num}/{num_rounds} =============")
+        
+        # Log GPU memory usage at start of round
+        if model_choice == 'pocket2mol':
+            log_gpu_memory_usage()
         
         # Create round-specific directories
         round_dir = out_dir / f"round_{round_num}"
@@ -157,6 +196,11 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                 log_callback=logger.info
             )
             lg_thread.join()
+            
+            # Clear GPU memory after Pocket2Mol execution
+            logger.info(f"Round {round_num}: Clearing GPU memory after Pocket2Mol execution...")
+            clear_gpu_memory()
+            log_gpu_memory_usage()
             
             # Combine Pocket2Mol outputs into a single SDF file
             logger.info(f"Round {round_num}: Combining Pocket2Mol outputs into a single SDF file...")
@@ -198,7 +242,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         all_variants = []
         total_compounds = len(compounds)
         
-        # Step 3: Sequential retrosynthesis (VRAM intensive)
+        # Step 3: Sequential retrosynthesis
         for idx, compound in enumerate(compounds, 1):
             # Check stop flag before each compound
             if stop_flag and not stop_flag.get("running", True):
@@ -250,20 +294,46 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         
         # End of loop processing initial compounds and their variants
 
-        # Step 4: Batch filtering of all variants using pass-count method
-        logger.info(f"\nRound {round_num}: Starting MedChem filtering (pass-count) for {len(all_variants)} generated variants...")
-        # Define thresholds (could be made arguments later)
-        rule_threshold = 13
-        struct_threshold = 27
+        # Step 4: Score-based filtering (pre-filter before MedChem)
+        logger.info(f"\nRound {round_num}: Starting score-based filtering for {len(all_variants)} generated variants...")
+        logger.info(f"Score threshold: >= {score_threshold}")
+        
         if not all_variants: # Handle case where no variants were generated
              logger.warning(f"Round {round_num}: No variants generated from retrosynthesis. Skipping filtering and subsequent steps for this round.")
              continue # Skip to next round
 
+        # Filter variants by score threshold
+        score_filtered_variants = []
+        for variant in all_variants:
+            score = variant.get("score")
+            if score is not None and score >= score_threshold:
+                score_filtered_variants.append(variant)
+                # Update status for variants that passed score filter
+                variant["status"] = "PASSSCORE"
+                update_tracking_report(round_report, variant, "variant_status_update")
+                update_tracking_report(master_report, variant, "variant_status_update")
+            else:
+                # Update status for variants that failed score filter
+                variant["status"] = "FAILSCORE"
+                update_tracking_report(round_report, variant, "variant_status_update")
+                update_tracking_report(master_report, variant, "variant_status_update")
+
+        logger.info(f"Round {round_num}: After score filtering (>= {score_threshold}), {len(score_filtered_variants)} variants remain")
+        
+        if not score_filtered_variants:
+            logger.warning(f"Round {round_num}: No variants passed score filtering. Skipping MedChem filtering and subsequent steps for this round.")
+            continue # Skip to next round
+
+        # Step 5: Batch filtering of score-filtered variants using MedChem pass-count method
+        logger.info(f"\nRound {round_num}: Starting MedChem filtering (pass-count) for {len(score_filtered_variants)} score-filtered variants...")
+        # Use configurable thresholds instead of hardcoded values
+        logger.info(f"Rule threshold >= {medchem_rule_threshold}, Structural threshold >= {medchem_structural_threshold}")
+
         # Call filter_by_pass_count and capture both return values
         filtered_variants, filter_results_df = filter_by_pass_count(
-            input_variants=all_variants,
-            rule_threshold=rule_threshold,
-            structural_threshold=struct_threshold,
+            input_variants=score_filtered_variants,
+            rule_threshold=medchem_rule_threshold,
+            structural_threshold=medchem_structural_threshold,
             smiles_key='smiles' # Ensure this matches the key used in variant dictionaries
         )
         
@@ -285,41 +355,56 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             update_tracking_report(master_report, variant, "variant_status_update")
 
         # ------------------------------------------------------------------
-        # Step 5: Boltz-1x blind-docking filter
+        # Step 6: Boltz-2 blind-docking filter with affinity prediction
         # ------------------------------------------------------------------
         logger.info(
-            f"Round {round_num}: Running Boltz-1x blind-docking filter on {len(filtered_variants)} variants using '{boltz_evaluation_method}' evaluation method"
+            f"Round {round_num}: Running Boltz-2 blind-docking filter on {len(filtered_variants)} variants"
         )
 
+        # Parse pocket residues if provided
+        pocket_residues_list = None
+        if boltz_pocket_residues and boltz_pocket_residues.strip():
+            try:
+                pocket_residues_list = [int(x.strip()) for x in boltz_pocket_residues.split(',') if x.strip()]
+                logger.info(f"Round {round_num}: Using Boltz-2 pocket constraints for residues: {pocket_residues_list}")
+            except ValueError as e:
+                logger.warning(f"Round {round_num}: Invalid pocket residues format '{boltz_pocket_residues}': {e}. Proceeding without constraints.")
+                pocket_residues_list = None
+
+        # Ensure pdbfile is valid before calling boltz_filter_variants
+        if pdbfile is None:
+            logger.error(f"Round {round_num}: PDB file is None, cannot run Boltz-2 filter. Skipping this round.")
+            continue
+            
         passed_variants, failed_variants = boltz_filter_variants(
             variants=filtered_variants,
             pdb_file=pdbfile,
             round_dir=round_dir,
             center=center,
             box_size=box_size,
+            pocket_residues=pocket_residues_list,
             log_callback=logger.info,
-            evaluation_method=boltz_evaluation_method,
         )
 
-        # Update tracking for all variants processed by Boltz-1x
+        # Update tracking for all variants processed by Boltz-2
         for variant in (passed_variants + failed_variants):
             update_tracking_report(round_report, variant, "variant_status_update")
             update_tracking_report(master_report, variant, "variant_status_update")
 
         if not passed_variants:
             logger.warning(
-                f"Round {round_num}: No variants passed Boltz-1x blind-docking filter. Skipping docking for this round."
+                f"Round {round_num}: No variants passed Boltz-2 blind-docking filter. Skipping docking for this round."
             )
             continue  # Proceed to next round directly
 
-        # Replace filtered_variants with the subset that passed Boltz-1x for docking
+        # Replace filtered_variants with the subset that passed Boltz-2 for docking
         filtered_variants = passed_variants
 
         logger.info(
-            f"Round {round_num}: After Boltz-1x filter, {len(filtered_variants)} variants remain for docking"
+            f"Round {round_num}: After Boltz-2 filter, {len(filtered_variants)} variants remain for docking"
         )
 
-        # Save variants that passed both MedChem and Boltz-1x filters to SDF for reference
+        # Save variants that passed both MedChem and Boltz-2 filters to SDF for reference
         filtered_sdf = filter_dir / f"round_{round_num}_filtered_variants.sdf"
         smiles_to_sdf(filtered_variants, filtered_sdf)
 
@@ -327,17 +412,16 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         if stop_flag and not stop_flag.get("running", True):
             break
             
-        # Step 6: Sequential docking
+        # Step 7: Sequential docking
         logger.info(f"Round {round_num}: Starting docking of {len(filtered_variants)} filtered variants")
         
-        # Prepare docking parameters
+        # Prepare docking parameters (simplified for direct unidock command)
         center_x, center_y, center_z = center
         size_x, size_y, size_z = box_size
         redock_params = (
-            program_choice, scoring_function,
             center_x, center_y, center_z,
             size_x, size_y, size_z,
-            exhaustiveness, is_selfies, is_peptide
+            exhaustiveness  # Use exhaustiveness level directly as search_mode
         )
         
         # Create a directory for each variant's docking results
@@ -361,7 +445,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                 variant_id,
                 smiles,
                 redock_params,
-                receptor=receptor,
+                receptor=pdbfile,  # Use the same PDB file as receptor
                 log_callback=logger.info
             )
 
@@ -375,21 +459,30 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                 status = result_storage.get("status", "unknown")
                 data = result_storage.get("data", {})
                 error_msg = data.get("error")
-                pose_out = data.get("pose_pred_out")
-                rescored = data.get("re_scored_values")
 
                 if status == "success" and not error_msg:
-                    if pose_out:
-                        # Extract docking information
-                        best_score, best_pose = extract_best_pose_and_score(pose_out)
+                    # Check if we have docking results for this variant
+                    variant_results = data.get(variant_id)
+                    if variant_results:
+                        # Extract docking information from Unidock results
+                        best_score = variant_results.get("docking_score")
+                        pose_count = variant_results.get("pose_count", 1)
+                        result_file = variant_results.get("result_file")
+                        all_scores = variant_results.get("all_scores", [])
+
+                        # Log detailed docking results
+                        logger.info(f"Docking successful for {barcode}: score={best_score}, poses={pose_count}")
+                        if all_scores and len(all_scores) > 1:
+                            logger.info(f"All scores for {barcode}: {all_scores}")
 
                         # Update variant with docking results
                         variant.update({
                             "status": "DOCKED",
                             "docking_score": best_score,
-                            "best_pose": best_pose,
-                            "pose_pred_out": pose_out, # Keep original VFU output
-                            "re_scored_values": rescored # Keep original VFU output
+                            "pose_count": pose_count,
+                            "result_file": result_file,
+                            "all_scores": all_scores,
+                            "barcode": barcode  # Ensure barcode is included for tracking
                         })
 
                         round_redock_results.append(variant)
@@ -401,47 +494,49 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                         # Save docking outputs
                         variant_poses_dir = dock_dir / f"variant_{barcode}"
                         variant_poses_dir.mkdir(exist_ok=True)
-                        vfu_outputs_dir = Path(vfu_dir) / "outputs" # Path to *source* VFU outputs
 
-                        # Save VFU output dictionaries (pose_out, rescored) to JSON
-                        vfu_scores_file = variant_poses_dir / "vfu_output_scores.json"
+                        # Save comprehensive Unidock results summary to JSON
+                        unidock_scores_file = variant_poses_dir / "unidock_results.json"
                         try:
-                            # Save the data extracted from result_storage
-                            vfu_data = {
-                                "pose_pred_out": pose_out,
-                                "re_scored_values": rescored
+                            # Save the complete data extracted from result_storage
+                            unidock_data = {
+                                "variant_id": variant_id,
+                                "barcode": barcode,
+                                "smiles": smiles,
+                                "docking_score": best_score,
+                                "pose_count": pose_count,
+                                "result_file": result_file,
+                                "all_scores": all_scores,
+                                "workflow_status": status,
+                                "docking_parameters": {
+                                    "center": center,
+                                    "box_size": box_size,
+                                    "search_mode": exhaustiveness,
+                                    "receptor": str(pdbfile)
+                                },
+                                "timestamp": datetime.now().isoformat()
                             }
-                            with open(vfu_scores_file, 'w') as f:
-                                json.dump(vfu_data, f, indent=4)
-                            logger.info(f"Saved VFU output scores to {vfu_scores_file}")
+                            with open(unidock_scores_file, 'w') as f:
+                                json.dump(unidock_data, f, indent=4)
+                            logger.info(f"Saved comprehensive Unidock results to {unidock_scores_file}")
                         except Exception as e:
-                            logger.error(f"Error saving VFU output scores for {variant_id} ({barcode}): {e}")
+                            logger.error(f"Error saving Unidock results for {variant_id} ({barcode}): {e}")
 
-                        # Copy other VFU output files *from the source VFU/outputs*
-                        # This assumes the wrapper script leaves files there temporarily.
-                        # Consider if the wrapper should handle moving outputs instead.
-                        if vfu_outputs_dir.exists():
-                            logger.info(f"Copying VFU output files from {vfu_outputs_dir} to {variant_poses_dir}")
-                            for file_path in vfu_outputs_dir.glob("*"):
-                                try:
-                                    if file_path.is_file():
-                                        shutil.copy2(file_path, variant_poses_dir)
-                                    elif file_path.is_dir():
-                                        dest_dir = variant_poses_dir / file_path.name
-                                        if dest_dir.exists():
-                                            shutil.rmtree(dest_dir) # Overwrite if exists
-                                        shutil.copytree(file_path, dest_dir)
-                                except Exception as copy_e:
-                                    logger.warning(f"Could not copy VFU output {file_path.name} for {barcode}: {copy_e}")
-                        else:
-                             logger.warning(f"VFU output directory {vfu_outputs_dir} not found. Cannot copy auxiliary files.")
+                        # Copy Unidock result files if they exist
+                        if result_file and Path(result_file).exists():
+                            try:
+                                dest_file = variant_poses_dir / Path(result_file).name
+                                shutil.copy2(result_file, dest_file)
+                                logger.info(f"Copied Unidock result file to {dest_file}")
+                            except Exception as copy_e:
+                                logger.warning(f"Could not copy Unidock result file for {barcode}: {copy_e}")
 
                     else:
-                        logger.warning(f"Docking for {barcode} completed successfully but no pose_pred_out data found.")
+                        logger.warning(f"Docking for {barcode} completed successfully but no results found for variant {variant_id}.")
                         # Update status to indicate docking attempt but failure to get results
-                        variant["status"] = "DOCKFAIL_NOPOSE"
-                        update_tracking_report(round_report, {"barcode": barcode, "status": "DOCKFAIL_NOPOSE"}, "variant_status_update")
-                        update_tracking_report(master_report, {"barcode": barcode, "status": "DOCKFAIL_NOPOSE"}, "variant_status_update")
+                        variant["status"] = "DOCKFAIL_NORESULTS"
+                        update_tracking_report(round_report, {"barcode": barcode, "status": "DOCKFAIL_NORESULTS"}, "variant_status_update")
+                        update_tracking_report(master_report, {"barcode": barcode, "status": "DOCKFAIL_NORESULTS"}, "variant_status_update")
 
                 else:
                     # Log error from result_storage or generic failure
@@ -465,25 +560,22 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                 update_tracking_report(round_report, {"barcode": barcode, "status": "DOCKFAIL_SETUP"}, "variant_status_update")
                 update_tracking_report(master_report, {"barcode": barcode, "status": "DOCKFAIL_SETUP"}, "variant_status_update")
 
-
-            # Clean up VFU output directory *after each docking* to avoid file conflicts
-            # Note: This assumes the wrapper places outputs directly in src/VFU/outputs
-            source_vfu_outputs_dir = Path(vfu_dir) / "outputs"
-            if source_vfu_outputs_dir.exists():
-                 logger.info(f"Cleaning up source VFU output directory: {source_vfu_outputs_dir}")
-                 for item in source_vfu_outputs_dir.iterdir():
-                     try:
-                         if item.is_file():
-                             item.unlink()
-                         elif item.is_dir():
-                             shutil.rmtree(item)
-                     except Exception as clean_e:
-                         logger.warning(f"Could not clean up {item.name} from VFU outputs: {clean_e}")
-
         logger.info(f"Round {round_num}: Finished processing docking for {len(filtered_variants)} variants.")
         logger.info(f"Round {round_num}: Successfully docked and processed {len(round_redock_results)} variants.")
 
+        # Clear GPU memory at the end of each round
+        if model_choice == 'pocket2mol':
+            logger.info(f"Round {round_num}: Clearing GPU memory at end of round...")
+            clear_gpu_memory()
+            log_gpu_memory_usage()
+
         logger.info(f"============= COMPLETED ROUND {round_num}/{num_rounds} =============")
+    
+    # Final GPU memory cleanup
+    if model_choice == 'pocket2mol':
+        logger.info("Final GPU memory cleanup...")
+        clear_gpu_memory()
+        log_gpu_memory_usage()
     
     if stop_flag and not stop_flag.get("running", True):
         logger.info("Pipeline stopped by user request")
@@ -517,27 +609,29 @@ if __name__ == "__main__":
                         help="Size of the bounding box (Pocket2Mol only)")
     
     # Common parameters
-    parser.add_argument("--receptor", required=False, help="Receptor file for docking", default="NS5_test.pdbqt")
-    
     parser.add_argument("--n_samples", type=int, default=200, help="Number of samples to generate")
     parser.add_argument("--sanitize", action="store_true", help="Sanitize generated molecules (DiffSBDD only)", default=True)
-    parser.add_argument("--program_choice", default="qvina", help="Docking program choice")
-    parser.add_argument("--scoring_function", default="nnscore2", help="Scoring function")
     parser.add_argument("--center", nargs=3, type=float, default=[114.817, 75.602, 82.416], 
                         help="Docking box center coordinates (also used for Pocket2Mol)")
     parser.add_argument("--box_size", nargs=3, type=int, default=[38, 70, 58],
                         help="Docking box dimensions")
-    parser.add_argument("--exhaustiveness", type=int, default=32, help="Docking exhaustiveness")
-    parser.add_argument("--is_selfies", action="store_true", help="Use SELFIES representation", default=False)
-    parser.add_argument("--is_peptide", action="store_true", help="Ligand is a peptide", default=False)
+    parser.add_argument("--exhaustiveness", type=str, choices=["fast", "balance", "detail"], default="balance",
+                        help="Docking exhaustiveness level")
     parser.add_argument("--top_n", type=int, default=5, 
                         help="Number of top compounds to process")
     parser.add_argument("--max_variants", type=int, default=5,
                         help="Maximum number of variants per compound")
     parser.add_argument("--num_rounds", type=int, default=1,
                         help="Number of rounds to run the pipeline")
-    parser.add_argument("--boltz_evaluation_method", type=str, choices=["any_atom", "geometric_center", "majority_atoms", "bounding_box_overlap", "combined"], default="combined",
-                        help="Boltz-1x evaluation method")
+    parser.add_argument("--score_threshold", type=float, default=0.7,
+                        help="Minimum retrosynthesis score threshold for variants (default: 0.7)")
+    parser.add_argument("--boltz_pocket_residues", type=str, default="",
+                        help="Comma-separated residue indices for Boltz-2 pocket constraints (e.g., '156,158,202')")
+    parser.add_argument("--medchem_rule_threshold", type=int, default=13,
+                        help="Minimum number of medicinal chemistry rules a compound must pass (default: 13)")
+    parser.add_argument("--medchem_structural_threshold", type=int, default=27,
+                        help="Minimum number of structural/functional filters a compound must pass (default: 27)")
+
     
     args = parser.parse_args()
     
@@ -552,14 +646,12 @@ if __name__ == "__main__":
         center=args.center,
         box_size=args.box_size,
         bbox_size=args.bbox_size,
-        receptor=args.receptor,
-        program_choice=args.program_choice,
-        scoring_function=args.scoring_function,
         exhaustiveness=args.exhaustiveness,
-        is_selfies=args.is_selfies,
-        is_peptide=args.is_peptide,
         top_n=args.top_n,
         max_variants=args.max_variants,
         num_rounds=args.num_rounds,
-        boltz_evaluation_method=args.boltz_evaluation_method
+        score_threshold=args.score_threshold,
+        boltz_pocket_residues=args.boltz_pocket_residues,
+        medchem_rule_threshold=args.medchem_rule_threshold,
+        medchem_structural_threshold=args.medchem_structural_threshold
     )

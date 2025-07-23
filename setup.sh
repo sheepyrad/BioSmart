@@ -4,16 +4,13 @@
 set -e
 
 # Define variables
-CONDA_ENV_NAME="sbdd_env"
-# REPO_URL="https://github.com/sheepyrad/Drug_pipeline.git" # Removed, assuming script is run inside repo
-# REPO_DIR="Drug_pipeline" # Removed, assuming script is run inside repo
-ENV_YAML="environment.yml"
+ENV_DIR="conda_files"
 
 # --- Helper Functions ---
 echo_step() {
-    echo "----------------------------------------"
+    echo "=========================================="
     echo "STEP: $1"
-    echo "----------------------------------------"
+    echo "=========================================="
 }
 
 check_command() {
@@ -24,50 +21,41 @@ check_command() {
     fi
 }
 
+create_env_if_not_exists() {
+    local env_name=$1
+    local env_file=$2
+    
+    if conda env list | grep -q "^$env_name "; then
+        echo "Conda environment '$env_name' already exists. Skipping creation."
+        echo "To recreate it, first run: conda env remove -n $env_name --all -y"
+    elif [ -f "$env_file" ]; then
+        echo "Creating conda environment '$env_name' from $env_file"
+        conda env create -f "$env_file"
+    else
+        echo "Error: $env_file not found. Cannot create environment."
+        exit 1
+    fi
+}
+
 # --- Main Setup Logic ---
 
 # 0. Check prerequisites
-echo_step "Checking prerequisites (conda, wget)"
-# check_command git # Removed git check
+echo_step "Checking prerequisites (conda, wget, git)"
 check_command conda
 check_command wget
+check_command git
 echo "Prerequisites found."
 
-# 1. Clone the repository (Removed)
-# echo_step "Cloning the repository from $REPO_URL" # Removed
-# if [ -d "$REPO_DIR" ]; then # Removed
-#     echo "Directory $REPO_DIR already exists. Skipping clone." # Removed
-# else # Removed
-#     git clone "$REPO_URL" # Removed
-# fi # Removed
-# cd "$REPO_DIR" # Removed
-# echo "Changed directory to $(pwd)" # Removed
-
-# 2. Create the conda environment
-echo_step "Creating conda environment '$CONDA_ENV_NAME' from $ENV_YAML"
-if conda env list | grep -q "^$CONDA_ENV_NAME "; then
-    echo "Conda environment '$CONDA_ENV_NAME' already exists. Skipping creation."
-    echo "To recreate it, first run: conda env remove -n $CONDA_ENV_NAME --all -y"
-elif [ -f "$ENV_YAML" ]; then
-    conda env create -f "$ENV_YAML"
-else
-    echo "Error: $ENV_YAML not found in $(pwd). Cannot create environment."
-    exit 1
-fi
-
-# 3. Activate the conda environment (Informational - script needs sourcing or manual activation)
-# Note: Activation within a script doesn't persist after the script exits.
-# The user needs to run `conda activate sbdd_d24h` manually after the script finishes.
-echo_step "Activate the conda environment"
-echo "Please run 'conda activate $CONDA_ENV_NAME' after this script completes."
+# 1. Create DiffSBDD environment
+echo_step "Setting up DiffSBDD environment"
+create_env_if_not_exists "diffsbdd-env" "$ENV_DIR/diffsbdd.yml"
 
 # Setup DiffSBDD
-echo_step "Setting up DiffSBDD"
 if [ -d "src/DiffSBDD" ]; then
     cd src/DiffSBDD
     echo "Changed directory to $(pwd)"
 
-    # 4. Download DiffSBDD checkpoint
+    # Download DiffSBDD checkpoint
     DIFFSBDD_CKPT_URL="https://zenodo.org/record/8183747/files/crossdocked_fullatom_cond.ckpt"
     DIFFSBDD_CKPT_DIR="checkpoints"
     DIFFSBDD_CKPT_FILE="$DIFFSBDD_CKPT_DIR/crossdocked_fullatom_cond.ckpt"
@@ -85,18 +73,136 @@ else
     echo "Warning: Directory src/DiffSBDD not found. Skipping DiffSBDD setup."
 fi
 
+# 2. Create Pocket2Mol environment and setup
+echo_step "Setting up Pocket2Mol environment"
+
+# Clone Pocket2Mol if not exists
+if [ ! -d "src/Pocket2Mol" ]; then
+    echo "Cloning Pocket2Mol repository"
+    cd src
+    git clone https://github.com/pengxingang/Pocket2Mol.git
+    cd ..
+fi
+
+create_env_if_not_exists "pocket2mol-env" "$ENV_DIR/pocket2mol.yml"
+
+# Setup Pocket2Mol checkpoint
+if [ -d "src/Pocket2Mol/ckpt" ]; then
+    cd src/Pocket2Mol/ckpt
+    echo "Changed directory to $(pwd)"
+
+    # Download the model checkpoint using gdown
+    echo "Downloading Pocket2Mol checkpoint to $(pwd)"
+    POCKET2MOL_CKPT_FILE="pretrained_Pocket2Mol.pt"
+    if [ -f "$POCKET2MOL_CKPT_FILE" ]; then
+        echo "Pocket2Mol checkpoint already exists. Skipping download."
+    else
+        # Install gdown in the pocket2mol environment and use it
+        conda run -n pocket2mol-env pip install gdown
+        conda run -n pocket2mol-env gdown 1WaoEj9RDG4VEcyHEmgsjbh958txm1W6x
+    fi
+
+    cd ../../.. # Go back to the root of the repo
+    echo "Changed directory back to $(pwd)"
+else
+    echo "Warning: Directory src/Pocket2Mol/ckpt not found. Skipping Pocket2Mol setup."
+fi
+
+# # 3. Create CGFlow environment and setup
+# echo_step "Setting up CGFlow environment"
+
+# # Clone CGFlow if not exists
+# if [ ! -d "src/cgflow" ]; then
+#     echo "Cloning CGFlow repository"
+#     cd src
+#     git clone https://github.com/tsa87/cgflow.git
+#     cd ..
+# fi
+
+# create_env_if_not_exists "cgflow-env" "$ENV_DIR/cgflow.yml"
+
+# # Setup CGFlow
+# if [ -d "src/cgflow" ]; then
+#     cd src/cgflow
+#     echo "Changed directory to $(pwd)"
+
+#     # Install PyTorch packages separately and independently
+#     echo "Installing PyTorch 2.6.0..."
+#     conda run -n cgflow-env pip install torch==2.6.0 --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
+    
+#     echo "Installing PyTorch Geometric..."
+#     conda run -n cgflow-env pip install torch-geometric>=2.4.0
+    
+#     echo "Installing PyTorch Scatter..."
+#     conda run -n cgflow-env pip install torch-scatter>=2.1.2 --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
+    
+#     echo "Installing PyTorch Sparse..."
+#     conda run -n cgflow-env pip install torch-sparse>=0.6.18 --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
+    
+#     echo "Installing PyTorch Cluster..."
+#     conda run -n cgflow-env pip install torch-cluster>=1.6.3 --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
+
+#     # Install CGFlow in editable mode
+#     echo "Installing CGFlow in editable mode..."
+#     conda run -n cgflow-env pip install -e '.[extra]'
+    
+#     echo "Installing Uni-Dock tools..."
+#     conda run -n cgflow-env pip install git+https://github.com/dptech-corp/Uni-Dock.git#subdirectory=unidock_tools
+
+#     # Create data directories and download data
+#     echo "Setting up CGFlow data directories"
+#     mkdir -p experiments/data/complex
+#     cd experiments/data/complex
+    
+#     if [ ! -f "plinder_15A.zip" ]; then
+#         echo "Downloading plinder data"
+#         curl -L -o plinder_15A.zip https://figshare.com/ndownloader/files/54405473
+#         unzip plinder_15A.zip
+#     fi
+    
+#     cd ../
+#     if [ ! -f "LIT-PCBA.tar.gz" ]; then
+#         echo "Downloading LIT-PCBA data"
+#         curl -L -o LIT-PCBA.tar.gz https://figshare.com/ndownloader/files/54411395
+#         tar -xzvf LIT-PCBA.tar.gz
+#     fi
+
+#     mkdir -p envs
+#     cd envs
+#     if [ ! -f "stock.tar.gz" ]; then
+#         echo "Downloading stock environment data"
+#         conda run -n cgflow-env gdown 11EXcLEFzpD430ML0gt5Lwnx65PQfHIVP
+#         tar -xzvf stock.tar.gz
+#     fi
+
+#     cd ../../ # back to cgflow root
+#     mkdir -p weights
+#     cd weights
+#     if [ ! -f "cgflow_weights.tar.gz" ]; then
+#         echo "Downloading CGFlow weights"
+#         conda run -n cgflow-env gdown 1UpdOxfMVdALdAPpzG_dXF72diP2AbHOl
+#     fi
+
+#     cd ../../../.. # Go back to the root of the repo
+#     echo "Changed directory back to $(pwd)"
+# else
+#     echo "Warning: Directory src/cgflow not found. Skipping CGFlow setup."
+# fi
+
+# 4. Create Synformer environment
+echo_step "Setting up Synformer environment"
+create_env_if_not_exists "synformer-env" "$ENV_DIR/synformer.yml"
+
 # Setup synformer
-echo_step "Setting up synformer"
 if [ -d "src/synformer" ]; then
     cd src/synformer
     echo "Changed directory to $(pwd)"
 
-    # 5. Install synformer locally
-    echo "Installing synformer (editable mode, no dependencies) into $CONDA_ENV_NAME environment"
-    # Ensure pip is from the conda env using conda run
-    conda run -n $CONDA_ENV_NAME pip install --no-deps -e .
+    # Install synformer locally
+    echo "Installing synformer (editable mode, no dependencies) into synformer-env environment"
+    conda run -n synformer-env pip install --no-deps -e .
 
-    # 6. Create synformer data directories
+    # Create synformer data directories
     SYNFORMER_DATA_DIR="data"
     SYNFORMER_PROCESSED_DIR="$SYNFORMER_DATA_DIR/processed/comp_2048"
     SYNFORMER_WEIGHTS_DIR="$SYNFORMER_DATA_DIR/trained_weights"
@@ -105,7 +211,7 @@ if [ -d "src/synformer" ]; then
     mkdir -p "$SYNFORMER_PROCESSED_DIR"
     mkdir -p "$SYNFORMER_WEIGHTS_DIR"
 
-    # 7. Download synformer processed files
+    # Download synformer processed files
     FPINDEX_URL="https://huggingface.co/whgao/synformer/resolve/main/fpindex.pkl?download=true"
     MATRIX_URL="https://huggingface.co/whgao/synformer/resolve/main/matrix.pkl?download=true"
     FPINDEX_FILE="$SYNFORMER_PROCESSED_DIR/fpindex.pkl"
@@ -123,7 +229,7 @@ if [ -d "src/synformer" ]; then
         wget -O "$MATRIX_FILE" "$MATRIX_URL"
     fi
 
-    # 8. Download synformer checkpoint
+    # Download synformer checkpoint
     SYNFORMER_CKPT_URL="https://huggingface.co/whgao/synformer/resolve/main/sf_ed_default.ckpt?download=true"
     SYNFORMER_CKPT_FILE="$SYNFORMER_WEIGHTS_DIR/sf_ed_default.ckpt"
 
@@ -140,16 +246,27 @@ else
     echo "Warning: Directory src/synformer not found. Skipping synformer setup."
 fi
 
+# 5. Create Boltz environment
+echo_step "Setting up Boltz environment"
+create_env_if_not_exists "boltz-env" "$ENV_DIR/boltz.yml"
+
+# 6. Create Uni-dock environment
+echo_step "Setting up Uni-dock environment"
+create_env_if_not_exists "unidock-env" "$ENV_DIR/unidock.yml"
+
+# 7. Create Uni-GBSA environment
+echo_step "Setting up Uni-GBSA environment"
+create_env_if_not_exists "unigbsa-env" "$ENV_DIR/unigbsa.yml"
+
 # Setup VFU
 echo_step "Setting up VFU executables"
 if [ -d "src/VFU/executables" ]; then
     cd src/VFU/executables
     echo "Changed directory to $(pwd)"
 
-    # 9. Make VFU executables executable
+    # Make VFU executables executable
     echo "Making files in $(pwd) executable"
     chmod +x *
-    # Add specific checks or compilation steps if needed here
 
     cd ../../.. # Go back to the root of the repo
     echo "Changed directory back to $(pwd)"
@@ -159,29 +276,20 @@ else
     echo "Warning: Directory src/VFU not found. Skipping VFU setup."
 fi
 
-# Setup Pocket2Mol
-echo_step "Setting up Pocket2Mol"
-if [ -d "src/Pocket2Mol/ckpt" ]; then
-    cd src/Pocket2Mol/ckpt
-    echo "Changed directory to $(pwd)"
-
-    # 10. Download the model checkpoint
-    echo "Downloading Pocket2Mol checkpoint to $(pwd)"
-
-    POCKET2MOL_CKPT_FILE="pretrained_Pocket2Mol.pt"
-    if [ -f "$POCKET2MOL_CKPT_FILE" ]; then
-        echo "Pocket2Mol checkpoint already exists. Skipping download."
-    else
-        gdown --id 1WaoEj9RDG4VEcyHEmgsjbh958txm1W6x
-    fi
-
-    cd ../../.. # Go back to the root of the repo
-    echo "Changed directory back to $(pwd)"
-else
-    echo "Warning: Directory src/Pocket2Mol/ckpt not found. Skipping Pocket2Mol setup."
-fi
-echo "----------------------------------------"
+echo "=========================================="
 echo "Setup script finished."
+echo "=========================================="
+echo "Created the following conda environments:"
+echo "  - diffsbdd-env     (for DiffSBDD)"
+echo "  - pocket2mol-env   (for Pocket2Mol)"
+# echo "  - cgflow-env       (for CGFlow)"
+echo "  - synformer-env    (for Synformer)"
+echo "  - boltz-env        (for Boltz)"
+echo "  - unidock-env      (for Uni-dock)"
+echo "  - unigbsa-env      (for Uni-GBSA)"
+echo ""
+echo "To activate an environment, use:"
+echo "  conda activate <environment-name>"
+echo ""
 echo "Please refer to README.md for next steps"
-echo "IMPORTANT: Activate the environment by running: conda activate $CONDA_ENV_NAME"
-echo "----------------------------------------" 
+echo "==========================================" 
