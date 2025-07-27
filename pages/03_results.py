@@ -1480,6 +1480,11 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                     🔄 **Conversions:**
                     - To IC50 in μM: IC50 = 10^(log(IC50))
                     - To pIC50 in kcal/mol: pIC50 = (6 - log(IC50)) × 1.364
+                    
+                    📊 **Counting Method:**
+                    - "Predicted Binders" counts unique molecules (by variant_id, barcode, or compound_id)
+                    - This prevents double-counting when the same molecule appears in multiple rounds
+                    - The displayed count represents distinct chemical entities, not data entries
                     """)
                 
                 affinity_with_values = df[df["affinity_pred_value"].notna()]
@@ -1494,8 +1499,31 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                         st.metric("Average log(IC50)", f"{avg_affinity:.3f}")
                     with aff_col3:
                         if "affinity_probability_binary" in affinity_with_values.columns:
-                            high_prob_count = len(affinity_with_values[affinity_with_values["affinity_probability_binary"] > 0.5])
-                            st.metric("Predicted Binders", f"{high_prob_count}/{len(affinity_with_values)}")
+                            # Count unique binders to avoid double counting
+                            binders_df = affinity_with_values[affinity_with_values["affinity_probability_binary"] > 0.5]
+                            
+                            # Determine the best unique identifier to use
+                            if "variant_id" in binders_df.columns:
+                                unique_binders = binders_df["variant_id"].nunique()
+                                total_unique = affinity_with_values["variant_id"].nunique()
+                                identifier_type = "unique variants"
+                            elif "barcode" in binders_df.columns:
+                                unique_binders = binders_df["barcode"].nunique()
+                                total_unique = affinity_with_values["barcode"].nunique()
+                                identifier_type = "unique barcodes"
+                            elif "compound_id" in binders_df.columns:
+                                unique_binders = binders_df["compound_id"].nunique()
+                                total_unique = affinity_with_values["compound_id"].nunique()
+                                identifier_type = "unique compounds"
+                            else:
+                                # Fallback to row count if no identifier available
+                                unique_binders = len(binders_df)
+                                total_unique = len(affinity_with_values)
+                                identifier_type = "entries"
+                            
+                            st.metric("Predicted Binders", f"{unique_binders}/{total_unique}")
+                            if identifier_type != "entries":
+                                st.caption(f"({identifier_type})")
                         else:
                             st.metric("Predictions", len(affinity_with_values))
                     with aff_col4:
@@ -1574,7 +1602,34 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                     
                     # Show top affinity performers (lowest log(IC50) values are best)
                     st.markdown("**🏆 Top 10 log(IC50) Predictions (Lowest/Best Values):**")
-                    top_affinity = affinity_with_values.nsmallest(10, "affinity_pred_value")
+                    
+                    # Get unique top performers to avoid showing the same compound multiple times
+                    # Determine the best unique identifier to use
+                    if "variant_id" in affinity_with_values.columns:
+                        # Group by variant_id and take the best (lowest) affinity_pred_value for each
+                        unique_identifier = "variant_id"
+                        top_affinity = (affinity_with_values
+                                      .loc[affinity_with_values.groupby('variant_id')['affinity_pred_value'].idxmin()]
+                                      .nsmallest(10, "affinity_pred_value"))
+                        st.caption("(Showing best prediction per unique variant)")
+                    elif "barcode" in affinity_with_values.columns:
+                        # Group by barcode and take the best (lowest) affinity_pred_value for each
+                        unique_identifier = "barcode"
+                        top_affinity = (affinity_with_values
+                                      .loc[affinity_with_values.groupby('barcode')['affinity_pred_value'].idxmin()]
+                                      .nsmallest(10, "affinity_pred_value"))
+                        st.caption("(Showing best prediction per unique barcode)")
+                    elif "compound_id" in affinity_with_values.columns:
+                        # Group by compound_id and take the best (lowest) affinity_pred_value for each
+                        unique_identifier = "compound_id"
+                        top_affinity = (affinity_with_values
+                                      .loc[affinity_with_values.groupby('compound_id')['affinity_pred_value'].idxmin()]
+                                      .nsmallest(10, "affinity_pred_value"))
+                        st.caption("(Showing best prediction per unique compound)")
+                    else:
+                        # Fallback to simple nsmallest if no identifier available
+                        top_affinity = affinity_with_values.nsmallest(10, "affinity_pred_value")
+                        st.caption("(Showing top 10 entries - may include duplicates)")
                     
                     # Add IC50 conversion column for better interpretation
                     top_affinity_display = top_affinity.copy()
@@ -1588,6 +1643,8 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                         aff_display_cols.insert(1, "variant_id")
                     if "barcode" in top_affinity_display.columns:
                         aff_display_cols.insert(2, "barcode")
+                    if "smiles" in top_affinity_display.columns:
+                        aff_display_cols.insert(-1, "smiles")
                     if "affinity_probability_binary" in top_affinity_display.columns:
                         aff_display_cols.insert(-1, "affinity_probability_binary")
                     
@@ -1611,6 +1668,61 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                     )
                     
                     st.caption("💡 estimated_IC50_uM = 10^(log(IC50)); pIC50_kcal_mol = (6 - log(IC50)) × 1.364")
+                    
+                    # Show top binding probability performers if probability data is available
+                    if "affinity_probability_binary" in affinity_with_values.columns:
+                        st.markdown("**🎯 Top 10 Highest Binding Probability (Highest Values):**")
+                        
+                        # Get unique top probability performers to avoid showing the same compound multiple times
+                        # Determine the best unique identifier to use
+                        if "variant_id" in affinity_with_values.columns:
+                            # Group by variant_id and take the best (highest) affinity_probability_binary for each
+                            top_probability = (affinity_with_values
+                                             .loc[affinity_with_values.groupby('variant_id')['affinity_probability_binary'].idxmax()]
+                                             .nlargest(10, "affinity_probability_binary"))
+                            st.caption("(Showing highest probability per unique variant)")
+                        elif "barcode" in affinity_with_values.columns:
+                            # Group by barcode and take the best (highest) affinity_probability_binary for each
+                            top_probability = (affinity_with_values
+                                             .loc[affinity_with_values.groupby('barcode')['affinity_probability_binary'].idxmax()]
+                                             .nlargest(10, "affinity_probability_binary"))
+                            st.caption("(Showing highest probability per unique barcode)")
+                        elif "compound_id" in affinity_with_values.columns:
+                            # Group by compound_id and take the best (highest) affinity_probability_binary for each
+                            top_probability = (affinity_with_values
+                                             .loc[affinity_with_values.groupby('compound_id')['affinity_probability_binary'].idxmax()]
+                                             .nlargest(10, "affinity_probability_binary"))
+                            st.caption("(Showing highest probability per unique compound)")
+                        else:
+                            # Fallback to simple nlargest if no identifier available
+                            top_probability = affinity_with_values.nlargest(10, "affinity_probability_binary")
+                            st.caption("(Showing top 10 entries - may include duplicates)")
+                        
+                        # Prepare display columns for probability table
+                        prob_display_cols = ["compound_id", "affinity_probability_binary", "affinity_pred_value", "round"]
+                        if "variant_id" in top_probability.columns:
+                            prob_display_cols.insert(1, "variant_id")
+                        if "barcode" in top_probability.columns:
+                            prob_display_cols.insert(2, "barcode")
+                        if "smiles" in top_probability.columns:
+                            prob_display_cols.insert(-1, "smiles")
+                        
+                        existing_prob_cols = [col for col in prob_display_cols if col in top_probability.columns]
+                        
+                        # Format the dataframe for better display
+                        prob_display_df = top_probability[existing_prob_cols].copy()
+                        if "affinity_probability_binary" in prob_display_df.columns:
+                            prob_display_df["affinity_probability_binary"] = prob_display_df["affinity_probability_binary"].round(3)
+                        if "affinity_pred_value" in prob_display_df.columns:
+                            prob_display_df["affinity_pred_value"] = prob_display_df["affinity_pred_value"].round(3)
+                        
+                        st.dataframe(
+                            prob_display_df,
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                        
+                        st.caption("💡 Higher probability values (closer to 1.0) indicate stronger predicted binding")
 
             # Docking score distribution if available
             if "docking_score" in df.columns and df["docking_score"].notna().any():
@@ -1670,12 +1782,38 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                 
                 # Show top performers (lowest/best scores)
                 st.markdown("**🏆 Top 10 Docking Performers (Lowest/Best Scores):**")
-                top_performers = docked_with_scores.nsmallest(10, "docking_score")
+                
+                # Get unique top performers to avoid showing the same compound multiple times
+                # Determine the best unique identifier to use
+                if "variant_id" in docked_with_scores.columns:
+                    # Group by variant_id and take the best (lowest) docking_score for each
+                    top_performers = (docked_with_scores
+                                    .loc[docked_with_scores.groupby('variant_id')['docking_score'].idxmin()]
+                                    .nsmallest(10, "docking_score"))
+                    st.caption("(Showing best score per unique variant)")
+                elif "barcode" in docked_with_scores.columns:
+                    # Group by barcode and take the best (lowest) docking_score for each
+                    top_performers = (docked_with_scores
+                                    .loc[docked_with_scores.groupby('barcode')['docking_score'].idxmin()]
+                                    .nsmallest(10, "docking_score"))
+                    st.caption("(Showing best score per unique barcode)")
+                elif "compound_id" in docked_with_scores.columns:
+                    # Group by compound_id and take the best (lowest) docking_score for each
+                    top_performers = (docked_with_scores
+                                    .loc[docked_with_scores.groupby('compound_id')['docking_score'].idxmin()]
+                                    .nsmallest(10, "docking_score"))
+                    st.caption("(Showing best score per unique compound)")
+                else:
+                    # Fallback to simple nsmallest if no identifier available
+                    top_performers = docked_with_scores.nsmallest(10, "docking_score")
+                    st.caption("(Showing top 10 entries - may include duplicates)")
                 display_cols = ["compound_id", "docking_score", "round"]
                 if "variant_id" in top_performers.columns:
                     display_cols.insert(1, "variant_id")
                 if "barcode" in top_performers.columns:
                     display_cols.insert(2, "barcode")
+                if "smiles" in top_performers.columns:
+                    display_cols.insert(-1, "smiles")
                 
                 existing_cols = [col for col in display_cols if col in top_performers.columns]
                 st.dataframe(
@@ -1739,12 +1877,37 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                     # Add estimated IC50 for better interpretation
                     combined_data_normalized["estimated_IC50_uM"] = 10 ** combined_data_normalized["affinity_pred_value"]
                     
-                    top_combined = combined_data_normalized.nlargest(10, "combined_score")
+                    # Get unique top combined performers to avoid showing the same compound multiple times
+                    # Determine the best unique identifier to use
+                    if "variant_id" in combined_data_normalized.columns:
+                        # Group by variant_id and take the best (highest) combined_score for each
+                        top_combined = (combined_data_normalized
+                                      .loc[combined_data_normalized.groupby('variant_id')['combined_score'].idxmax()]
+                                      .nlargest(10, "combined_score"))
+                        st.caption("(Showing best combined score per unique variant)")
+                    elif "barcode" in combined_data_normalized.columns:
+                        # Group by barcode and take the best (highest) combined_score for each
+                        top_combined = (combined_data_normalized
+                                      .loc[combined_data_normalized.groupby('barcode')['combined_score'].idxmax()]
+                                      .nlargest(10, "combined_score"))
+                        st.caption("(Showing best combined score per unique barcode)")
+                    elif "compound_id" in combined_data_normalized.columns:
+                        # Group by compound_id and take the best (highest) combined_score for each
+                        top_combined = (combined_data_normalized
+                                      .loc[combined_data_normalized.groupby('compound_id')['combined_score'].idxmax()]
+                                      .nlargest(10, "combined_score"))
+                        st.caption("(Showing best combined score per unique compound)")
+                    else:
+                        # Fallback to simple nlargest if no identifier available
+                        top_combined = combined_data_normalized.nlargest(10, "combined_score")
+                        st.caption("(Showing top 10 entries - may include duplicates)")
                     combined_display_cols = ["compound_id", "docking_score", "affinity_pred_value", "estimated_IC50_uM", "combined_score"]
                     if "variant_id" in top_combined.columns:
                         combined_display_cols.insert(1, "variant_id")
                     if "barcode" in top_combined.columns:
                         combined_display_cols.insert(2, "barcode")
+                    if "smiles" in top_combined.columns:
+                        combined_display_cols.insert(-1, "smiles")
                     if "affinity_probability_binary" in top_combined.columns:
                         combined_display_cols.insert(-1, "affinity_probability_binary")
                     
@@ -2333,8 +2496,26 @@ with export_col3:
             stats["average_log_ic50"] = float(df[df["affinity_pred_value"].notna()]["affinity_pred_value"].mean())
             stats["best_log_ic50"] = float(df[df["affinity_pred_value"].notna()]["affinity_pred_value"].min())  # Lower is better
             if "affinity_probability_binary" in df.columns:
-                predicted_binders = len(df[df["affinity_probability_binary"] > 0.5])
-                stats["predicted_binders"] = predicted_binders
+                # Count unique binders to avoid double counting
+                binders_df = df[df["affinity_probability_binary"] > 0.5]
+                
+                # Determine the best unique identifier to use
+                if "variant_id" in binders_df.columns:
+                    unique_binders = binders_df["variant_id"].nunique()
+                    stats["predicted_binders_unique_variants"] = unique_binders
+                elif "barcode" in binders_df.columns:
+                    unique_binders = binders_df["barcode"].nunique()
+                    stats["predicted_binders_unique_barcodes"] = unique_binders
+                elif "compound_id" in binders_df.columns:
+                    unique_binders = binders_df["compound_id"].nunique()
+                    stats["predicted_binders_unique_compounds"] = unique_binders
+                else:
+                    # Fallback to row count if no identifier available
+                    unique_binders = len(binders_df)
+                    stats["predicted_binders_entries"] = unique_binders
+                
+                # Also keep the total row count for comparison
+                stats["predicted_binders_total_entries"] = len(binders_df)
         
         st.json(stats)
 
