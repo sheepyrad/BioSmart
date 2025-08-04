@@ -869,6 +869,7 @@ with st.expander("🔬 Analysis Features", expanded=False):
     - Distribution analysis for docking scores and affinity predictions
     - Correlation analysis between different metrics
     - Performance comparisons across pipeline rounds
+    - Boltz-2 score ranking using paper formula: max((-affinity_pred_value1 + 2) / 4, 0) × likelihood
     
     🧬 **Enhanced 3D Visualization:**
     - 🟢 Best poses highlighted in green
@@ -1895,6 +1896,179 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
                     )
                 else:
                     st.info("No compounds have both affinity and docking data for correlation analysis.")
+            
+            # Boltz-2 Score Analysis Section
+            if ("affinity_pred_value1" in df.columns and df["affinity_pred_value1"].notna().any() and
+                "affinity_probability_binary" in df.columns and df["affinity_probability_binary"].notna().any()):
+                
+                st.markdown("---")
+                st.subheader("🧮 Boltz-2 Score (From Paper)")
+                
+                st.markdown("""
+                **Formula:** score = max((-affinity + 2) / 4, 0) × likelihood
+                
+                Where:
+                - **affinity**: `affinity_pred_value1` (first ensemble model, log(IC50) scale, lower = better binding)
+                - **likelihood**: `affinity_probability_binary` (0-1 scale, higher = more confident)
+                
+                **Note:** Uses the first ensemble model predictions (`affinity_pred_value1`) as specified in the Boltz-2 screening methodology.
+                """)
+                
+                # Filter data that has both required values
+                scored_data = df[
+                    df["affinity_pred_value1"].notna() & 
+                    df["affinity_probability_binary"].notna()
+                ].copy()
+                
+                if not scored_data.empty:
+                    # Calculate Boltz-2 score using the formula with first ensemble model
+                    scored_data["boltz2_score"] = (
+                        scored_data.apply(lambda row: 
+                            max((-row["affinity_pred_value1"] + 2) / 4, 0) * row["affinity_probability_binary"], 
+                            axis=1)
+                    )
+                    
+                    # Create summary metrics with proper unique counting
+                    score_col1, score_col2, score_col3, score_col4 = st.columns(4)
+                    
+                    # Determine the best unique identifier to use for counting
+                    if "variant_id" in scored_data.columns:
+                        unique_count = scored_data["variant_id"].nunique()
+                        identifier_type = "unique variants"
+                    elif "barcode" in scored_data.columns:
+                        unique_count = scored_data["barcode"].nunique()
+                        identifier_type = "unique barcodes"
+                    elif "compound_id" in scored_data.columns:
+                        unique_count = scored_data["compound_id"].nunique()
+                        identifier_type = "unique compounds"
+                    else:
+                        unique_count = len(scored_data)
+                        identifier_type = "entries"
+                    
+                    with score_col1:
+                        best_score = scored_data["boltz2_score"].max()
+                        st.metric("Best Score", f"{best_score:.4f}")
+                    with score_col2:
+                        avg_score = scored_data["boltz2_score"].mean()
+                        st.metric("Average Score", f"{avg_score:.4f}")
+                    with score_col3:
+                        st.metric("Compounds Scored", unique_count)
+                        if identifier_type != "entries":
+                            st.caption(f"({identifier_type})")
+                    with score_col4:
+                        high_score_data = scored_data[scored_data["boltz2_score"] > 0.5]
+                        if identifier_type == "unique variants" and "variant_id" in high_score_data.columns:
+                            high_score_count = high_score_data["variant_id"].nunique()
+                        elif identifier_type == "unique barcodes" and "barcode" in high_score_data.columns:
+                            high_score_count = high_score_data["barcode"].nunique()
+                        elif identifier_type == "unique compounds" and "compound_id" in high_score_data.columns:
+                            high_score_count = high_score_data["compound_id"].nunique()
+                        else:
+                            high_score_count = len(high_score_data)
+                        st.metric("High Scores (>0.5)", high_score_count)
+                    
+                    # Top scoring compounds with deduplication
+                    st.markdown("**🏆 Top 10 Scoring Compounds**")
+                    
+                    # Get unique top performers to avoid showing the same compound multiple times
+                    # Determine the best unique identifier to use
+                    if "variant_id" in scored_data.columns:
+                        # Group by variant_id and take the best (highest) boltz2_score for each
+                        top_scored = (scored_data
+                                    .loc[scored_data.groupby('variant_id')['boltz2_score'].idxmax()]
+                                    .nlargest(10, "boltz2_score"))
+                        st.caption("(Showing highest score per unique variant)")
+                    elif "barcode" in scored_data.columns:
+                        # Group by barcode and take the best (highest) boltz2_score for each
+                        top_scored = (scored_data
+                                    .loc[scored_data.groupby('barcode')['boltz2_score'].idxmax()]
+                                    .nlargest(10, "boltz2_score"))
+                        st.caption("(Showing highest score per unique barcode)")
+                    elif "compound_id" in scored_data.columns:
+                        # Group by compound_id and take the best (highest) boltz2_score for each
+                        top_scored = (scored_data
+                                    .loc[scored_data.groupby('compound_id')['boltz2_score'].idxmax()]
+                                    .nlargest(10, "boltz2_score"))
+                        st.caption("(Showing highest score per unique compound)")
+                    else:
+                        # Fallback to simple nlargest if no identifier available
+                        top_scored = scored_data.nlargest(10, "boltz2_score")
+                        st.caption("(Showing top 10 entries - may include duplicates)")
+                    
+                    # Prepare display columns
+                    display_columns = ["compound_id", "boltz2_score", "affinity_pred_value1", "affinity_probability_binary"]
+                    if "variant_id" in top_scored.columns:
+                        display_columns.insert(1, "variant_id")
+                    if "barcode" in top_scored.columns:
+                        display_columns.insert(2, "barcode")
+                    if "smiles" in top_scored.columns:
+                        display_columns.append("smiles")
+                    if "docking_score" in top_scored.columns and top_scored["docking_score"].notna().any():
+                        display_columns.append("docking_score")
+                    
+                    # Only include columns that exist
+                    existing_display_cols = [col for col in display_columns if col in top_scored.columns]
+                    
+                    # Format the dataframe for better display
+                    display_df = top_scored[existing_display_cols].copy()
+                    display_df["boltz2_score"] = display_df["boltz2_score"].round(4)
+                    display_df["affinity_pred_value1"] = display_df["affinity_pred_value1"].round(3)
+                    display_df["affinity_probability_binary"] = display_df["affinity_probability_binary"].round(3)
+                    if "docking_score" in display_df.columns:
+                        display_df["docking_score"] = display_df["docking_score"].round(3)
+                    
+                    st.dataframe(
+                        display_df,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    st.caption("💡 Compounds are ranked by Boltz-2 score (higher = better). The score combines affinity predictions and confidence levels.")
+                    
+                    # Download option for top scores with deduplication
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        # Download unique top scores
+                        if "variant_id" in scored_data.columns:
+                            unique_top_100 = (scored_data
+                                            .loc[scored_data.groupby('variant_id')['boltz2_score'].idxmax()]
+                                            .nlargest(100, "boltz2_score"))
+                            filename = "top_100_unique_boltz2_scores.csv"
+                            button_text = "📥 Download Top 100 Unique Scores"
+                        elif "barcode" in scored_data.columns:
+                            unique_top_100 = (scored_data
+                                            .loc[scored_data.groupby('barcode')['boltz2_score'].idxmax()]
+                                            .nlargest(100, "boltz2_score"))
+                            filename = "top_100_unique_boltz2_scores.csv"
+                            button_text = "📥 Download Top 100 Unique Scores"
+                        elif "compound_id" in scored_data.columns:
+                            unique_top_100 = (scored_data
+                                            .loc[scored_data.groupby('compound_id')['boltz2_score'].idxmax()]
+                                            .nlargest(100, "boltz2_score"))
+                            filename = "top_100_unique_boltz2_scores.csv"
+                            button_text = "📥 Download Top 100 Unique Scores"
+                        else:
+                            unique_top_100 = scored_data.nlargest(100, "boltz2_score")
+                            filename = "top_100_boltz2_scores.csv"
+                            button_text = "📥 Download Top 100 Scores"
+                        
+                        st.download_button(
+                            button_text,
+                            data=unique_top_100.to_csv(index=False).encode('utf-8'),
+                            file_name=filename,
+                            mime="text/csv"
+                        )
+                    
+                    with col2:
+                        # Download all scores (with duplicates)
+                        st.download_button(
+                            "📥 Download All Scores (with duplicates)",
+                            data=scored_data.to_csv(index=False).encode('utf-8'),
+                            file_name="all_boltz2_scores.csv",
+                            mime="text/csv"
+                        )
+                else:
+                    st.warning("No compounds found with both first ensemble model affinity predictions (affinity_pred_value1) and probability values.")
 
         elif st.session_state.selected_view == "Compounds":
             st.header("Generated Compounds")
@@ -2440,6 +2614,8 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
             
             st.json(stats)
 
+
+
     # Dashboard footer
     st.divider()
     st.markdown("""
@@ -2473,5 +2649,6 @@ else:
     - 🧬 Compound and variant exploration
     - 🎯 Docking results with 3D visualization
     - 🤖 Boltz-2 affinity predictions analysis
+    - 🧮 Boltz-2 score ranking (from paper formula using first ensemble model)
     - 💾 Export and download capabilities
     """) 
