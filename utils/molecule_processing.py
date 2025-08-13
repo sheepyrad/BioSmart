@@ -86,6 +86,46 @@ def smiles_to_sdf(smiles_list, output_file):
         logger.error(f"Error converting SMILES to SDF: {e}")
         return None
 
+def smiles_to_sdf_from_file(smiles_file_path: str, output_sdf_path: str) -> Path | None:
+    """
+    Convert a .smi file (one SMILES per line, optionally whitespace-separated name)
+    to an SDF file. If a name is present after the SMILES, it is used as _Name.
+
+    Args:
+        smiles_file_path: Path to the input .smi file
+        output_sdf_path: Path to the output .sdf file
+
+    Returns:
+        Path to the created SDF file or None if failed
+    """
+    try:
+        input_path = Path(smiles_file_path)
+        writer = Chem.SDWriter(str(output_sdf_path))
+        count = 0
+        with open(input_path, 'r') as f:
+            for line_idx, line in enumerate(f, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                # Split on whitespace; first token is SMILES, second optional is name
+                parts = line.split()
+                smiles = parts[0]
+                name = parts[1] if len(parts) > 1 else f"mol_{line_idx}"
+                mol = Chem.MolFromSmiles(smiles)
+                if mol is None:
+                    logger.warning(f"Invalid SMILES on line {line_idx}: {smiles}")
+                    continue
+                mol.SetProp("_Name", name)
+                mol.SetProp("SMILES", smiles)
+                writer.write(mol)
+                count += 1
+        writer.close()
+        logger.info(f"Converted {count} SMILES from {input_path} to {output_sdf_path}")
+        return Path(output_sdf_path)
+    except Exception as e:
+        logger.error(f"Error converting SMILES file to SDF: {e}")
+        return None
+
 def extract_best_pose_and_score(pose_pred_str):
     """
     Extract the best docking pose and score from the pose prediction output.

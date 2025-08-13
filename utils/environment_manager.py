@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 TOOL_ENVIRONMENTS = {
     "diffsbdd": "diffsbdd-env",
     "pocket2mol": "pocket2mol-env", 
-    "cgflow": "cgflow-env",
+    "cgflow": "cgflow",
     "synformer": "synformer-env",
     "boltz": "boltz-env",
     "unidock": "unidock-env",  # unidock command is in unidock-env

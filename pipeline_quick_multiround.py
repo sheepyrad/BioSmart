@@ -61,7 +61,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
          n_samples=200, sanitize=True, center=(114.817, 75.602, 82.416), box_size=(38, 70, 58),
          bbox_size=23.0, exhaustiveness="balance", top_n=5, max_variants=5, num_rounds=1, 
          score_threshold=0.7, boltz_pocket_residues=None, medchem_rule_threshold=13, 
-         medchem_structural_threshold=27, stop_flag=None):
+         medchem_structural_threshold=27, stop_flag=None, cgflow_config=None):
     """
     Multi-round quick pipeline main function with batch filtering optimization.
     
@@ -106,6 +106,8 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         required_envs.append("diffsbdd")
     elif model_choice.lower() == "pocket2mol":
         required_envs.append("pocket2mol")
+    elif model_choice.lower() == "cgflow":
+        required_envs.append("cgflow")
     
     missing_envs = []
     for tool in required_envs:
@@ -122,7 +124,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
     
     # Check model choice
     model_choice = model_choice.lower()
-    if model_choice not in ['diffsbdd', 'pocket2mol']:
+    if model_choice not in ['diffsbdd', 'pocket2mol', 'cgflow']:
         logger.error(f"Invalid model choice: {model_choice}. Using default (diffsbdd).")
         model_choice = 'diffsbdd'
     
@@ -209,6 +211,34 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             if not success:
                 logger.error(f"Round {round_num}: Failed to combine Pocket2Mol outputs. Skipping this round.")
                 continue
+        elif model_choice == 'cgflow':
+            # CGFlow outputs directly to the provided directory with samples.smi and samples.sdf
+            cgflow_output_dir = ligand_gen_dir / f"{base_name}_cgflow_output"
+            cgflow_output_dir.mkdir(exist_ok=True)
+            lg_thread = run_ligand_generation(
+                model="cgflow",
+                checkpoint=checkpoint,  # fine-tuned checkpoint
+                cgflow_config=cgflow_config,
+                out_dir=str(cgflow_output_dir),
+                n_samples=n_samples,
+                log_callback=logger.info,
+            )
+            lg_thread.join()
+
+            # Prefer SDF if available; otherwise derive from SMILES
+            samples_sdf = cgflow_output_dir / "samples.sdf"
+            samples_smi = cgflow_output_dir / "samples.smi"
+            if samples_sdf.exists() and samples_sdf.stat().st_size > 0:
+                ligand_gen_out = samples_sdf
+            elif samples_smi.exists() and samples_smi.stat().st_size > 0:
+                # Convert SMILES to SDF of generated molecules for downstream consistency
+                from utils.molecule_processing import smiles_to_sdf_from_file
+                try:
+                    smiles_to_sdf_from_file(str(samples_smi), str(ligand_gen_out))
+                except Exception as e:
+                    logger.error(f"Failed to convert CGFlow samples.smi to SDF: {e}")
+            else:
+                logger.error(f"CGFlow did not produce samples.sdf or samples.smi in {cgflow_output_dir}")
         else:
             # Run DiffSBDD
             lg_thread = run_ligand_generation(
@@ -591,12 +621,15 @@ if __name__ == "__main__":
     parser.add_argument("--out_dir", type=str, help="Output directory", required=True)
 
     # Model selection
-    parser.add_argument("--model", type=str, choices=["diffsbdd", "pocket2mol"], default="diffsbdd",
+    parser.add_argument("--model", type=str, choices=["diffsbdd", "pocket2mol", "cgflow"], default="diffsbdd",
                         help="Model to use for molecule generation (default: diffsbdd)")
 
     # DiffSBDD parameters
     parser.add_argument("--checkpoint", type=str, default="src/DiffSBDD/checkpoints/crossdocked_fullatom_cond.ckpt",
                         help="Path to the checkpoint file (DiffSBDD only)")
+    # CGFlow parameters
+    parser.add_argument("--cgflow_config", type=str, default="",
+                        help="Path to CGFlow YAML config (CGFlow only)")
     
     parser.add_argument("--pdbfile", type=str, default="input/NS5.pdb",
                         help="Path to target protein PDB file")
@@ -654,4 +687,6 @@ if __name__ == "__main__":
         boltz_pocket_residues=args.boltz_pocket_residues,
         medchem_rule_threshold=args.medchem_rule_threshold,
         medchem_structural_threshold=args.medchem_structural_threshold
+        ,
+        cgflow_config=args.cgflow_config if args.cgflow_config else None
     )

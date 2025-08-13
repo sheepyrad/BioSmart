@@ -20,6 +20,7 @@ from .environment_manager import env_manager
 
 # Import centralized GPU memory management
 from .gpu_memory_manager import clear_gpu_memory, log_gpu_memory_usage
+from .cgflow_generation import run_cgflow_generation
 
 # Define a timeout for the subprocess (e.g., 2 hours)
 SUBPROCESS_TIMEOUT = 7200
@@ -449,9 +450,10 @@ def cleanup_pocket2mol_pt_files(directory_path, log_callback=None):
 
 def run_ligand_generation(checkpoint=None, pdbfile=None, outfile=None, resi_list=None, 
                           n_samples=100, sanitize=True, log_callback=None, model="diffsbdd",
-                          center=None, bbox_size=None, out_dir=None):
+                          center=None, bbox_size=None, out_dir=None,
+                          cgflow_config: str = None):
     """
-    Run ligand generation using either DiffSBDD or Pocket2Mol model with conda environments.
+    Run ligand generation using DiffSBDD, Pocket2Mol, or CGFlow with conda environments.
     
     Args:
         checkpoint (str): Path to the checkpoint file (DiffSBDD only)
@@ -461,10 +463,11 @@ def run_ligand_generation(checkpoint=None, pdbfile=None, outfile=None, resi_list
         n_samples (int): Number of samples to generate
         sanitize (bool): Whether to sanitize generated molecules (DiffSBDD only)
         log_callback (function): Callback function for logging
-        model (str): Model to use ('diffsbdd' or 'pocket2mol')
+        model (str): Model to use ('diffsbdd', 'pocket2mol', or 'cgflow')
         center (list): Center coordinates [x, y, z] (Pocket2Mol only)
         bbox_size (float): Size of the bounding box (Pocket2Mol only)
-        out_dir (str): Output directory (Pocket2Mol only)
+        out_dir (str): Output directory (Pocket2Mol/CGFlow)
+        cgflow_config (str): CGFlow YAML config path (CGFlow only)
         
     Returns:
         threading.Thread: Thread running the process
@@ -474,6 +477,18 @@ def run_ligand_generation(checkpoint=None, pdbfile=None, outfile=None, resi_list
             raise ValueError("pdbfile, center, bbox_size, and out_dir are required for Pocket2Mol")
         
         return run_pocket2mol(pdbfile, center, bbox_size, out_dir, n_samples, log_callback)
+    elif model.lower() == "cgflow":
+        if not all([cgflow_config, checkpoint, out_dir]):
+            raise ValueError("cgflow_config, checkpoint, and out_dir are required for CGFlow generation")
+        # Use CGFlow wrapper. It produces samples.smi and samples.sdf under out_dir.
+        return run_cgflow_generation(
+            config_path=cgflow_config,
+            checkpoint_path=checkpoint,
+            num_samples=n_samples,
+            out_dir=out_dir,
+            log_callback=log_callback,
+            timeout=SUBPROCESS_TIMEOUT,
+        )
     else:  # Default to DiffSBDD
         # Get the current directory
         current_dir = os.getcwd()

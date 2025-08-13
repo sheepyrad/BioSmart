@@ -388,8 +388,8 @@ with st.form(key="model_selection_form", border=True):
     # Model selection - uses key 'model_selection'
     st.selectbox(
         "AI Model for Molecule Generation *",
-        options=["diffsbdd", "pocket2mol"],
-        format_func=lambda x: "DiffSBDD" if x == "diffsbdd" else "Pocket2Mol",
+        options=["diffsbdd", "pocket2mol", "cgflow"],
+        format_func=lambda x: {"diffsbdd": "DiffSBDD", "pocket2mol": "Pocket2Mol", "cgflow": "CGFlow (finetuned)"}[x],
         # index is automatically handled by key binding if key exists
         key="model_selection",
         help="Select the AI model for generating molecules"
@@ -400,6 +400,11 @@ with st.form(key="model_selection_form", border=True):
 
 # Check if model update was requested and trigger rerun
 if st.session_state.model_update_requested:
+    # Apply cgflow-specific defaults on model change
+    if st.session_state.model_selection == "cgflow":
+        st.session_state.pocket2mol_dock_size_x = 20.0
+        st.session_state.pocket2mol_dock_size_y = 20.0
+        st.session_state.pocket2mol_dock_size_z = 20.0
     st.session_state.model_update_requested = False
     st.rerun()
 
@@ -473,9 +478,12 @@ with tab1:
             help="Apply sanitization to generated molecules",
             key="diffsbdd_sanitize"
         )
-    else:
+    elif current_model == "pocket2mol":
         # Display a message for Pocket2Mol
         st.info("Pocket2Mol uses 3D pocket information instead of residue lists. The bounding box settings can be configured in the 'Box Settings' tab.")
+    else:
+        st.subheader("CGFlow")
+        st.info("Using a fine-tuned CGFlow checkpoint specific to the target pocket. Only common parameters, Boltz-2, MedChem and output directory are shown.")
 
     # Common parameters - simplified since Unidock handles program choice and scoring
     col3, col4 = st.columns(2)
@@ -495,10 +503,14 @@ with tab1:
         pass
 
 with tab2:
-    # --- Box Generation Expander (Moved outside the form) ---
-    with st.expander("Generate Box from Residues (Experimental)"):
-        st.markdown("Automatically calculate box center and dimensions based on selected residues.")
-        st.caption("Grid generation logic adapted from code by Pritam Kumar Panda.")
+    # Skip box configuration UI for CGFlow (finetuned pocket)
+    if current_model == "cgflow":
+        st.info("CGFlow uses a fine-tuned target pocket. Box configuration is not required and is hidden for this model.")
+    else:
+        # --- Box Generation Expander (Moved outside the form) ---
+        with st.expander("Generate Box from Residues (Experimental)"):
+            st.markdown("Automatically calculate box center and dimensions based on selected residues.")
+            st.caption("Grid generation logic adapted from code by Pritam Kumar Panda.")
 
         # Use the residue list from DiffSBDD input if available
         # Read directly from the widget state key
@@ -623,7 +635,7 @@ with tab2:
                 key="diffsbdd_size_z"
             )
 
-    else:  # pocket2mol
+    elif current_model == "pocket2mol":  # pocket2mol
         # Generation box (bounding box) for Pocket2Mol
         st.subheader("Molecule Generation Box (Pocket2Mol)")
         st.info("This defines the cubic space where Pocket2Mol will generate molecules.")
@@ -659,6 +671,33 @@ with tab2:
             )
         with col13:
             # Docking Size Z Input - uses key 'pocket2mol_dock_size_z'
+            st.number_input(
+                "Docking Size Z",
+                min_value=1.0,
+                format="%.1f",
+                key="pocket2mol_dock_size_z"
+            )
+    else:  # cgflow
+        # Docking box for CGFlow (no generation box)
+        st.subheader("Docking Box Dimensions (CGFlow)")
+        st.info("Define the box used for docking generated molecules.")
+
+        col11, col12, col13 = st.columns(3)
+        with col11:
+            st.number_input(
+                "Docking Size X",
+                min_value=1.0,
+                format="%.1f",
+                key="pocket2mol_dock_size_x"
+            )
+        with col12:
+            st.number_input(
+                "Docking Size Y",
+                min_value=1.0,
+                format="%.1f",
+                key="pocket2mol_dock_size_y"
+            )
+        with col13:
             st.number_input(
                 "Docking Size Z",
                 min_value=1.0,
@@ -841,9 +880,19 @@ with col_dl:
                  st.session_state.diffsbdd_size_y, 
                  st.session_state.diffsbdd_size_z
              ]
-        else: # pocket2mol
+        elif download_config["model"] == "pocket2mol": # pocket2mol
             download_config["bbox_size"] = st.session_state.pocket2mol_bbox_size
             download_config["box_size"] = [ # Docking box for pocket2mol
+                st.session_state.pocket2mol_dock_size_x,
+                st.session_state.pocket2mol_dock_size_y,
+                st.session_state.pocket2mol_dock_size_z
+            ]
+        else:
+            # cgflow presets
+            download_config["checkpoint"] = "src/cgflow/result/opt/unidock_qed/NS5/250812_160000/model_state.pt"
+            download_config["cgflow_config"] = "src/cgflow/configs/opt/NS5.yaml"
+            # Docking box for CGFlow
+            download_config["box_size"] = [
                 st.session_state.pocket2mol_dock_size_x,
                 st.session_state.pocket2mol_dock_size_y,
                 st.session_state.pocket2mol_dock_size_z
@@ -1036,9 +1085,19 @@ if finalize_submitted:
                     st.session_state.diffsbdd_size_y,
                     st.session_state.diffsbdd_size_z
                 ]
-            else:  # pocket2mol
+            elif current_model_final == "pocket2mol":
                 config["bbox_size"] = st.session_state.pocket2mol_bbox_size
                 # Docking box for Pocket2Mol
+                config["box_size"] = [
+                    st.session_state.pocket2mol_dock_size_x,
+                    st.session_state.pocket2mol_dock_size_y,
+                    st.session_state.pocket2mol_dock_size_z
+                ]
+            else:  # cgflow
+                # Default CGFlow settings; not exposed in UI per requirements
+                config["checkpoint"] = "src/cgflow/result/opt/unidock_qed/NS5/250812_160000/model_state.pt"
+                config["cgflow_config"] = "src/cgflow/configs/opt/NS5.yaml"
+                # Docking box for CGFlow (reuses docking keys)
                 config["box_size"] = [
                     st.session_state.pocket2mol_dock_size_x,
                     st.session_state.pocket2mol_dock_size_y,
@@ -1121,7 +1180,7 @@ if pdb_content_for_vis:
             st.session_state.diffsbdd_size_y,
             st.session_state.diffsbdd_size_z
         ]
-    else:  # pocket2mol
+    elif current_vis_model == "pocket2mol":  # pocket2mol
         selected_residues_vis = None
         # Pocket2Mol uses different keys for docking box vs generation box
         box_size_vis = [ # Docking box
@@ -1130,6 +1189,15 @@ if pdb_content_for_vis:
             st.session_state.pocket2mol_dock_size_z
         ]
         bbox_size_vis = st.session_state.pocket2mol_bbox_size # Generation box size
+    else:  # cgflow
+        selected_residues_vis = None
+        # Show docking box for CGFlow using docking keys; default 20s are set on model selection
+        box_size_vis = [
+            st.session_state.pocket2mol_dock_size_x,
+            st.session_state.pocket2mol_dock_size_y,
+            st.session_state.pocket2mol_dock_size_z
+        ]
+        bbox_size_vis = None
 
     try:
         # Create visualization with appropriate box

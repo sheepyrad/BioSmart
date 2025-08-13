@@ -257,10 +257,17 @@ def run_pipeline(config, status_dict, stop_event):
                 "sanitize": config.get("sanitize", True),
                 "box_size": config.get("box_size", [40, 40, 40])
             })
-        else:  # pocket2mol
+        elif model_choice == "pocket2mol":
             pipeline_params.update({
                 "bbox_size": config.get("bbox_size", 23.0),
                 "box_size": config.get("box_size", [40, 40, 40])  # Still needed for docking
+            })
+        else:  # cgflow
+            pipeline_params.update({
+                "cgflow_config": config.get("cgflow_config", "src/cgflow/configs/opt/NS5.yaml"),
+                "checkpoint": config.get("checkpoint", "src/cgflow/result/opt/unidock_qed/NS5/250812_160000/model_state.pt"),
+                # Docking box still required downstream
+                "box_size": config.get("box_size", [38, 70, 58])
             })
         
         # Run the pipeline with appropriate parameters
