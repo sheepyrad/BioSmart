@@ -1899,7 +1899,7 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
             
             # Boltz-2 Score Analysis Section
             if ("affinity_pred_value1" in df.columns and df["affinity_pred_value1"].notna().any() and
-                "affinity_probability_binary" in df.columns and df["affinity_probability_binary"].notna().any()):
+                "affinity_probability_binary1" in df.columns and df["affinity_probability_binary1"].notna().any()):
                 
                 st.markdown("---")
                 st.subheader("🧮 Boltz-2 Score (From Paper)")
@@ -1909,7 +1909,7 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
                 
                 Where:
                 - **affinity**: `affinity_pred_value1` (first ensemble model, log(IC50) scale, lower = better binding)
-                - **likelihood**: `affinity_probability_binary` (0-1 scale, higher = more confident)
+                - **likelihood**: `affinity_probability_binary1` (0-1 scale, higher = more confident)
                 
                 **Note:** Uses the first ensemble model predictions (`affinity_pred_value1`) as specified in the Boltz-2 screening methodology.
                 """)
@@ -1917,14 +1917,14 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
                 # Filter data that has both required values
                 scored_data = df[
                     df["affinity_pred_value1"].notna() & 
-                    df["affinity_probability_binary"].notna()
+                    df["affinity_probability_binary1"].notna()
                 ].copy()
                 
                 if not scored_data.empty:
                     # Calculate Boltz-2 score using the formula with first ensemble model
                     scored_data["boltz2_score"] = (
                         scored_data.apply(lambda row: 
-                            max((-row["affinity_pred_value1"] + 2) / 4, 0) * row["affinity_probability_binary"], 
+                            max((-row["affinity_pred_value1"] + 2) / 4, 0) * row["affinity_probability_binary1"], 
                             axis=1)
                     )
                     
@@ -1996,7 +1996,7 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
                         st.caption("(Showing top 10 entries - may include duplicates)")
                     
                     # Prepare display columns
-                    display_columns = ["compound_id", "boltz2_score", "affinity_pred_value1", "affinity_probability_binary"]
+                    display_columns = ["compound_id", "boltz2_score", "affinity_pred_value1", "affinity_probability_binary1"]
                     if "variant_id" in top_scored.columns:
                         display_columns.insert(1, "variant_id")
                     if "barcode" in top_scored.columns:
@@ -2013,7 +2013,7 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
                     display_df = top_scored[existing_display_cols].copy()
                     display_df["boltz2_score"] = display_df["boltz2_score"].round(4)
                     display_df["affinity_pred_value1"] = display_df["affinity_pred_value1"].round(3)
-                    display_df["affinity_probability_binary"] = display_df["affinity_probability_binary"].round(3)
+                    display_df["affinity_probability_binary1"] = display_df["affinity_probability_binary1"].round(3)
                     if "docking_score" in display_df.columns:
                         display_df["docking_score"] = display_df["docking_score"].round(3)
                     

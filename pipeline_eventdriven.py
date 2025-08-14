@@ -32,7 +32,7 @@ from utils.molecule_processing import smiles_to_sdf
 
 from utils.retrosynformer import run_retrosynthesis
 from utils.retro_utils import extract_variants_from_retrosynthesis
-from utils.medchem_filter import filter_by_pass_count, generate_filter_plots
+from utils.medchem_filter import filter_by_pass_count, filter_by_generative_design, generate_filter_plots
 from utils.boltz_filter import boltz_filter_variants
 from utils.redocking import redock_compound
 
@@ -73,6 +73,7 @@ class PipelineConfig:
     # Medchem
     medchem_rule_threshold: int
     medchem_structural_threshold: int
+    medchem_filter_mode: str
     medchem_batch_size: int
     medchem_batch_timeout: int
     # Boltz
@@ -134,6 +135,7 @@ def load_config_from_yaml(config_path: Path) -> PipelineConfig:
     score_threshold = float(thresholds.get('score_threshold', 0.7))
     medchem_rule_threshold = int(thresholds.get('medchem_rule_threshold', 13))
     medchem_structural_threshold = int(thresholds.get('medchem_structural_threshold', 27))
+    medchem_filter_mode = str(thresholds.get('medchem_filter_mode', 'threshold'))
 
     timeouts = y.get('timeouts', {}) or {}
     retro_timeout = int(timeouts.get('retrosynthesis_sec', 300))
@@ -182,6 +184,7 @@ def load_config_from_yaml(config_path: Path) -> PipelineConfig:
         retro_top_n=retro_top_n,
         medchem_rule_threshold=medchem_rule_threshold,
         medchem_structural_threshold=medchem_structural_threshold,
+        medchem_filter_mode=medchem_filter_mode,
         medchem_batch_size=medchem_batch_size,
         medchem_batch_timeout=medchem_batch_timeout,
         boltz_pocket_residues=boltz_pocket_residues,
@@ -378,12 +381,18 @@ def medchem_worker(db: DB, cfg: PipelineConfig, worker_id: int) -> None:
                 variants = db.get_variants(batch)
                 if not variants:
                     continue
-                filtered, df = filter_by_pass_count(
-                    input_variants=variants,
-                    rule_threshold=cfg.medchem_rule_threshold,
-                    structural_threshold=cfg.medchem_structural_threshold,
-                    smiles_key="smiles",
-                )
+                if cfg.medchem_filter_mode == "generative":
+                    filtered, df = filter_by_generative_design(
+                        input_variants=variants,
+                        smiles_key="smiles",
+                    )
+                else:
+                    filtered, df = filter_by_pass_count(
+                        input_variants=variants,
+                        rule_threshold=cfg.medchem_rule_threshold,
+                        structural_threshold=cfg.medchem_structural_threshold,
+                        smiles_key="smiles",
+                    )
                 plots_dir = cfg.outputs_root / "medchem" / f"batch_{int(time.time())}"
                 generate_filter_plots(df, plots_dir)
 

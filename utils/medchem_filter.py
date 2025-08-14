@@ -211,6 +211,86 @@ def filter_by_pass_count(
     return filtered_variants_output, temp_df # Modified return statement
 
 
+def filter_by_generative_design(
+    input_variants: List[Dict[str, Any]],
+    smiles_key: str = 'smiles'
+) -> tuple[List[Dict[str, Any]], pd.DataFrame | None]:
+    """
+    Filters compounds using only the generative design rules and keeps compounds
+    that pass BOTH "rule_of_generative_design" and "rule_of_generative_design_strict".
+
+    Args:
+        input_variants: List of dictionaries containing at least a SMILES string under `smiles_key`.
+        smiles_key: Key name for SMILES in the dictionaries.
+
+    Returns:
+        A tuple of (filtered_variants, results_df) where:
+          - filtered_variants is a list of the original input dictionaries that passed both rules
+          - results_df is a DataFrame with boolean columns for the two rules and pass counts
+    """
+    if not input_variants:
+        logger.warning("Received empty list for generative design filtering. Returning empty list and None DataFrame.")
+        return [], None
+
+    logger.info(f"Starting Generative Design MedChem filtering for {len(input_variants)} input compounds...")
+
+    # Extract SMILES and create a temporary DataFrame for processing
+    smiles_list = [item.get(smiles_key) for item in input_variants]
+    if not all(smiles_list):
+        logger.error(f"Missing SMILES string for one or more input variants using key '{smiles_key}'. Cannot proceed.")
+        return [], None
+
+    temp_df = pd.DataFrame({smiles_key: smiles_list})
+
+    # Generate RDKit molecules
+    logger.info("Generating RDKit molecules from SMILES for generative design filtering...")
+    temp_df['mol'] = dm.parallelized(dm.to_mol, temp_df[smiles_key].tolist(), n_jobs=-1, progress=True)
+    original_len = len(temp_df)
+    temp_df = temp_df.dropna(subset=['mol'])
+    if len(temp_df) < original_len:
+        logger.warning(f"Dropped {original_len - len(temp_df)} compounds due to SMILES parsing errors.")
+
+    if temp_df.empty:
+        logger.warning("No valid molecules remaining after parsing. Returning empty list and empty DataFrame.")
+        return [], pd.DataFrame(columns=[smiles_key, 'mol', 'rule_of_generative_design', 'rule_of_generative_design_strict', 'n_rules_pass', 'n_structural_pass'])
+
+    mols_list = temp_df['mol'].tolist()
+
+    # Apply only the two generative design rules
+    rules_to_apply = [
+        "rule_of_generative_design",
+        "rule_of_generative_design_strict",
+    ]
+
+    for rule_name in rules_to_apply:
+        if hasattr(mc.rules.basic_rules, rule_name):
+            rule_func = getattr(mc.rules.basic_rules, rule_name)
+            try:
+                temp_df[rule_name] = [rule_func(mol) for mol in mols_list]
+            except Exception as e:
+                logger.warning(f"  Rule '{rule_name}' failed: {e}. Assigning False.")
+                temp_df[rule_name] = [False] * len(mols_list)
+        else:
+            logger.warning(f"Rule '{rule_name}' not found in medchem. Assigning False.")
+            temp_df[rule_name] = [False] * len(mols_list)
+
+    # Compute simple pass counts to maintain a compatible schema
+    temp_df['n_rules_pass'] = temp_df[rules_to_apply].astype(bool).sum(axis=1)
+    temp_df['n_structural_pass'] = 0  # Not applicable in this mode
+
+    # Require BOTH rules to be True
+    passing_df = temp_df[
+        temp_df['rule_of_generative_design'].astype(bool) &
+        temp_df['rule_of_generative_design_strict'].astype(bool)
+    ].copy()
+
+    passing_smiles = set(passing_df[smiles_key].tolist())
+    filtered_variants_output = [item for item in input_variants if item.get(smiles_key) in passing_smiles]
+
+    logger.info(f"Generative design filtering complete: {len(filtered_variants_output)} compounds passed both rules.")
+    return filtered_variants_output, temp_df
+
+
 def generate_filter_plots(results_df: pd.DataFrame, plots_dir: Path):
     """
     Generates and saves heatmap and histograms for MedChem filter results.

@@ -129,6 +129,8 @@ if "medchem_rule_threshold" not in st.session_state:
     st.session_state.medchem_rule_threshold = 13
 if "medchem_structural_threshold" not in st.session_state:
     st.session_state.medchem_structural_threshold = 27
+if "medchem_filter_mode" not in st.session_state:
+    st.session_state.medchem_filter_mode = "threshold"
 
 # --- Control flow for applying loaded config ---
 if "_apply_loaded_config_on_next_run" not in st.session_state:
@@ -168,6 +170,7 @@ if st.session_state._apply_loaded_config_on_next_run:
             # Load MedChem filter thresholds
             st.session_state.medchem_rule_threshold = int(pending_config.get("medchem_rule_threshold", st.session_state.medchem_rule_threshold))
             st.session_state.medchem_structural_threshold = int(pending_config.get("medchem_structural_threshold", st.session_state.medchem_structural_threshold))
+            st.session_state.medchem_filter_mode = pending_config.get("medchem_filter_mode", st.session_state.medchem_filter_mode)
 
             if "out_dir" in pending_config:
                 st.session_state.output_dir_path_input = pending_config["out_dir"]
@@ -776,27 +779,40 @@ with tab3:
 
     st.info("MedChem filtering evaluates compounds against medicinal chemistry rules and structural alerts. Compounds must pass the minimum number of specified filters to proceed to docking.")
     
-    col_medchem1, col_medchem2 = st.columns(2)
-    
-    with col_medchem1:
-        st.number_input(
-            "Minimum Rules Passed",
-            min_value=0,
-            max_value=20,
-            step=1,
-            help="Minimum number of medicinal chemistry rules a compound must pass (e.g., Lipinski's Rule of 5, Ghose, Veber, etc.). Default: 13 out of ~15 total rules.",
-            key="medchem_rule_threshold"
-        )
-    
-    with col_medchem2:
-        st.number_input(
-            "Minimum Structural Filters Passed",
-            min_value=0,
-            max_value=40,
-            step=1,
-            help="Minimum number of structural/functional filters a compound must pass (e.g., PAINS, Glaxo alerts, NIBR filter, etc.). Default: 27 out of ~30 total filters.",
-            key="medchem_structural_threshold"
-        )
+    # Mode selection
+    st.selectbox(
+        "MedChem Filter Mode",
+        options=["threshold", "generative"],
+        format_func=lambda x: {
+            "threshold": "Threshold-based (pass-count across many rules)",
+            "generative": "Generative design (must pass both generative rules)"
+        }[x],
+        key="medchem_filter_mode",
+        help="Choose between classic threshold-based filtering or a strict generative design rule-only filter."
+    )
+
+    if st.session_state.medchem_filter_mode == "threshold":
+        col_medchem1, col_medchem2 = st.columns(2)
+        with col_medchem1:
+            st.number_input(
+                "Minimum Rules Passed",
+                min_value=0,
+                max_value=20,
+                step=1,
+                help="Minimum number of medicinal chemistry rules a compound must pass (e.g., Lipinski's Rule of 5, Ghose, Veber, etc.). Default: 13 out of ~15 total rules.",
+                key="medchem_rule_threshold"
+            )
+        with col_medchem2:
+            st.number_input(
+                "Minimum Structural Filters Passed",
+                min_value=0,
+                max_value=40,
+                step=1,
+                help="Minimum number of structural/functional filters a compound must pass (e.g., PAINS, Glaxo alerts, NIBR filter, etc.). Default: 27 out of ~30 total filters.",
+                key="medchem_structural_threshold"
+            )
+    else:
+        st.info("Generative design mode will only keep compounds that pass BOTH 'rule_of_generative_design' and 'rule_of_generative_design_strict'. Threshold values are ignored in this mode.")
     
     st.caption("""
     **Filter Categories:**
@@ -913,6 +929,7 @@ with col_dl:
         # Add MedChem filter thresholds
         download_config["medchem_rule_threshold"] = st.session_state.medchem_rule_threshold
         download_config["medchem_structural_threshold"] = st.session_state.medchem_structural_threshold
+        download_config["medchem_filter_mode"] = st.session_state.medchem_filter_mode
         
         # Use output dir path for config value and extract name for filename
         output_dir_path_value = st.session_state.get("output_dir_path_input", "outputs/pipeline_output")
@@ -1119,6 +1136,7 @@ if finalize_submitted:
             # Add MedChem filter thresholds
             config["medchem_rule_threshold"] = st.session_state.medchem_rule_threshold
             config["medchem_structural_threshold"] = st.session_state.medchem_structural_threshold
+            config["medchem_filter_mode"] = st.session_state.medchem_filter_mode
             
             config["out_dir"] = str(output_path) # Use the validated, absolute path
 

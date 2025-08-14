@@ -245,6 +245,7 @@ def run_pipeline(config, status_dict, stop_event):
             # Add MedChem filter thresholds
             "medchem_rule_threshold": config.get("medchem_rule_threshold", 13),
             "medchem_structural_threshold": config.get("medchem_structural_threshold", 27),
+            "medchem_filter_mode": config.get("medchem_filter_mode", "threshold"),
             
             "stop_flag": status_dict  # Pass the status dict for stop checking
         }
