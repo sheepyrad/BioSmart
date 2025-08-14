@@ -1,0 +1,49 @@
+db_url: postgresql://drug:drug@localhost:5432/drug_pipeline
+outputs_root: outputs/NS5_cgflow
+target_unique: 1000
+
+generator:
+  name: cgflow
+  n_samples: 200
+  common:
+    pdbfile: input/NS5_renum.pdb
+  cgflow:
+    config_path: /home/conrad/Drug_pipeline/src/cgflow/configs/opt/NS5.yaml
+    checkpoint_path: /home/conrad/Drug_pipeline/src/cgflow/result/opt/unidock_qed/NS5/250812_160000/model_state.pt
+    out_dir: outputs/cgflow_NS5
+
+thresholds:
+  score_threshold: 0.9
+  medchem_rule_threshold: 12
+  medchem_structural_threshold: 25
+
+timeouts:
+  retrosynthesis_sec: 300
+
+retrosynthesis:
+  top_n: 5
+
+medchem:
+  batch_size: 256
+  batch_timeout_sec: 500
+
+boltz:
+  pocket_residues: [683,734,805,820,851,852]
+
+unidock:
+  search_mode: balance
+  batch_size: 200
+  center: [114.817, 75.602, 82.416]
+  box_size: [25, 25, 25]
+
+concurrency:
+  generator_workers: 1
+  retrosyn_workers: 1
+  medchem_workers: 1
+  boltz_workers: 1
+  docking_workers: 1
+
+leaderboard:
+  top_n: 50
+
+
