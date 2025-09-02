@@ -445,6 +445,7 @@ def boltz_filter_variants(
                         "predict", 
                         str(input_yaml), 
                         "--use_potentials",
+                        "--affinity_mw_correction",
                         "--out_dir", 
                         str(boltz_output_dir)
                     ],
@@ -542,3 +543,142 @@ def boltz_filter_variants(
             failed.append(variant)
 
     return passed, failed 
+
+
+def boltz_predict_variants(
+    variants: List[dict],
+    pdb_file: Union[str, Path],
+    round_dir: Path,
+    pocket_residues: Union[List[int], None] = None,
+    log_callback: Union[Callable[[str], None], None] = None,
+) -> List[dict]:
+    """Run Boltz-2 predictions to annotate variants without filtering.
+
+    For each variant, runs Boltz-2 and attaches affinity/confidence metadata if available.
+    If Boltz cannot run, the variant is left unchanged and processing continues.
+
+    Args:
+        variants: List of variant dictionaries (each should have ``barcode`` and ``smiles``).
+        pdb_file: Path to the target protein PDB file.
+        round_dir: Path corresponding to the current round directory (e.g., *.../round_1*).
+        pocket_residues: List of residue indices (1-indexed) for pocket constraints.
+        log_callback: Optional logger function.
+
+    Returns:
+        The same list of variants with added Boltz annotations when available.
+    """
+    pdb_file = str(pdb_file)
+
+    # Try to extract protein sequence; if it fails, just log and return variants unchanged
+    protein_sequence = _extract_protein_sequence_from_pdb(Path(pdb_file), log_callback)
+    if not protein_sequence:
+        if log_callback:
+            log_callback("[Boltz-2] Could not extract protein sequence. Skipping Boltz predictions but continuing pipeline.")
+        return variants
+
+    for variant in variants:
+        barcode = variant.get("barcode", "UNKNOWN")
+        smiles = variant.get("smiles")
+
+        if not smiles:
+            if log_callback:
+                log_callback(f"[Boltz-2] Skipping variant {barcode}: no SMILES provided")
+            continue
+
+        if log_callback:
+            log_callback(f"[Boltz-2] Predicting for variant {barcode} (no filtering)")
+
+        try:
+            # Prepare directories
+            var_root = round_dir / "Boltz_result" / barcode
+            var_root.mkdir(parents=True, exist_ok=True)
+
+            input_yaml = var_root / "input.yaml"
+
+            # Create YAML
+            msa_path = "/home/conrad_hku/Drug_pipeline/msa/uniref_cleaned.a3m"
+            _create_boltz_yaml(input_yaml, protein_sequence, smiles, msa_path, pocket_residues, log_callback)
+
+            # Run prediction
+            if not _run_cmd(
+                [
+                    "boltz",
+                    "predict",
+                    str(input_yaml),
+                    "--use_potentials",
+                    "--affinity_mw_correction",
+                    "--out_dir",
+                    str(var_root),
+                ],
+                log_callback,
+                timeout=600,
+            ):
+                # If prediction fails, just continue without annotations
+                if log_callback:
+                    log_callback(f"[Boltz-2] Prediction failed for {barcode}; proceeding without annotations")
+                continue
+
+            # Locate predictions directory
+            predictions_dir = var_root / "predictions"
+            if not predictions_dir.exists():
+                nested_dirs = [d for d in var_root.iterdir() if d.is_dir() and (d / "predictions").exists()]
+                if nested_dirs:
+                    predictions_dir = nested_dirs[0] / "predictions"
+                    if log_callback:
+                        log_callback(f"[Boltz-2] Found predictions in nested directory: {predictions_dir}")
+
+            # Parse metadata if available
+            try:
+                coords, affinity_data, confidence_data = _parse_boltz_cif(
+                    predictions_dir,
+                    input_name="input",
+                    chain="B",
+                    reference_pdb=pdb_file,
+                )
+            except Exception:
+                coords, affinity_data, confidence_data = [], {}, {}
+
+            # Attach affinity data
+            if affinity_data:
+                if "affinity_pred_value" in affinity_data:
+                    variant["affinity_pred_value"] = affinity_data["affinity_pred_value"]
+                if "affinity_probability_binary" in affinity_data:
+                    variant["affinity_probability_binary"] = affinity_data["affinity_probability_binary"]
+                for key in [
+                    "affinity_pred_value1",
+                    "affinity_probability_binary1",
+                    "affinity_pred_value2",
+                    "affinity_probability_binary2",
+                ]:
+                    if key in affinity_data:
+                        variant[key] = affinity_data[key]
+                if log_callback:
+                    val = affinity_data.get("affinity_pred_value", "N/A")
+                    prob = affinity_data.get("affinity_probability_binary", "N/A")
+                    log_callback(f"[Boltz-2] {barcode} affinity: {val} (probability: {prob})")
+
+            # Attach confidence data
+            if confidence_data:
+                for key in [
+                    "confidence_score",
+                    "ptm",
+                    "iptm",
+                    "ligand_iptm",
+                    "protein_iptm",
+                    "complex_plddt",
+                    "complex_iplddt",
+                ]:
+                    if key in confidence_data:
+                        variant[key] = confidence_data[key]
+                if log_callback and "confidence_score" in confidence_data:
+                    log_callback(f"[Boltz-2] {barcode} confidence score: {confidence_data['confidence_score']}")
+
+            # Mark Boltz as done without altering selection status
+            variant["boltz_done"] = True
+
+        except Exception as exc:  # pragma: no cover
+            if log_callback:
+                log_callback(f"[Boltz-2] Unexpected error for {barcode}: {exc}")
+            # Do not fail the variant; just continue
+
+    return variants

@@ -40,10 +40,10 @@ logger = logging.getLogger(__name__)
 
 # Import functions from the utils modules
 from utils.ligand_generation import run_ligand_generation, combine_pocket2mol_outputs
-from utils.redocking import redock_compound
+from utils.redocking import redock_compound, run_batch_compound_redocking
 from utils.retrosynformer import run_retrosynthesis
 from utils.medchem_filter import filter_by_pass_count, filter_by_generative_design, generate_filter_plots
-from utils.boltz_filter import boltz_filter_variants
+from utils.boltz_filter import boltz_predict_variants
 
 # Import helper functions moved to dedicated utility modules
 from utils.molecule_processing import extract_smiles_from_sdf, smiles_to_sdf, extract_best_pose_and_score
@@ -381,7 +381,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         
         # Now, continue using the filtered_variants list for subsequent steps
         if not filtered_variants:
-            logger.warning(f"Round {round_num}: No variants passed MedChem filtering. Skipping docking and decoy generation for this round.")
+            logger.warning(f"Round {round_num}: No variants passed MedChem filtering. Skipping docking for this round.")
             continue # Skip to next round
 
         logger.info(f"Round {round_num}: After MedChem filtering, {len(filtered_variants)} variants remain")
@@ -393,10 +393,10 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             update_tracking_report(master_report, variant, "variant_status_update")
 
         # ------------------------------------------------------------------
-        # Step 6: Boltz-2 blind-docking filter with affinity prediction
+        # Step 6: Boltz-2 predictions (no filtering)
         # ------------------------------------------------------------------
         logger.info(
-            f"Round {round_num}: Running Boltz-2 blind-docking filter on {len(filtered_variants)} variants"
+            f"Round {round_num}: Running Boltz-2 predictions (no filtering) on {len(filtered_variants)} variants"
         )
 
         # Parse pocket residues if provided
@@ -414,32 +414,21 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             logger.error(f"Round {round_num}: PDB file is None, cannot run Boltz-2 filter. Skipping this round.")
             continue
             
-        passed_variants, failed_variants = boltz_filter_variants(
+        filtered_variants = boltz_predict_variants(
             variants=filtered_variants,
             pdb_file=pdbfile,
             round_dir=round_dir,
-            center=center,
-            box_size=box_size,
             pocket_residues=pocket_residues_list,
             log_callback=logger.info,
         )
 
-        # Update tracking for all variants processed by Boltz-2
-        for variant in (passed_variants + failed_variants):
+        # Update tracking for all variants processed by Boltz-2 (annotations only)
+        for variant in filtered_variants:
             update_tracking_report(round_report, variant, "variant_status_update")
             update_tracking_report(master_report, variant, "variant_status_update")
 
-        if not passed_variants:
-            logger.warning(
-                f"Round {round_num}: No variants passed Boltz-2 blind-docking filter. Skipping docking for this round."
-            )
-            continue  # Proceed to next round directly
-
-        # Replace filtered_variants with the subset that passed Boltz-2 for docking
-        filtered_variants = passed_variants
-
         logger.info(
-            f"Round {round_num}: After Boltz-2 filter, {len(filtered_variants)} variants remain for docking"
+            f"Round {round_num}: Proceeding to batch docking with {len(filtered_variants)} variants (no Boltz filtering)"
         )
 
         # Save variants that passed both MedChem and Boltz-2 filters to SDF for reference
@@ -450,8 +439,8 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         if stop_flag and not stop_flag.get("running", True):
             break
             
-        # Step 7: Sequential docking
-        logger.info(f"Round {round_num}: Starting docking of {len(filtered_variants)} filtered variants")
+        # Step 7: Batch docking
+        logger.info(f"Round {round_num}: Starting batch docking of {len(filtered_variants)} variants")
         
         # Prepare docking parameters (simplified for direct unidock command)
         center_x, center_y, center_z = center
@@ -462,143 +451,103 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             exhaustiveness  # Use exhaustiveness level directly as search_mode
         )
         
-        # Create a directory for each variant's docking results
+        # Batch call: prepare protein once, ligandprep once, unidock once
+        compounds_data = [{
+            "compound_id": v["variant_id"],
+            "smiles": v["smiles"],
+        } for v in filtered_variants]
+
+        batch_output_dir = dock_dir / "batch"
+        batch_output_dir.mkdir(exist_ok=True)
+
+        batch_results = run_batch_compound_redocking(
+            compounds_data=compounds_data,
+            receptor_pdb=Path(pdbfile),
+            redock_params=redock_params,
+            output_base_dir=batch_output_dir,
+            batch_size=1200,
+            save_temp_files=True,
+            log_callback=logger.info
+        )
+
         round_redock_results = []
-        docking_threads = {} # To keep track if needed, though we join immediately now
 
-        for idx, variant in enumerate(filtered_variants, 1):
-            # Check stop flag before each docking
-            if stop_flag and not stop_flag.get("running", True):
-                break
+        if isinstance(batch_results, dict) and "error" in batch_results:
+            logger.error(f"Round {round_num}: Batch docking failed: {batch_results['error']}")
+        else:
+            # Update each variant with its docking results
+            for variant in filtered_variants:
+                variant_id = variant["variant_id"]
+                barcode = variant["barcode"]
+                smiles = variant["smiles"]
 
-            variant_id = variant["variant_id"]
-            smiles = variant["smiles"]
-            barcode = variant["barcode"]
+                variant_results = batch_results.get(variant_id)
+                if variant_results and isinstance(variant_results, dict) and "error" not in variant_results:
+                    best_score = variant_results.get("docking_score")
+                    pose_count = variant_results.get("pose_count", 1)
+                    result_file = variant_results.get("result_file")
+                    all_scores = variant_results.get("all_scores", [])
 
-            logger.info(f"Round {round_num}: Initiating docking variant {idx}/{len(filtered_variants)}: {variant_id} ({barcode})")
+                    logger.info(f"Docking successful for {barcode}: score={best_score}, poses={pose_count}")
+                    if all_scores and len(all_scores) > 1:
+                        logger.info(f"All scores for {barcode}: {all_scores}")
 
-            # Run docking using the new asynchronous function
-            # We'll wait for it immediately to maintain sequential flow for now
-            docking_thread, result_storage = redock_compound(
-                variant_id,
-                smiles,
-                redock_params,
-                receptor=pdbfile,  # Use the same PDB file as receptor
-                log_callback=logger.info
-            )
+                    variant.update({
+                        "status": "DOCKED",
+                        "docking_score": best_score,
+                        "pose_count": pose_count,
+                        "result_file": result_file,
+                        "all_scores": all_scores,
+                        "barcode": barcode
+                    })
 
-            # Check if thread started successfully
-            if docking_thread:
-                logger.info(f"Waiting for docking thread for {barcode} to complete...")
-                docking_thread.join() # Wait for the subprocess to finish
-                logger.info(f"Docking thread for {barcode} finished.")
+                    round_redock_results.append(variant)
 
-                # Check results from the storage dictionary
-                status = result_storage.get("status", "unknown")
-                data = result_storage.get("data", {})
-                error_msg = data.get("error")
+                    update_tracking_report(round_report, variant, "docking")
+                    update_tracking_report(master_report, variant, "docking")
 
-                if status == "success" and not error_msg:
-                    # Check if we have docking results for this variant
-                    variant_results = data.get(variant_id)
-                    if variant_results:
-                        # Extract docking information from Unidock results
-                        best_score = variant_results.get("docking_score")
-                        pose_count = variant_results.get("pose_count", 1)
-                        result_file = variant_results.get("result_file")
-                        all_scores = variant_results.get("all_scores", [])
+                    variant_poses_dir = dock_dir / f"variant_{barcode}"
+                    variant_poses_dir.mkdir(exist_ok=True)
 
-                        # Log detailed docking results
-                        logger.info(f"Docking successful for {barcode}: score={best_score}, poses={pose_count}")
-                        if all_scores and len(all_scores) > 1:
-                            logger.info(f"All scores for {barcode}: {all_scores}")
-
-                        # Update variant with docking results
-                        variant.update({
-                            "status": "DOCKED",
+                    unidock_scores_file = variant_poses_dir / "unidock_results.json"
+                    try:
+                        unidock_data = {
+                            "variant_id": variant_id,
+                            "barcode": barcode,
+                            "smiles": smiles,
                             "docking_score": best_score,
                             "pose_count": pose_count,
                             "result_file": result_file,
                             "all_scores": all_scores,
-                            "barcode": barcode  # Ensure barcode is included for tracking
-                        })
+                            "workflow_status": "success",
+                            "docking_parameters": {
+                                "center": center,
+                                "box_size": box_size,
+                                "search_mode": exhaustiveness,
+                                "receptor": str(pdbfile)
+                            },
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        with open(unidock_scores_file, 'w') as f:
+                            json.dump(unidock_data, f, indent=4)
+                        logger.info(f"Saved comprehensive Unidock results to {unidock_scores_file}")
+                    except Exception as e:
+                        logger.error(f"Error saving Unidock results for {variant_id} ({barcode}): {e}")
 
-                        round_redock_results.append(variant)
-
-                        # Update tracking with docking results
-                        update_tracking_report(round_report, variant, "docking")
-                        update_tracking_report(master_report, variant, "docking")
-
-                        # Save docking outputs
-                        variant_poses_dir = dock_dir / f"variant_{barcode}"
-                        variant_poses_dir.mkdir(exist_ok=True)
-
-                        # Save comprehensive Unidock results summary to JSON
-                        unidock_scores_file = variant_poses_dir / "unidock_results.json"
+                    if result_file and Path(result_file).exists():
                         try:
-                            # Save the complete data extracted from result_storage
-                            unidock_data = {
-                                "variant_id": variant_id,
-                                "barcode": barcode,
-                                "smiles": smiles,
-                                "docking_score": best_score,
-                                "pose_count": pose_count,
-                                "result_file": result_file,
-                                "all_scores": all_scores,
-                                "workflow_status": status,
-                                "docking_parameters": {
-                                    "center": center,
-                                    "box_size": box_size,
-                                    "search_mode": exhaustiveness,
-                                    "receptor": str(pdbfile)
-                                },
-                                "timestamp": datetime.now().isoformat()
-                            }
-                            with open(unidock_scores_file, 'w') as f:
-                                json.dump(unidock_data, f, indent=4)
-                            logger.info(f"Saved comprehensive Unidock results to {unidock_scores_file}")
-                        except Exception as e:
-                            logger.error(f"Error saving Unidock results for {variant_id} ({barcode}): {e}")
-
-                        # Copy Unidock result files if they exist
-                        if result_file and Path(result_file).exists():
-                            try:
-                                dest_file = variant_poses_dir / Path(result_file).name
-                                shutil.copy2(result_file, dest_file)
-                                logger.info(f"Copied Unidock result file to {dest_file}")
-                            except Exception as copy_e:
-                                logger.warning(f"Could not copy Unidock result file for {barcode}: {copy_e}")
-
-                    else:
-                        logger.warning(f"Docking for {barcode} completed successfully but no results found for variant {variant_id}.")
-                        # Update status to indicate docking attempt but failure to get results
-                        variant["status"] = "DOCKFAIL_NORESULTS"
-                        update_tracking_report(round_report, {"barcode": barcode, "status": "DOCKFAIL_NORESULTS"}, "variant_status_update")
-                        update_tracking_report(master_report, {"barcode": barcode, "status": "DOCKFAIL_NORESULTS"}, "variant_status_update")
-
+                            dest_file = variant_poses_dir / Path(result_file).name
+                            shutil.copy2(result_file, dest_file)
+                            logger.info(f"Copied Unidock result file to {dest_file}")
+                        except Exception as copy_e:
+                            logger.warning(f"Could not copy Unidock result file for {barcode}: {copy_e}")
                 else:
-                    # Log error from result_storage or generic failure
-                    log_message = f"Docking failed for {barcode}. Status: {status}."
-                    if error_msg:
-                        log_message += f" Error: {error_msg}"
-                    logger.error(log_message)
-                    # Update status to indicate docking failure
+                    logger.warning(f"Docking failed or no results for {barcode} (variant {variant_id}).")
                     variant["status"] = "DOCKFAIL"
                     update_tracking_report(round_report, {"barcode": barcode, "status": "DOCKFAIL"}, "variant_status_update")
                     update_tracking_report(master_report, {"barcode": barcode, "status": "DOCKFAIL"}, "variant_status_update")
 
-            else:
-                # Thread creation failed (e.g., initial setup error in redock_compound)
-                logger.error(f"Could not start docking thread for {barcode}. Check previous logs for setup errors.")
-                status = result_storage.get("status", "error")
-                error_msg = result_storage.get("data", {}).get("error", "Setup failed before thread start.")
-                logger.error(f"Setup Error: {error_msg}")
-                # Update status to indicate setup failure
-                variant["status"] = "DOCKFAIL_SETUP"
-                update_tracking_report(round_report, {"barcode": barcode, "status": "DOCKFAIL_SETUP"}, "variant_status_update")
-                update_tracking_report(master_report, {"barcode": barcode, "status": "DOCKFAIL_SETUP"}, "variant_status_update")
-
-        logger.info(f"Round {round_num}: Finished processing docking for {len(filtered_variants)} variants.")
+        logger.info(f"Round {round_num}: Finished batch docking for {len(filtered_variants)} variants.")
         logger.info(f"Round {round_num}: Successfully docked and processed {len(round_redock_results)} variants.")
 
         # Clear GPU memory at the end of each round

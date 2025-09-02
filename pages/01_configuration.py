@@ -496,7 +496,7 @@ with tab1:
         st.number_input(
             "Number of Samples *",
             min_value=1,
-            max_value=500, # Adjust max if needed
+            max_value=5000, # Adjust max if needed
             step=1,
             help="Number of compounds to generate",
             key="n_samples_input"
