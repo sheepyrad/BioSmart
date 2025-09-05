@@ -1926,6 +1926,100 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                 else:
                     st.info("No compounds have both affinity and docking data for correlation analysis.")
 
+            # Boltz-2 Score Analysis Section (use precomputed column if available, else compute)
+            has_boltz_cols = (
+                ("affinity_pred_value1" in df.columns and df["affinity_pred_value1"].notna().any() and
+                 "affinity_probability_binary1" in df.columns and df["affinity_probability_binary1"].notna().any())
+                or
+                ("boltz2_score" in df.columns and df["boltz2_score"].notna().any())
+            )
+
+            if has_boltz_cols:
+                st.markdown("---")
+                st.subheader("🧮 Boltz-2 Score")
+
+                scored_data = df.copy()
+                # Use existing boltz2_score if present, otherwise compute strictly from ensemble-1 inputs
+                if "boltz2_score" not in scored_data.columns or scored_data["boltz2_score"].isna().all():
+                    use_aff = "affinity_pred_value1"
+                    use_prob = "affinity_probability_binary1"
+                    if use_aff in scored_data.columns and use_prob in scored_data.columns:
+                        try:
+                            scored_data = scored_data[scored_data[use_aff].notna() & scored_data[use_prob].notna()].copy()
+                            scored_data["boltz2_score"] = (
+                                scored_data.apply(lambda row: max(((-float(row[use_aff])) + 2.0) / 4.0, 0.0) * float(row[use_prob]), axis=1)
+                            )
+                        except Exception:
+                            scored_data["boltz2_score"] = pd.NA
+                    else:
+                        scored_data["boltz2_score"] = pd.NA
+
+                # Filter to rows with boltz2_score now
+                scored_data = scored_data[scored_data.get("boltz2_score").notna()] if "boltz2_score" in scored_data.columns else pd.DataFrame()
+
+                if not scored_data.empty:
+                    # Summary metrics (unique count by best identifier)
+                    score_col1, score_col2, score_col3, score_col4 = st.columns(4)
+                    # unique identification hierarchy
+                    if "variant_id" in scored_data.columns:
+                        unique_count = scored_data["variant_id"].nunique()
+                        high_score_count = scored_data[scored_data["boltz2_score"] > 0.5]["variant_id"].nunique()
+                        ident_caption = "unique variants"
+                    elif "barcode" in scored_data.columns:
+                        unique_count = scored_data["barcode"].nunique()
+                        high_score_count = scored_data[scored_data["boltz2_score"] > 0.5]["barcode"].nunique()
+                        ident_caption = "unique barcodes"
+                    elif "compound_id" in scored_data.columns:
+                        unique_count = scored_data["compound_id"].nunique()
+                        high_score_count = scored_data[scored_data["boltz2_score"] > 0.5]["compound_id"].nunique()
+                        ident_caption = "unique compounds"
+                    else:
+                        unique_count = len(scored_data)
+                        high_score_count = len(scored_data[scored_data["boltz2_score"] > 0.5])
+                        ident_caption = "entries"
+
+                    with score_col1:
+                        st.metric("Best Score", f"{scored_data['boltz2_score'].max():.4f}")
+                    with score_col2:
+                        st.metric("Average Score", f"{scored_data['boltz2_score'].mean():.4f}")
+                    with score_col3:
+                        st.metric("Compounds Scored", unique_count)
+                        if ident_caption != "entries":
+                            st.caption(f"({ident_caption})")
+                    with score_col4:
+                        st.metric("High Scores (>0.5)", high_score_count)
+
+                    # Top scoring (deduplicated by best identifier)
+                    st.markdown("**🏆 Top 10 Boltz-2 Scores**")
+                    if "variant_id" in scored_data.columns:
+                        top_scored = (scored_data
+                                      .loc[scored_data.groupby('variant_id')["boltz2_score"].idxmax()]
+                                      .nlargest(10, "boltz2_score"))
+                    elif "barcode" in scored_data.columns:
+                        top_scored = (scored_data
+                                      .loc[scored_data.groupby('barcode')["boltz2_score"].idxmax()]
+                                      .nlargest(10, "boltz2_score"))
+                    elif "compound_id" in scored_data.columns:
+                        top_scored = (scored_data
+                                      .loc[scored_data.groupby('compound_id')["boltz2_score"].idxmax()]
+                                      .nlargest(10, "boltz2_score"))
+                    else:
+                        top_scored = scored_data.nlargest(10, "boltz2_score")
+
+                    display_columns = ["compound_id", "boltz2_score"]
+                    if "variant_id" in top_scored.columns:
+                        display_columns.insert(1, "variant_id")
+                    if "barcode" in top_scored.columns:
+                        display_columns.insert(2, "barcode")
+                    for extra in ["affinity_pred_value1", "affinity_probability_binary1", "affinity_pred_value", "affinity_probability_binary", "docking_score", "round", "smiles"]:
+                        if extra in top_scored.columns and extra not in display_columns:
+                            display_columns.append(extra)
+
+                    existing_display_cols = [c for c in display_columns if c in top_scored.columns]
+                    st.dataframe(top_scored[existing_display_cols].round(3), use_container_width=True, hide_index=True)
+                else:
+                    st.info("No sufficient Boltz-2 inputs found to compute scores.")
+
         elif st.session_state.selected_view == "Compounds":
             st.header("Generated Compounds")
             

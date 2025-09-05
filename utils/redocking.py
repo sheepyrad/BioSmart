@@ -99,28 +99,40 @@ def run_ligand_prep(sdf_files: List[Path], output_dir: Path, batch_size: int = 1
         # Ensure output directory exists
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create comma-separated list of SDF files
-        ligands_str = ",".join(str(sdf_file) for sdf_file in sdf_files)
-        
-        # Run ligandprep command
-        command = [
-            "unidocktools", "ligandprep",
-            "-l", ligands_str,
-            "-sd", str(output_dir),
-            "-bs", str(batch_size)
-        ]
-        
-        log_callback(f"Running ligand preparation: {' '.join(command)}")
-        
-        result = env_manager.run_tool(
-            tool_name="unidocktools",
-            command=command,
-            timeout=1800,  # 30 minutes for ligand prep
-            capture_output=True,
-            text=True,
-            log_callback=log_callback,
-            stream_output=True
-        )
+        # Write ligand file paths to a temporary text file to avoid OS arg length limits
+        tmp_list_file = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as tmpf:
+                for sdf_file in sdf_files:
+                    tmpf.write(str(sdf_file) + "\n")
+                tmp_list_file = Path(tmpf.name)
+
+            # Run ligandprep command using -i <Txt File>
+            command = [
+                "unidocktools", "ligandprep",
+                "-i", str(tmp_list_file),
+                "-sd", str(output_dir),
+                "-bs", str(batch_size)
+            ]
+
+            log_callback(f"Running ligand preparation: {' '.join(command)}")
+
+            result = env_manager.run_tool(
+                tool_name="unidocktools",
+                command=command,
+                timeout=1800,  # 30 minutes for ligand prep
+                capture_output=True,
+                text=True,
+                log_callback=log_callback,
+                stream_output=True
+            )
+        finally:
+            # Clean up temp list file
+            if tmp_list_file and tmp_list_file.exists():
+                try:
+                    tmp_list_file.unlink()
+                except Exception:
+                    pass
         
         if result.returncode == 0:
             log_callback(f"Ligand preparation completed successfully: {output_dir}")

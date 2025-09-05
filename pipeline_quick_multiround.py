@@ -61,14 +61,15 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
          n_samples=200, sanitize=True, center=(114.817, 75.602, 82.416), box_size=(38, 70, 58),
          bbox_size=23.0, exhaustiveness="balance", top_n=5, max_variants=5, num_rounds=1, 
          score_threshold=0.7, boltz_pocket_residues=None, medchem_rule_threshold=13, 
-         medchem_structural_threshold=27, medchem_filter_mode="threshold", stop_flag=None, cgflow_config=None):
+         medchem_structural_threshold=27, medchem_filter_mode="threshold", stop_flag=None, cgflow_config=None,
+         msa_path="/home/conrad_hku/Drug_pipeline/msa/NS5_full.a3m"):
     """
     Multi-round quick pipeline main function with batch filtering optimization.
     
     Args:
         out_dir: Output directory for results
-        model_choice: Model to use for molecule generation ('diffsbdd' or 'pocket2mol')
-        checkpoint: Path to model checkpoint (DiffSBDD only)
+        model_choice: Model to use for molecule generation ('diffsbdd', 'pocket2mol', or 'cgflow')
+        checkpoint: Path to model checkpoint (DiffSBDD or CGFlow)
         pdbfile: Path to target protein PDB file (used for both generation and docking)
         resi_list: Residue identifiers (DiffSBDD only)
         n_samples: Number of samples to generate
@@ -86,6 +87,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         medchem_structural_threshold: Minimum number of structural/functional filters a compound must pass (default: 27)
         medchem_filter_mode: Either 'threshold' to use pass-count filtering or 'generative' to require both generative design rules
         stop_flag: Dictionary containing status information for stopping the pipeline
+        cgflow_config: Path to CGFlow YAML config (CGFlow only)
     """
     # Set up output directories
     out_dir = Path(out_dir)
@@ -131,6 +133,16 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
     
     # Log the model being used
     logger.info(f"Using {model_choice.upper()} model for molecule generation")
+    # Validate CGFlow parameters when applicable
+    if model_choice == 'cgflow':
+        if not cgflow_config:
+            error_msg = "CGFlow selected but 'cgflow_config' is missing."
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        if not checkpoint:
+            error_msg = "CGFlow selected but 'checkpoint' is missing."
+            logger.error(error_msg)
+            raise ValueError(error_msg)
     
     # Log initial GPU memory usage
     if model_choice == 'pocket2mol':
@@ -418,8 +430,11 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             variants=filtered_variants,
             pdb_file=pdbfile,
             round_dir=round_dir,
+            msa_path=msa_path,
             pocket_residues=pocket_residues_list,
             log_callback=logger.info,
+            round_report=round_report,
+            master_report=master_report,
         )
 
         # Update tracking for all variants processed by Boltz-2 (annotations only)
@@ -587,6 +602,8 @@ if __name__ == "__main__":
     # CGFlow parameters
     parser.add_argument("--cgflow_config", type=str, default="",
                         help="Path to CGFlow YAML config (CGFlow only)")
+    parser.add_argument("--cgflow_checkpoint", type=str, default="",
+                        help="Path to CGFlow checkpoint (.pt) (CGFlow only)")
     
     parser.add_argument("--pdbfile", type=str, default="input/NS5.pdb",
                         help="Path to target protein PDB file")
@@ -630,7 +647,7 @@ if __name__ == "__main__":
     main(
         args.out_dir,
         model_choice=args.model,
-        checkpoint=args.checkpoint,
+        checkpoint=(args.cgflow_checkpoint if args.model == "cgflow" and args.cgflow_checkpoint else args.checkpoint),
         pdbfile=args.pdbfile,
         resi_list=args.resi_list,
         n_samples=args.n_samples,

@@ -507,7 +507,7 @@ def format_status(status: str) -> str:
         return status
 
 # Add the missing load_all_data function
-@st.cache_data
+@st.cache_data(ttl=10)
 def load_all_data(outputs_path: str):
     """Load all data with caching."""
     outputs_path_obj = Path(outputs_path)
@@ -535,6 +535,15 @@ def main():
         help="Path to the directory containing your pipeline outputs with round_* folders"
     )
     
+    # Refresh controls
+    st.sidebar.subheader("🔄 Refresh")
+    if st.sidebar.button("Refresh data now"):
+        try:
+            load_all_data.clear()
+        except Exception:
+            pass
+        st.rerun()
+
     # Educational information box
     st.markdown("""
     <div class="info-box">

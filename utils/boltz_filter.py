@@ -11,6 +11,7 @@ from Bio.PDB.cealign import CEAligner
 
 # Import the new environment manager
 from .environment_manager import env_manager
+from .tracking import update_tracking_report
 
 logger = logging.getLogger(__name__)
 
@@ -373,6 +374,7 @@ def boltz_filter_variants(
     box_size: Tuple[int, int, int],
     pocket_residues: Union[List[int], None] = None,
     log_callback: Union[Callable[[str], None], None] = None,
+    msa_path: Union[str, Path, None] = None,
 ) -> Tuple[List[dict], List[dict]]:
     """Run the Boltz-2 blind-docking filter over a list of variants.
 
@@ -407,6 +409,10 @@ def boltz_filter_variants(
             failed.append(variant)
         return passed, failed
     
+    # Resolve MSA path fallback
+    if not msa_path:
+        msa_path = "/home/conrad_hku/Drug_pipeline/msa/NS5_full.a3m"
+
     for variant in variants:
         barcode = variant.get("barcode", "UNKNOWN")
         smiles = variant.get("smiles")
@@ -427,8 +433,7 @@ def boltz_filter_variants(
             input_yaml = var_root / "input.yaml"
 
             # Step 1 – Create YAML file --------------------------------------------
-            msa_path = "/home/conrad_hku/Drug_pipeline/msa/uniref_cleaned.a3m"
-            _create_boltz_yaml(input_yaml, protein_sequence, smiles, msa_path, pocket_residues, log_callback)
+            _create_boltz_yaml(input_yaml, protein_sequence, smiles, str(msa_path), pocket_residues, log_callback)
 
             # Step 2 – Run Boltz-2 prediction with --use_potentials -----------
             boltz_output_dir = var_root
@@ -549,8 +554,11 @@ def boltz_predict_variants(
     variants: List[dict],
     pdb_file: Union[str, Path],
     round_dir: Path,
+    msa_path: Union[str, Path, None] = None,
     pocket_residues: Union[List[int], None] = None,
     log_callback: Union[Callable[[str], None], None] = None,
+    round_report: Union[str, Path, None] = None,
+    master_report: Union[str, Path, None] = None,
 ) -> List[dict]:
     """Run Boltz-2 predictions to annotate variants without filtering.
 
@@ -576,6 +584,10 @@ def boltz_predict_variants(
             log_callback("[Boltz-2] Could not extract protein sequence. Skipping Boltz predictions but continuing pipeline.")
         return variants
 
+    # Resolve MSA path fallback
+    if not msa_path:
+        msa_path = "/home/conrad_hku/Drug_pipeline/msa/NS5_full.a3m"
+
     for variant in variants:
         barcode = variant.get("barcode", "UNKNOWN")
         smiles = variant.get("smiles")
@@ -596,8 +608,7 @@ def boltz_predict_variants(
             input_yaml = var_root / "input.yaml"
 
             # Create YAML
-            msa_path = "/home/conrad_hku/Drug_pipeline/msa/uniref_cleaned.a3m"
-            _create_boltz_yaml(input_yaml, protein_sequence, smiles, msa_path, pocket_residues, log_callback)
+            _create_boltz_yaml(input_yaml, protein_sequence, smiles, str(msa_path), pocket_residues, log_callback)
 
             # Run prediction
             if not _run_cmd(
@@ -657,6 +668,20 @@ def boltz_predict_variants(
                     prob = affinity_data.get("affinity_probability_binary", "N/A")
                     log_callback(f"[Boltz-2] {barcode} affinity: {val} (probability: {prob})")
 
+            # Compute Boltz-2 score (paper formula) strictly using ensemble-1 values when available
+            try:
+                if (
+                    "affinity_pred_value1" in variant and variant.get("affinity_pred_value1") is not None and
+                    "affinity_probability_binary1" in variant and variant.get("affinity_probability_binary1") is not None
+                ):
+                    try:
+                        boltz2_score = max(((-float(variant["affinity_pred_value1"])) + 2.0) / 4.0, 0.0) * float(variant["affinity_probability_binary1"])
+                        variant["boltz2_score"] = float(boltz2_score)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             # Attach confidence data
             if confidence_data:
                 for key in [
@@ -675,6 +700,61 @@ def boltz_predict_variants(
 
             # Mark Boltz as done without altering selection status
             variant["boltz_done"] = True
+
+            # Warn if ensemble-1 predictions are missing (should be present when Boltz finishes)
+            if not (
+                "affinity_pred_value1" in variant and variant.get("affinity_pred_value1") is not None and
+                "affinity_probability_binary1" in variant and variant.get("affinity_probability_binary1") is not None
+            ):
+                variant["boltz_ensemble1_missing"] = True
+                if log_callback:
+                    log_callback(f"[Boltz-2] Warning: ensemble-1 predictions missing for {barcode}; Boltz-2 score requires ensemble-1.")
+
+            # Incrementally update tracking reports with Boltz annotations
+            try:
+                if round_report is not None:
+                    update_tracking_report(Path(round_report), {
+                        "barcode": barcode,
+                        "affinity_pred_value": variant.get("affinity_pred_value"),
+                        "affinity_probability_binary": variant.get("affinity_probability_binary"),
+                        "affinity_pred_value1": variant.get("affinity_pred_value1"),
+                        "affinity_probability_binary1": variant.get("affinity_probability_binary1"),
+                        "affinity_pred_value2": variant.get("affinity_pred_value2"),
+                        "affinity_probability_binary2": variant.get("affinity_probability_binary2"),
+                        "confidence_score": variant.get("confidence_score"),
+                        "ptm": variant.get("ptm"),
+                        "iptm": variant.get("iptm"),
+                        "ligand_iptm": variant.get("ligand_iptm"),
+                        "protein_iptm": variant.get("protein_iptm"),
+                        "complex_plddt": variant.get("complex_plddt"),
+                        "complex_iplddt": variant.get("complex_iplddt"),
+                        "boltz2_score": variant.get("boltz2_score"),
+                        "boltz_ensemble1_missing": variant.get("boltz_ensemble1_missing"),
+                        "boltz_done": True,
+                    }, report_type="variant_status_update")
+                if master_report is not None:
+                    update_tracking_report(Path(master_report), {
+                        "barcode": barcode,
+                        "affinity_pred_value": variant.get("affinity_pred_value"),
+                        "affinity_probability_binary": variant.get("affinity_probability_binary"),
+                        "affinity_pred_value1": variant.get("affinity_pred_value1"),
+                        "affinity_probability_binary1": variant.get("affinity_probability_binary1"),
+                        "affinity_pred_value2": variant.get("affinity_pred_value2"),
+                        "affinity_probability_binary2": variant.get("affinity_probability_binary2"),
+                        "confidence_score": variant.get("confidence_score"),
+                        "ptm": variant.get("ptm"),
+                        "iptm": variant.get("iptm"),
+                        "ligand_iptm": variant.get("ligand_iptm"),
+                        "protein_iptm": variant.get("protein_iptm"),
+                        "complex_plddt": variant.get("complex_plddt"),
+                        "complex_iplddt": variant.get("complex_iplddt"),
+                        "boltz2_score": variant.get("boltz2_score"),
+                        "boltz_ensemble1_missing": variant.get("boltz_ensemble1_missing"),
+                        "boltz_done": True,
+                    }, report_type="variant_status_update")
+            except Exception as e:  # pragma: no cover
+                if log_callback:
+                    log_callback(f"[Boltz-2] Warning: failed to update tracking for {barcode}: {e}")
 
         except Exception as exc:  # pragma: no cover
             if log_callback:

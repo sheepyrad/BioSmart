@@ -241,6 +241,7 @@ def run_pipeline(config, status_dict, stop_event):
             "num_rounds": config["num_rounds"],
             "score_threshold": config.get("score_threshold", 0.7),  # Add score threshold with default
             "boltz_pocket_residues": config.get("boltz_pocket_residues", ""),  # Add Boltz-2 pocket residues
+            "msa_path": config.get("msa_path", "/home/conrad_hku/Drug_pipeline/msa/uniref_cleaned.a3m"),
             
             # Add MedChem filter thresholds
             "medchem_rule_threshold": config.get("medchem_rule_threshold", 13),
@@ -264,9 +265,18 @@ def run_pipeline(config, status_dict, stop_event):
                 "box_size": config.get("box_size", [40, 40, 40])  # Still needed for docking
             })
         else:  # cgflow
+            # Enforce presence of updated CGFlow flags from configuration
+            if not config.get("cgflow_config"):
+                raise ValueError("Missing 'cgflow_config' in configuration for CGFlow model.")
+            if not config.get("checkpoint"):
+                raise ValueError("Missing 'checkpoint' in configuration for CGFlow model.")
+
+            logger.info(f"CGFlow config path: {config['cgflow_config']}")
+            logger.info(f"CGFlow checkpoint path: {config['checkpoint']}")
+
             pipeline_params.update({
-                "cgflow_config": config.get("cgflow_config", "src/cgflow/configs/opt/NS5.yaml"),
-                "checkpoint": config.get("checkpoint", "src/cgflow/result/opt/unidock_qed/NS5/250812_160000/model_state.pt"),
+                "cgflow_config": config["cgflow_config"],
+                "checkpoint": config["checkpoint"],
                 # Docking box still required downstream
                 "box_size": config.get("box_size", [38, 70, 58])
             })

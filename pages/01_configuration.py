@@ -119,6 +119,8 @@ if "score_threshold_input" not in st.session_state:
 # Boltz-2 Specific
 if "boltz_pocket_residues_input" not in st.session_state:
     st.session_state.boltz_pocket_residues_input = ""
+if "msa_path_input" not in st.session_state:
+    st.session_state.msa_path_input = "/home/conrad_hku/Drug_pipeline/msa/NS5_full.a3m"
 
 # Box Generation Input
 if "generate_box_residues_input" not in st.session_state:
@@ -131,6 +133,12 @@ if "medchem_structural_threshold" not in st.session_state:
     st.session_state.medchem_structural_threshold = 27
 if "medchem_filter_mode" not in st.session_state:
     st.session_state.medchem_filter_mode = "threshold"
+
+# CGFlow Specific
+if "cgflow_checkpoint_path" not in st.session_state:
+    st.session_state.cgflow_checkpoint_path = "src/cgflow/result/opt/unidock_qed/NS5/250812_160000/model_state.pt"
+if "cgflow_config_path" not in st.session_state:
+    st.session_state.cgflow_config_path = "src/cgflow/configs/opt/NS5.yaml"
 
 # --- Control flow for applying loaded config ---
 if "_apply_loaded_config_on_next_run" not in st.session_state:
@@ -166,6 +174,7 @@ if st.session_state._apply_loaded_config_on_next_run:
             
             # Load Boltz-2 configuration
             st.session_state.boltz_pocket_residues_input = pending_config.get("boltz_pocket_residues", st.session_state.boltz_pocket_residues_input)
+            st.session_state.msa_path_input = pending_config.get("msa_path", st.session_state.msa_path_input)
 
             # Load MedChem filter thresholds
             st.session_state.medchem_rule_threshold = int(pending_config.get("medchem_rule_threshold", st.session_state.medchem_rule_threshold))
@@ -188,6 +197,9 @@ if st.session_state._apply_loaded_config_on_next_run:
                     st.session_state.pocket2mol_dock_size_x = float(pending_config["box_size"][0])
                     st.session_state.pocket2mol_dock_size_y = float(pending_config["box_size"][1])
                     st.session_state.pocket2mol_dock_size_z = float(pending_config["box_size"][2])
+            elif current_model_loaded == "cgflow":
+                st.session_state.cgflow_checkpoint_path = pending_config.get("checkpoint", st.session_state.cgflow_checkpoint_path)
+                st.session_state.cgflow_config_path = pending_config.get("cgflow_config", st.session_state.cgflow_config_path)
 
             apply_success = True
             st.success("Configuration loaded successfully and fields updated. Review and finalize.")
@@ -408,6 +420,10 @@ if st.session_state.model_update_requested:
         st.session_state.pocket2mol_dock_size_x = 20.0
         st.session_state.pocket2mol_dock_size_y = 20.0
         st.session_state.pocket2mol_dock_size_z = 20.0
+        if "cgflow_checkpoint_path" not in st.session_state:
+            st.session_state.cgflow_checkpoint_path = "src/cgflow/result/opt/unidock_qed/NS5/250812_160000/model_state.pt"
+        if "cgflow_config_path" not in st.session_state:
+            st.session_state.cgflow_config_path = "src/cgflow/configs/opt/NS5.yaml"
     st.session_state.model_update_requested = False
     st.rerun()
 
@@ -487,6 +503,16 @@ with tab1:
     else:
         st.subheader("CGFlow")
         st.info("Using a fine-tuned CGFlow checkpoint specific to the target pocket. Only common parameters, Boltz-2, MedChem and output directory are shown.")
+        st.text_input(
+            "Checkpoint Path (.pt) *",
+            help="Path to the fine-tuned CGFlow checkpoint file on the server",
+            key="cgflow_checkpoint_path"
+        )
+        st.text_input(
+            "Config Path (.yaml) *",
+            help="Path to the CGFlow YAML configuration file on the server",
+            key="cgflow_config_path"
+        )
 
     # Common parameters - simplified since Unidock handles program choice and scoring
     col3, col4 = st.columns(2)
@@ -767,6 +793,14 @@ with tab3:
         key="boltz_pocket_residues_input"
     )
     
+    # MSA file path for Boltz-2
+    st.text_input(
+        "MSA File Path (.a3m)",
+        placeholder="/path/to/alignment.a3m",
+        help="Absolute path to a precomputed MSA in A3M format used by Boltz-2.",
+        key="msa_path_input"
+    )
+    
     st.caption("""
     **Pocket Constraints:** Specify key residues that define the binding pocket for Boltz-2 structure prediction. 
     These should be residue numbers (1-indexed) that are important for ligand binding. 
@@ -905,8 +939,8 @@ with col_dl:
             ]
         else:
             # cgflow presets
-            download_config["checkpoint"] = "src/cgflow/result/opt/unidock_qed/NS5/250812_160000/model_state.pt"
-            download_config["cgflow_config"] = "src/cgflow/configs/opt/NS5.yaml"
+            download_config["checkpoint"] = st.session_state.cgflow_checkpoint_path
+            download_config["cgflow_config"] = st.session_state.cgflow_config_path
             # Docking box for CGFlow
             download_config["box_size"] = [
                 st.session_state.pocket2mol_dock_size_x,
@@ -925,6 +959,7 @@ with col_dl:
         
         # Add Boltz-2 configuration
         download_config["boltz_pocket_residues"] = st.session_state.boltz_pocket_residues_input
+        download_config["msa_path"] = st.session_state.msa_path_input
         
         # Add MedChem filter thresholds
         download_config["medchem_rule_threshold"] = st.session_state.medchem_rule_threshold
@@ -1112,8 +1147,8 @@ if finalize_submitted:
                 ]
             else:  # cgflow
                 # Default CGFlow settings; not exposed in UI per requirements
-                config["checkpoint"] = "src/cgflow/result/opt/unidock_qed/NS5/250812_160000/model_state.pt"
-                config["cgflow_config"] = "src/cgflow/configs/opt/NS5.yaml"
+                config["checkpoint"] = st.session_state.cgflow_checkpoint_path
+                config["cgflow_config"] = st.session_state.cgflow_config_path
                 # Docking box for CGFlow (reuses docking keys)
                 config["box_size"] = [
                     st.session_state.pocket2mol_dock_size_x,
@@ -1132,6 +1167,7 @@ if finalize_submitted:
             
             # Add Boltz-2 configuration
             config["boltz_pocket_residues"] = st.session_state.boltz_pocket_residues_input
+            config["msa_path"] = st.session_state.msa_path_input
             
             # Add MedChem filter thresholds
             config["medchem_rule_threshold"] = st.session_state.medchem_rule_threshold

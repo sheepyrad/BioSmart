@@ -1897,9 +1897,14 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
                 else:
                     st.info("No compounds have both affinity and docking data for correlation analysis.")
             
-            # Boltz-2 Score Analysis Section
-            if ("affinity_pred_value1" in df.columns and df["affinity_pred_value1"].notna().any() and
-                "affinity_probability_binary1" in df.columns and df["affinity_probability_binary1"].notna().any()):
+            # Boltz-2 Score Analysis Section (use precomputed column if available, else compute from available inputs)
+            has_boltz_cols = (
+                ("affinity_pred_value1" in df.columns and df["affinity_pred_value1"].notna().any() and
+                 "affinity_probability_binary1" in df.columns and df["affinity_probability_binary1"].notna().any())
+                or
+                ("boltz2_score" in df.columns and df["boltz2_score"].notna().any())
+            )
+            if has_boltz_cols:
                 
                 st.markdown("---")
                 st.subheader("🧮 Boltz-2 Score (From Paper)")
@@ -1908,26 +1913,31 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
                 **Formula:** score = max((-affinity + 2) / 4, 0) × likelihood
                 
                 Where:
-                - **affinity**: `affinity_pred_value1` (first ensemble model, log(IC50) scale, lower = better binding)
-                - **likelihood**: `affinity_probability_binary1` (0-1 scale, higher = more confident)
+                - **affinity**: log(IC50) prediction (lower = better). Prefer ensemble-1 if present.
+                - **likelihood**: binding probability (0-1 scale). Prefer ensemble-1 if present.
                 
-                **Note:** Uses the first ensemble model predictions (`affinity_pred_value1`) as specified in the Boltz-2 screening methodology.
+                **Note:** If `boltz2_score` exists in the tracking file it will be used directly; otherwise it is computed on-the-fly.
                 """)
                 
-                # Filter data that has both required values
-                scored_data = df[
-                    df["affinity_pred_value1"].notna() & 
-                    df["affinity_probability_binary1"].notna()
-                ].copy()
+                # Use/compute score
+                if "boltz2_score" in df.columns and df["boltz2_score"].notna().any():
+                    scored_data = df[df["boltz2_score"].notna()].copy()
+                else:
+                    scored_data = df.copy()
+                    use_aff = "affinity_pred_value1"
+                    use_prob = "affinity_probability_binary1"
+                    if use_aff in scored_data.columns and use_prob in scored_data.columns:
+                        scored_data = scored_data[scored_data[use_aff].notna() & scored_data[use_prob].notna()].copy()
+                        try:
+                            scored_data["boltz2_score"] = (
+                                scored_data.apply(lambda row: max(((-float(row[use_aff])) + 2.0) / 4.0, 0.0) * float(row[use_prob]), axis=1)
+                            )
+                        except Exception:
+                            scored_data["boltz2_score"] = pd.NA
+                    else:
+                        scored_data = pd.DataFrame()
                 
                 if not scored_data.empty:
-                    # Calculate Boltz-2 score using the formula with first ensemble model
-                    scored_data["boltz2_score"] = (
-                        scored_data.apply(lambda row: 
-                            max((-row["affinity_pred_value1"] + 2) / 4, 0) * row["affinity_probability_binary1"], 
-                            axis=1)
-                    )
-                    
                     # Create summary metrics with proper unique counting
                     score_col1, score_col2, score_col3, score_col4 = st.columns(4)
                     
