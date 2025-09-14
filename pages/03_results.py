@@ -1989,6 +1989,22 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                     with score_col4:
                         st.metric("High Scores (>0.5)", high_score_count)
 
+                    # Boltz-2 score distribution
+                    st.markdown("**Score Distribution**")
+                    try:
+                        fig_boltz_hist = px.histogram(
+                            scored_data,
+                            x="boltz2_score",
+                            nbins=20,
+                            title="Distribution of Boltz-2 Scores",
+                            color_discrete_sequence=["#38a169"],
+                            labels={"boltz2_score": "Boltz-2 Score", "count": "Number of Compounds"}
+                        )
+                        fig_boltz_hist.update_layout(bargap=0.1)
+                        st.plotly_chart(fig_boltz_hist, use_container_width=True)
+                    except Exception as e:
+                        st.warning(f"Could not render Boltz-2 score histogram: {e}")
+
                     # Top scoring (deduplicated by best identifier)
                     st.markdown("**🏆 Top 10 Boltz-2 Scores**")
                     if "variant_id" in scored_data.columns:

@@ -3,7 +3,7 @@
     "pdbfile": "/home/conrad_hku/Drug_pipeline/input/NS5_crop_renum.pdb",
     "receptor": "/home/conrad_hku/Drug_pipeline/input/NS5_crop_renum.pdb",
     "checkpoint": "/home/conrad_hku/Drug_pipeline/src/cgflow/result/opt/unidock_qed/NS5/250901_064541/model_state.pt",
-    "cgflow_config": "/home/conrad_hku/Drug_pipeline/src/cgflow/result/opt/unidock_qed/NS5/250901_064541/config.yaml",
+    "cgflow_config": "/home/conrad_hku/Drug_pipeline/src/cgflow/configs/opt/NS5_crop.yaml",
     "box_size": [
         20.0,
         20.0,

@@ -15,6 +15,8 @@ import threading
 import time
 import select
 import sys
+import shutil
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +24,7 @@ logger = logging.getLogger(__name__)
 TOOL_ENVIRONMENTS = {
     "diffsbdd": "diffsbdd-env",
     "pocket2mol": "pocket2mol-env", 
-    "cgflow": "cgflow",
+    "cgflow": "cgflow-env",
     "synformer": "synformer-env",
     "boltz": "boltz-env",
     "unidock": "unidock-env",  # unidock command is in unidock-env
@@ -35,6 +37,38 @@ class EnvironmentManager:
     
     def __init__(self):
         self.environments = TOOL_ENVIRONMENTS.copy()
+        # Resolve the conda/mamba executable once to avoid PATH issues when invoked from other environments
+        self._runner_executable, self._runner_name = self._resolve_conda_executable()
+
+    def _resolve_conda_executable(self) -> Tuple[Optional[str], str]:
+        """Resolve the path to a conda-compatible runner (conda or mamba).
+
+        Returns a tuple of (executable_path or None, runner_name: 'conda'|'mamba'|'unknown').
+        """
+        # Prefer explicit environment variables
+        conda_exe = os.environ.get("CONDA_EXE")
+        if conda_exe and os.path.isfile(conda_exe):
+            return conda_exe, "conda"
+
+        mamba_exe = os.environ.get("MAMBA_EXE")
+        if mamba_exe and os.path.isfile(mamba_exe):
+            return mamba_exe, "mamba"
+
+        # Fallback to PATH lookups
+        path_conda = shutil.which("conda")
+        if path_conda:
+            return path_conda, "conda"
+
+        path_mamba = shutil.which("mamba")
+        if path_mamba:
+            return path_mamba, "mamba"
+
+        return None, "unknown"
+
+    def _build_conda_run_cmd(self, env_name: str, cmd_list: List[str]) -> List[str]:
+        """Build the full command to run something inside an environment with the resolved runner."""
+        runner = self._runner_executable or "conda"
+        return [runner, "run", "-n", env_name] + cmd_list
     
     def _stream_output(self, process, log_callback, result_storage, timeout=None):
         """Stream subprocess output in real-time to log callback with timeout support."""
@@ -140,9 +174,9 @@ class EnvironmentManager:
         else:
             cmd_list = command
         
-        # Construct the conda run command
-        # Always use conda run -n <env_name> since we may be running from a different conda env (e.g., Streamlit frontend)
-        conda_cmd = ["conda", "run", "-n", env_name] + cmd_list
+        # Construct the conda/mamba run command using resolved executable
+        # Always use <runner> run -n <env_name> since we may be running from a different conda env (e.g., Streamlit frontend)
+        conda_cmd = self._build_conda_run_cmd(env_name, cmd_list)
         
         if log_callback:
             log_callback(f"Running in {env_name}: {' '.join(cmd_list)}")
@@ -340,14 +374,37 @@ class EnvironmentManager:
             True if environment exists and is accessible, False otherwise
         """
         try:
-            # Always use conda run -n <env_name> for consistency
+            # Prefer using resolved runner to avoid PATH issues
+            run_cmd = self._build_conda_run_cmd(env_name, ["python", "--version"])
             result = subprocess.run(
-                ["conda", "run", "-n", env_name, "python", "--version"],
+                run_cmd,
                 capture_output=True,
                 text=True,
                 timeout=30
             )
-            return result.returncode == 0
+            if result.returncode == 0:
+                return True
+
+            # Fallback: if python is not present in env, at least verify the env exists via `conda env list --json`
+            list_cmd = [self._runner_executable or "conda", "env", "list", "--json"]
+            list_result = subprocess.run(
+                list_cmd,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if list_result.returncode == 0:
+                try:
+                    data = json.loads(list_result.stdout or "{}")
+                    # The JSON payload contains either 'envs' (paths) or 'default_prefix'
+                    env_paths: List[str] = data.get("envs", [])
+                    # Determine if any env path ends with the env_name
+                    for env_path in env_paths:
+                        if env_path.endswith(os.path.sep + env_name) or os.path.basename(env_path) == env_name:
+                            return True
+                except Exception:
+                    pass
+            return False
         except Exception:
             return False
     
