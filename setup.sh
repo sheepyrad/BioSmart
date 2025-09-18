@@ -112,15 +112,15 @@ fi
 echo_step "Setting up CGFlow environment"
 
 # Create conda env and install dependencies per user instructions
-if ! conda env list | grep -q "^cgflow "; then
+if ! conda env list | grep -q "^cgflow-env "; then
     echo "Creating cgflow conda environment"
-    conda create -y -n cgflow python=3.11
+    conda create -y -n cgflow-env python=3.11
 else
-    echo "Conda environment 'cgflow' already exists. Skipping creation."
+    echo "Conda environment 'cgflow-env' already exists. Skipping creation."
 fi
 
 echo "Installing PyTorch + PyG into cgflow env"
-conda run -n cgflow pip install torch==2.6.0 \
+conda run -n cgflow-env pip install torch==2.6.0 \
     torch-geometric>=2.4.0 \
     torch-scatter>=2.1.2 \
     torch-sparse>=0.6.18 \
@@ -128,11 +128,11 @@ conda run -n cgflow pip install torch==2.6.0 \
     -f https://data.pyg.org/whl/torch-2.6.0+cu124.html
 
 echo "Installing cgflow package in editable mode"
-conda run -n cgflow pip install -e src/cgflow
+conda run -n cgflow-env pip install -e src/cgflow
 
 echo "Installing UniDock and extras"
-conda run -n cgflow conda install -y -c conda-forge unidock || true
-conda run -n cgflow pip install -e 'src/cgflow[unidock]'
+conda run -n cgflow-env conda install -y -c conda-forge unidock || true
+conda run -n cgflow-env pip install -e 'src/cgflow[unidock]'
 
 # 4. Create Synformer environment
 echo_step "Setting up Synformer environment"
@@ -203,31 +203,13 @@ create_env_if_not_exists "unidock-env" "$ENV_DIR/unidock.yml"
 echo_step "Setting up Uni-GBSA environment"
 create_env_if_not_exists "unigbsa-env" "$ENV_DIR/unigbsa.yml"
 
-# Setup VFU
-echo_step "Setting up VFU executables"
-if [ -d "src/VFU/executables" ]; then
-    cd src/VFU/executables
-    echo "Changed directory to $(pwd)"
-
-    # Make VFU executables executable
-    echo "Making files in $(pwd) executable"
-    chmod +x *
-
-    cd ../../.. # Go back to the root of the repo
-    echo "Changed directory back to $(pwd)"
-elif [ -d "src/VFU" ]; then
-     echo "Warning: Directory src/VFU/executables not found, but src/VFU exists."
-else
-    echo "Warning: Directory src/VFU not found. Skipping VFU setup."
-fi
-
 echo "=========================================="
 echo "Setup script finished."
 echo "=========================================="
 echo "Created the following conda environments:"
 echo "  - diffsbdd-env     (for DiffSBDD)"
 echo "  - pocket2mol-env   (for Pocket2Mol)"
-echo "  - cgflow           (for CGFlow)"
+echo "  - cgflow-env       (for CGFlow)"
 echo "  - synformer-env    (for Synformer)"
 echo "  - boltz-env        (for Boltz)"
 echo "  - unidock-env      (for Uni-dock)"

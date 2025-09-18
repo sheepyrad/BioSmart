@@ -44,6 +44,7 @@ from utils.redocking import redock_compound, run_batch_compound_redocking
 from utils.retrosynformer import run_retrosynthesis
 from utils.medchem_filter import filter_by_pass_count, filter_by_generative_design, generate_filter_plots
 from utils.boltz_filter import boltz_predict_variants
+from utils.chemap_filter import chemap_filter_variants
 
 # Import helper functions moved to dedicated utility modules
 from utils.molecule_processing import extract_smiles_from_sdf, smiles_to_sdf, extract_best_pose_and_score
@@ -104,7 +105,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
     env_status = env_manager.check_all_environments()
     
     # Check if required environments are available based on model choice
-    required_envs = ["synformer", "boltz", "unidock", "unidocktools"]  # Always needed for docking
+    required_envs = ["synformer", "boltz", "unidock", "unidocktools", "chemap"]  # Always needed for docking and ChemAP
     if model_choice.lower() == "diffsbdd":
         required_envs.append("diffsbdd")
     elif model_choice.lower() == "pocket2mol":
@@ -405,7 +406,46 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             update_tracking_report(master_report, variant, "variant_status_update")
 
         # ------------------------------------------------------------------
-        # Step 6: Boltz-2 predictions (no filtering)
+        # Step 6: ChemAP FDA-approval prediction filtering
+        # ------------------------------------------------------------------
+        logger.info(
+            f"Round {round_num}: Running ChemAP FDA-approval predictions on {len(filtered_variants)} variants"
+        )
+
+        try:
+            approved_variants, chemap_df = chemap_filter_variants(
+                variants=filtered_variants,
+                round_dir=round_dir,
+                log_callback=logger.info,
+            )
+        except Exception as e:
+            logger.error(f"Round {round_num}: ChemAP step failed: {e}")
+            approved_variants = []
+
+        # Update tracking for ChemAP results
+        approved_smiles_set = set()
+        try:
+            if 'SMILES' in chemap_df.columns and 'ChemAP_pred' in chemap_df.columns:
+                approved_smiles_set = set(chemap_df[chemap_df['ChemAP_pred'] == 1]['SMILES'].astype(str).tolist())
+        except Exception:
+            approved_smiles_set = set(v.get('smiles') for v in approved_variants)
+
+        for variant in filtered_variants:
+            if variant.get('smiles') in approved_smiles_set:
+                variant["status"] = "CHEMAPPASS"
+            else:
+                variant["status"] = "CHEMAPFAIL"
+            update_tracking_report(round_report, variant, "variant_status_update")
+            update_tracking_report(master_report, variant, "variant_status_update")
+
+        if not approved_variants:
+            logger.warning(f"Round {round_num}: No variants approved by ChemAP. Skipping Boltz-2 and docking for this round.")
+            continue
+
+        filtered_variants = approved_variants
+
+        # ------------------------------------------------------------------
+        # Step 7: Boltz-2 predictions (no filtering)
         # ------------------------------------------------------------------
         logger.info(
             f"Round {round_num}: Running Boltz-2 predictions (no filtering) on {len(filtered_variants)} variants"

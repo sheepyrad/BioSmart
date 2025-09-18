@@ -380,6 +380,7 @@ dependencies:
       - amberutils==21.0
       - deprecation==2.1.0
       - edgembar==3.0
+      - streamlit-molstar
       - ipyspeck==0.6.1
       - ipywidgets==7.6.3
       - jupyter-packaging==0.12.3

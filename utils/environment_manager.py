@@ -29,7 +29,8 @@ TOOL_ENVIRONMENTS = {
     "boltz": "boltz-env",
     "unidock": "unidock-env",  # unidock command is in unidock-env
     "unidocktools": "unidock-env",  # unidocktools is in unidock-env
-    "unigbsa": "unigbsa-env"
+    "unigbsa": "unigbsa-env",
+    "chemap": "ChemAP"
 }
 
 class EnvironmentManager:

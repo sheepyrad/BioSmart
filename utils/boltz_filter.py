@@ -98,17 +98,25 @@ def _extract_protein_sequence_from_pdb(pdb_file: Path, log_cb: Callable[[str], N
         log_cb(f"[Boltz-2] Extracting protein sequence from PDB: {pdb_file}")
     
     try:
-        result = subprocess.run(
-            ["pdb_tofasta", str(pdb_file)], 
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.PIPE, 
-            text=True, 
-            check=True,
-            timeout=60  # 1 minute timeout for PDB conversion
+        # Run pdb_tofasta inside boltz-env via the environment manager
+        result = env_manager.run_tool(
+            tool_name="boltz",
+            command=["pdb_tofasta", str(pdb_file)],
+            timeout=60,
+            capture_output=True,
+            text=True,
+            check=False,
+            log_callback=log_cb,
+            stream_output=False
         )
         
+        if result.returncode != 0:
+            if log_cb:
+                log_cb(f"[Boltz-2] pdb_tofasta failed (exit {result.returncode}): {result.stderr.strip() if result.stderr else ''}")
+            return ""
+        
         # Parse FASTA output to extract sequence
-        lines = result.stdout.strip().split('\n')
+        lines = (result.stdout or "").strip().split('\n')
         sequence_lines = []
         
         for line in lines:
@@ -130,10 +138,6 @@ def _extract_protein_sequence_from_pdb(pdb_file: Path, log_cb: Callable[[str], N
             
         return sequence
         
-    except subprocess.CalledProcessError as exc:
-        if log_cb:
-            log_cb(f"[Boltz-2] pdb_tofasta failed (exit {exc.returncode}): {exc.stderr.strip()}")
-        return ""
     except subprocess.TimeoutExpired:
         if log_cb:
             log_cb(f"[Boltz-2] pdb_tofasta timed out for {pdb_file}")
