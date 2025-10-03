@@ -1,4 +1,4 @@
-name: ChemAP
+name: chemap-env
 channels:
   - conda-forge
   - pytorch
