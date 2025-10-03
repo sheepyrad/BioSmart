@@ -92,19 +92,19 @@ class GPUMemoryManager:
             
             # Run torch memory clearing in pocket2mol environment
             command = """
-import gc
-try:
-    import torch
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
-        gc.collect()
-        print("SUCCESS")
-    else:
-        print("NO_CUDA")
-except ImportError:
-    print("NO_TORCH")
-"""
+                        import gc
+                        try:
+                            import torch
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                                torch.cuda.synchronize()
+                                gc.collect()
+                                print("SUCCESS")
+                            else:
+                                print("NO_CUDA")
+                        except ImportError:
+                            print("NO_TORCH")
+                    """
             success, output = self._run_torch_command(command)
             
             if success and output == "SUCCESS":
@@ -130,27 +130,27 @@ except ImportError:
         """
         try:
             command = """
-import json
-try:
-    import torch
-    if torch.cuda.is_available():
-        allocated = torch.cuda.memory_allocated() / 1024**3
-        reserved = torch.cuda.memory_reserved() / 1024**3
-        total = torch.cuda.get_device_properties(0).total_memory / 1024**3
-        free = total - allocated
-        
-        result = {
-            "allocated": allocated,
-            "reserved": reserved, 
-            "total": total,
-            "free": free
-        }
-        print(json.dumps(result))
-    else:
-        print(json.dumps({"allocated": 0.0, "reserved": 0.0, "total": 0.0, "free": 0.0}))
-except ImportError:
-    print(json.dumps({"allocated": 0.0, "reserved": 0.0, "total": 0.0, "free": 0.0}))
-"""
+                        import json
+                        try:
+                            import torch
+                            if torch.cuda.is_available():
+                                allocated = torch.cuda.memory_allocated() / 1024**3
+                                reserved = torch.cuda.memory_reserved() / 1024**3
+                                total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                                free = total - allocated
+                                
+                                result = {
+                                    "allocated": allocated,
+                                    "reserved": reserved, 
+                                    "total": total,
+                                    "free": free
+                                }
+                                print(json.dumps(result))
+                            else:
+                                print(json.dumps({"allocated": 0.0, "reserved": 0.0, "total": 0.0, "free": 0.0}))
+                        except ImportError:
+                            print(json.dumps({"allocated": 0.0, "reserved": 0.0, "total": 0.0, "free": 0.0}))
+                    """
             success, output = self._run_torch_command(command)
             
             if success:

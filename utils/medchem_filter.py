@@ -26,67 +26,46 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 logger = logging.getLogger("MedChemFilter")
 logger.propagate = True
 
-def filter_by_pass_count(
-    input_variants: List[Dict[str, Any]],
-    rule_threshold: int = 13,
-    structural_threshold: int = 27,
-    smiles_key: str = 'smiles'
-) -> tuple[List[Dict[str, Any]], pd.DataFrame | None]: # Modified return type hint
+def _yield_batches(items, batch_size: int):
     """
-    Filters a list of compounds based on the number of MedChem rules and structural alerts passed.
-    
-    Args:
-        input_variants: A list of dictionaries, where each dictionary represents a compound
-                          and must contain at least a key for the SMILES string.
-        rule_threshold: The minimum number of rules a compound must pass.
-        structural_threshold: The minimum number of structural/functional filters a compound must pass.
-        smiles_key: The key in the input dictionaries corresponding to the SMILES string.
-        
-    Returns:
-        A tuple containing:
-          - List: The dictionaries of the variants that passed the filtering criteria.
-          - DataFrame or None: A DataFrame containing all filter results and pass counts for
-                                valid input molecules, or None if processing failed early.
+    Yield successive batches of size `batch_size` from `items` while preserving order.
+    """
+    for start_idx in range(0, len(items), batch_size):
+        yield items[start_idx:start_idx + batch_size]
+
+def _run_pass_count_on_batch(
+    input_variants: List[Dict[str, Any]],
+    rule_threshold: int,
+    structural_threshold: int,
+    smiles_key: str,
+):
+    """
+    Execute pass-count MedChem filters on a single batch and return (filtered_variants, results_df).
     """
     if not input_variants:
-        logger.warning("Received empty list for filtering. Returning empty list and None DataFrame.")
-        return [], None
-
-    logger.info(f"Starting MedChem filtering for {len(input_variants)} input compounds...")
-    logger.info(f"Rule threshold >= {rule_threshold}, Structural threshold >= {structural_threshold}")
+        return [], pd.DataFrame(columns=[smiles_key, 'mol', 'n_rules_pass', 'n_structural_pass'])
 
     # Extract SMILES and create a temporary DataFrame for processing
     smiles_list = [item.get(smiles_key) for item in input_variants]
     if not all(smiles_list):
-        logger.error(f"Missing SMILES string for one or more input variants using key '{smiles_key}'. Cannot proceed.")
-        # Optionally, filter out invalid entries and continue, but safer to stop.
-        return [], None # Or raise ValueError
+        return [], None
 
     temp_df = pd.DataFrame({smiles_key: smiles_list})
 
     # --- Generate Molecule Objects ---
-    logger.info("Generating RDKit molecules from SMILES...")
     temp_df['mol'] = dm.parallelized(dm.to_mol, temp_df[smiles_key].tolist(), n_jobs=-1, progress=True)
     original_len = len(temp_df)
     temp_df = temp_df.dropna(subset=['mol'])
-    if len(temp_df) < original_len:
-        logger.warning(f"Dropped {original_len - len(temp_df)} compounds due to SMILES parsing errors.")
-
     if temp_df.empty:
-        logger.warning("No valid molecules remaining after parsing. Returning empty list and empty DataFrame.")
-        # Return empty dataframe matching potential structure but no rows
-        return [], pd.DataFrame(columns=[smiles_key, 'mol', 'n_rules_pass', 'n_structural_pass']) 
+        return [], pd.DataFrame(columns=[smiles_key, 'mol', 'n_rules_pass', 'n_structural_pass'])
 
     mols_list = temp_df["mol"].tolist()
-    valid_smiles = temp_df[smiles_key].tolist() # Keep track of SMILES that were successfully parsed
 
     # --- Apply Filters and Rules ---
-    logger.info(f"Applying filters and rules to {len(mols_list)} valid molecules...")
     n_jobs = -1
     filter_results = {}
 
     # === Rules ===
-    logger.debug("--- Applying Medchem Rules ---")
     rules_to_apply = [
         "rule_of_five", "rule_of_ghose", "rule_of_veber", "rule_of_reos",
         "rule_of_chemaxon_druglikeness", "rule_of_egan", "rule_of_pfizer_3_75",
@@ -99,15 +78,13 @@ def filter_by_pass_count(
             rule_func = getattr(mc.rules.basic_rules, rule_name)
             try:
                 filter_results[rule_name] = [rule_func(mol) for mol in mols_list]
-            except Exception as e:
-                logger.warning(f"  Rule '{rule_name}' failed: {e}. Assigning False.")
+            except Exception:
                 filter_results[rule_name] = [False] * len(mols_list)
         else:
-             logger.warning(f"Rule '{rule_name}' not found in medchem. Skipping.")
-
+            # Keep column alignment even if rule missing
+            filter_results[rule_name] = [False] * len(mols_list)
 
     # === Structural Alerts ===
-    logger.debug("--- Applying Structural Alert Filters ---")
     structural_alerts_to_apply = [
         "Glaxo", "Dundee", "BMS", "PAINS", "SureChEMBL", "MLSMR", "Inpharmatica",
         "LINT", "Alarm-NMR", "AlphaScreen-Hitters", "GST-Hitters", "HIS-Hitters",
@@ -117,78 +94,46 @@ def filter_by_pass_count(
     ]
     for alert_name in structural_alerts_to_apply:
         try:
-            # Assuming alert_filter returns True if NO alert is hit (i.e., molecule passes)
-            # Check medchem documentation if this assumption is wrong.
-            # Let's assume it returns True if it passes (no alert).
             results = mc.functional.alert_filter(
                 mols=mols_list, alerts=[alert_name], n_jobs=n_jobs, progress=False
             )
             filter_results[alert_name] = results
-        except Exception as e:
-                logger.warning(f"  Alert '{alert_name}' failed: {e}. Assigning False.")
-                filter_results[alert_name] = [False] * len(mols_list)
+        except Exception:
+            filter_results[alert_name] = [False] * len(mols_list)
 
     # === Other Functional Filters ===
-    logger.debug("--- Applying Other Functional Filters ---")
-     # NIBR Filter - Assuming returns True if passes
     try:
         filter_results["NIBR"] = mc.functional.nibr_filter(
             mols=mols_list, n_jobs=n_jobs, max_severity=10, progress=False)
-    except Exception as e:
-        logger.warning(f"  NIBR filter failed: {e}. Assigning False.")
+    except Exception:
         filter_results["NIBR"] = [False] * len(mols_list)
 
     other_functional_filters = {
         "Bredt": (mc.functional.bredt_filter, {}),
         "MolecularGraph": (mc.functional.molecular_graph_filter, {"max_severity": 5}),
-        # LillyDemerit uses SMILES, handle separately if needed or skip if mols are primary input
-        # "LillyDemerit": (mc.functional.lilly_demerit_filter, {}),
         "NumStereo": (mc.functional.num_stereo_center_filter, {"max_stereo_centers": 4, "max_undefined_stereo_centers": 2}),
         "Halogenicity": (mc.functional.halogenicity_filter, {"thresh_F": 6, "thresh_Cl": 3, "thresh_Br": 3}),
     }
     for filter_key, (func, params) in other_functional_filters.items():
         try:
-            # Assuming these functions return True if the molecule passes the filter
             filter_results[filter_key] = func(mols=mols_list, n_jobs=n_jobs, progress=False, **params)
-        except Exception as e:
-                logger.warning(f"  Filter '{filter_key}' failed: {e}. Assigning False.")
-                filter_results[filter_key] = [False] * len(mols_list)
-
+        except Exception:
+            filter_results[filter_key] = [False] * len(mols_list)
 
     # --- Aggregate Results ---
-    logger.info("Aggregating filter results and calculating pass counts...")
-    # Add results to the DataFrame
     for name, result_list in filter_results.items():
         if len(result_list) == len(temp_df):
             temp_df[name] = result_list
         else:
-            logger.error(f"Length mismatch for filter '{name}'. Expected {len(temp_df)}, got {len(result_list)}. Skipping this filter.")
-            # Assign False if length mismatch to avoid errors later
-            if name not in temp_df.columns:
-                 temp_df[name] = False
-
+            temp_df[name] = False
 
     # Categorize columns
     rule_cols = [col for col in rules_to_apply if col in temp_df.columns]
-    # All other applied filters are considered 'structural/functional' for the count
     structural_cols = [col for col in filter_results.keys() if col not in rules_to_apply and col in temp_df.columns]
 
-    logger.debug(f"Identified {len(rule_cols)} rule columns for count.")
-    logger.debug(f"Identified {len(structural_cols)} structural/functional columns for count.")
-
     # Calculate pass counts
-    if rule_cols:
-        temp_df['n_rules_pass'] = temp_df[rule_cols].astype(bool).sum(axis=1)
-    else:
-        temp_df['n_rules_pass'] = 0
-        logger.warning("No rule columns available for pass count.")
-
-    if structural_cols:
-        temp_df['n_structural_pass'] = temp_df[structural_cols].astype(bool).sum(axis=1)
-    else:
-        temp_df['n_structural_pass'] = 0
-        logger.warning("No structural/functional columns available for pass count.")
-
+    temp_df['n_rules_pass'] = temp_df[rule_cols].astype(bool).sum(axis=1) if rule_cols else 0
+    temp_df['n_structural_pass'] = temp_df[structural_cols].astype(bool).sum(axis=1) if structural_cols else 0
 
     # --- Apply Thresholds ---
     passing_df = temp_df[
@@ -196,20 +141,103 @@ def filter_by_pass_count(
         (temp_df['n_structural_pass'] >= structural_threshold)
     ].copy()
 
-    passing_smiles = passing_df[smiles_key].tolist()
-    logger.info(f"Filtering complete: {len(passing_smiles)} compounds passed the thresholds.")
-
-    # --- Map back to original input format ---
-    # Create a set for faster lookup
-    passing_smiles_set = set(passing_smiles)
+    passing_smiles_set = set(passing_df[smiles_key].tolist())
     filtered_variants_output = [
         item for item in input_variants if item.get(smiles_key) in passing_smiles_set
     ]
 
-    logger.info(f"Returning {len(filtered_variants_output)} filtered variant dictionaries and the results DataFrame.")
-    # Return both the filtered list and the full results dataframe
-    return filtered_variants_output, temp_df # Modified return statement
+    return filtered_variants_output, temp_df
 
+def filter_by_pass_count(
+    input_variants: List[Dict[str, Any]],
+    rule_threshold: int = 13,
+    structural_threshold: int = 27,
+    smiles_key: str = 'smiles'
+) -> tuple[List[Dict[str, Any]], pd.DataFrame | None]: # Modified return type hint
+    """
+    Filters a list of compounds based on the number of MedChem rules and structural alerts passed.
+    Processes inputs in batches of 2500 molecules to reduce memory usage and then concatenates results.
+    """
+    if not input_variants:
+        logger.warning("Received empty list for filtering. Returning empty list and None DataFrame.")
+        return [], None
+
+    total = len(input_variants)
+    logger.info(f"Starting MedChem filtering for {total} input compounds in 2500-sized batches...")
+    logger.info(f"Rule threshold >= {rule_threshold}, Structural threshold >= {structural_threshold}")
+
+    batch_size = 2500
+    all_filtered_variants: List[Dict[str, Any]] = []
+    results_frames: List[pd.DataFrame] = []
+
+    for batch_index, batch in enumerate(_yield_batches(input_variants, batch_size), start=1):
+        start = (batch_index - 1) * batch_size
+        end = min(start + len(batch), total)
+        logger.info(f"Processing MedChem batch {batch_index}: items {start + 1}-{end} of {total}")
+
+        filtered_batch, df_batch = _run_pass_count_on_batch(
+            input_variants=batch,
+            rule_threshold=rule_threshold,
+            structural_threshold=structural_threshold,
+            smiles_key=smiles_key,
+        )
+
+        if filtered_batch:
+            all_filtered_variants.extend(filtered_batch)
+        if df_batch is not None and not df_batch.empty:
+            results_frames.append(df_batch)
+
+        # Explicit GC to keep memory bounded on large runs
+        gc.collect()
+
+    combined_df = pd.concat(results_frames, ignore_index=True) if results_frames else None
+
+    logger.info(
+        f"MedChem filtering complete across batches: {len(all_filtered_variants)} compounds passed out of {total}."
+    )
+    return all_filtered_variants, combined_df
+
+
+def _run_generative_design_on_batch(
+    input_variants: List[Dict[str, Any]],
+    smiles_key: str,
+    ):
+    if not input_variants:
+        return [], pd.DataFrame(columns=[smiles_key, 'mol', 'rule_of_generative_design', 'rule_of_generative_design_strict', 'n_rules_pass', 'n_structural_pass'])
+
+    smiles_list = [item.get(smiles_key) for item in input_variants]
+    if not all(smiles_list):
+        return [], None
+
+    temp_df = pd.DataFrame({smiles_key: smiles_list})
+    temp_df['mol'] = dm.parallelized(dm.to_mol, temp_df[smiles_key].tolist(), n_jobs=-1, progress=True)
+    temp_df = temp_df.dropna(subset=['mol'])
+    if temp_df.empty:
+        return [], pd.DataFrame(columns=[smiles_key, 'mol', 'rule_of_generative_design', 'rule_of_generative_design_strict', 'n_rules_pass', 'n_structural_pass'])
+
+    mols_list = temp_df['mol'].tolist()
+    rules_to_apply = ["rule_of_generative_design", "rule_of_generative_design_strict"]
+    for rule_name in rules_to_apply:
+        if hasattr(mc.rules.basic_rules, rule_name):
+            rule_func = getattr(mc.rules.basic_rules, rule_name)
+            try:
+                temp_df[rule_name] = [rule_func(mol) for mol in mols_list]
+            except Exception:
+                temp_df[rule_name] = [False] * len(mols_list)
+        else:
+            temp_df[rule_name] = [False] * len(mols_list)
+
+    temp_df['n_rules_pass'] = temp_df[rules_to_apply].astype(bool).sum(axis=1)
+    temp_df['n_structural_pass'] = 0
+
+    passing_df = temp_df[
+        temp_df['rule_of_generative_design'].astype(bool) &
+        temp_df['rule_of_generative_design_strict'].astype(bool)
+    ].copy()
+
+    passing_smiles = set(passing_df[smiles_key].tolist())
+    filtered_variants_output = [item for item in input_variants if item.get(smiles_key) in passing_smiles]
+    return filtered_variants_output, temp_df
 
 def filter_by_generative_design(
     input_variants: List[Dict[str, Any]],
@@ -218,77 +246,36 @@ def filter_by_generative_design(
     """
     Filters compounds using only the generative design rules and keeps compounds
     that pass BOTH "rule_of_generative_design" and "rule_of_generative_design_strict".
-
-    Args:
-        input_variants: List of dictionaries containing at least a SMILES string under `smiles_key`.
-        smiles_key: Key name for SMILES in the dictionaries.
-
-    Returns:
-        A tuple of (filtered_variants, results_df) where:
-          - filtered_variants is a list of the original input dictionaries that passed both rules
-          - results_df is a DataFrame with boolean columns for the two rules and pass counts
+    Processes inputs in batches of 2500 molecules to reduce memory usage and then concatenates results.
     """
     if not input_variants:
         logger.warning("Received empty list for generative design filtering. Returning empty list and None DataFrame.")
         return [], None
 
-    logger.info(f"Starting Generative Design MedChem filtering for {len(input_variants)} input compounds...")
+    total = len(input_variants)
+    logger.info(f"Starting Generative Design MedChem filtering for {total} input compounds in 2500-sized batches...")
 
-    # Extract SMILES and create a temporary DataFrame for processing
-    smiles_list = [item.get(smiles_key) for item in input_variants]
-    if not all(smiles_list):
-        logger.error(f"Missing SMILES string for one or more input variants using key '{smiles_key}'. Cannot proceed.")
-        return [], None
+    batch_size = 2500
+    all_filtered_variants: List[Dict[str, Any]] = []
+    results_frames: List[pd.DataFrame] = []
 
-    temp_df = pd.DataFrame({smiles_key: smiles_list})
+    for batch_index, batch in enumerate(_yield_batches(input_variants, batch_size), start=1):
+        start = (batch_index - 1) * batch_size
+        end = min(start + len(batch), total)
+        logger.info(f"Processing Generative Design batch {batch_index}: items {start + 1}-{end} of {total}")
 
-    # Generate RDKit molecules
-    logger.info("Generating RDKit molecules from SMILES for generative design filtering...")
-    temp_df['mol'] = dm.parallelized(dm.to_mol, temp_df[smiles_key].tolist(), n_jobs=-1, progress=True)
-    original_len = len(temp_df)
-    temp_df = temp_df.dropna(subset=['mol'])
-    if len(temp_df) < original_len:
-        logger.warning(f"Dropped {original_len - len(temp_df)} compounds due to SMILES parsing errors.")
+        filtered_batch, df_batch = _run_generative_design_on_batch(batch, smiles_key)
+        if filtered_batch:
+            all_filtered_variants.extend(filtered_batch)
+        if df_batch is not None and not df_batch.empty:
+            results_frames.append(df_batch)
+        gc.collect()
 
-    if temp_df.empty:
-        logger.warning("No valid molecules remaining after parsing. Returning empty list and empty DataFrame.")
-        return [], pd.DataFrame(columns=[smiles_key, 'mol', 'rule_of_generative_design', 'rule_of_generative_design_strict', 'n_rules_pass', 'n_structural_pass'])
-
-    mols_list = temp_df['mol'].tolist()
-
-    # Apply only the two generative design rules
-    rules_to_apply = [
-        "rule_of_generative_design",
-        "rule_of_generative_design_strict",
-    ]
-
-    for rule_name in rules_to_apply:
-        if hasattr(mc.rules.basic_rules, rule_name):
-            rule_func = getattr(mc.rules.basic_rules, rule_name)
-            try:
-                temp_df[rule_name] = [rule_func(mol) for mol in mols_list]
-            except Exception as e:
-                logger.warning(f"  Rule '{rule_name}' failed: {e}. Assigning False.")
-                temp_df[rule_name] = [False] * len(mols_list)
-        else:
-            logger.warning(f"Rule '{rule_name}' not found in medchem. Assigning False.")
-            temp_df[rule_name] = [False] * len(mols_list)
-
-    # Compute simple pass counts to maintain a compatible schema
-    temp_df['n_rules_pass'] = temp_df[rules_to_apply].astype(bool).sum(axis=1)
-    temp_df['n_structural_pass'] = 0  # Not applicable in this mode
-
-    # Require BOTH rules to be True
-    passing_df = temp_df[
-        temp_df['rule_of_generative_design'].astype(bool) &
-        temp_df['rule_of_generative_design_strict'].astype(bool)
-    ].copy()
-
-    passing_smiles = set(passing_df[smiles_key].tolist())
-    filtered_variants_output = [item for item in input_variants if item.get(smiles_key) in passing_smiles]
-
-    logger.info(f"Generative design filtering complete: {len(filtered_variants_output)} compounds passed both rules.")
-    return filtered_variants_output, temp_df
+    combined_df = pd.concat(results_frames, ignore_index=True) if results_frames else None
+    logger.info(
+        f"Generative design filtering complete across batches: {len(all_filtered_variants)} compounds passed out of {total}."
+    )
+    return all_filtered_variants, combined_df
 
 
 def generate_filter_plots(results_df: pd.DataFrame, plots_dir: Path):
@@ -310,7 +297,7 @@ def generate_filter_plots(results_df: pd.DataFrame, plots_dir: Path):
     # Identify rule and structural columns present in the DataFrame
     # These should match the categorization in filter_by_pass_count
     all_cols = set(results_df.columns)
-    rules_to_apply = [ # Copy from filter_by_pass_count
+    rules_to_apply = [
         "rule_of_five", "rule_of_ghose", "rule_of_veber", "rule_of_reos",
         "rule_of_chemaxon_druglikeness", "rule_of_egan", "rule_of_pfizer_3_75",
         "rule_of_gsk_4_400", "rule_of_oprea", "rule_of_xu", "rule_of_zinc",
@@ -344,13 +331,13 @@ def generate_filter_plots(results_df: pd.DataFrame, plots_dir: Path):
                 heatmap_data,
                 annot=False,
                 ax=ax_h,
-                xticklabels=False,  # Hide compound labels on x-axis (can be too many)
+                xticklabels=False, 
                 yticklabels=True,
                 cbar=True,
                 cmap=cmap,
-                linewidths=0.1, # Add small lines between cells
+                linewidths=0.1,
                 linecolor='lightgray',
-                cbar_kws={'ticks': [0.25, 0.75]} # Center ticks in color segments
+                cbar_kws={'ticks': [0.25, 0.75]}
             )
 
             # Configure color bar
@@ -443,8 +430,4 @@ def generate_filter_plots(results_df: pd.DataFrame, plots_dir: Path):
 
     logger.info("Finished generating filter plots.")
 
-# Delete the old filter_compounds function and apply_medchem_filtering_to_variants
-# As they are replaced by the updated filter_by_pass_count and direct calling from pipeline
-
-# Keep filter_by_pass_count and generate_filter_plots defined above
 
