@@ -1,0 +1,28 @@
+{
+    "model": "cgflow",
+    "pdbfile": "/home/conrad_hku/Drug_pipeline/input/NS5_crop_renum.pdb",
+    "receptor": "/home/conrad_hku/Drug_pipeline/input/NS5_crop_renum.pdb",
+    "checkpoint": "/home/conrad_hku/Drug_pipeline/src/cgflow/result/opt/unidock_qed/NS5/250901_064541/model_state.pt",
+    "cgflow_config": "/home/conrad_hku/Drug_pipeline/src/cgflow/configs/opt/NS5_crop.yaml",
+    "box_size": [
+        20.0,
+        20.0,
+        20.0
+    ],
+    "n_samples": 500,
+    "center": [
+        114.817,
+        75.602,
+        82.416
+    ],
+    "exhaustiveness_level": "detail",
+    "top_n": 5,
+    "max_variants": 5,
+    "num_rounds": 1,
+    "score_threshold": 1.0,
+    "boltz_pocket_residues": "17,57,138,153,184,185",
+    "medchem_rule_threshold": 13,
+    "medchem_structural_threshold": 27,
+    "medchem_filter_mode": "generative",
+    "out_dir": "/media/data/conrad_hku/NS5_crop_500_1"
+}

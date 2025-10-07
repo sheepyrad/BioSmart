@@ -869,6 +869,7 @@ with st.expander("🔬 Analysis Features", expanded=False):
     - Distribution analysis for docking scores and affinity predictions
     - Correlation analysis between different metrics
     - Performance comparisons across pipeline rounds
+    - Boltz-2 score ranking using paper formula: max((-affinity_pred_value1 + 2) / 4, 0) × likelihood
     
     🧬 **Enhanced 3D Visualization:**
     - 🟢 Best poses highlighted in green
@@ -1195,6 +1196,11 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
                     🔄 **Conversions:**
                     - To IC50 in μM: IC50 = 10^(log(IC50))
                     - To pIC50 in kcal/mol: pIC50 = (6 - log(IC50)) × 1.364
+                    
+                    📊 **Counting Method:**
+                    - "Predicted Binders" counts unique molecules (by variant_id, barcode, or compound_id)
+                    - This prevents double-counting when the same molecule appears in multiple rounds
+                    - The displayed count represents distinct chemical entities, not data entries
                     """)
                 
                 affinity_with_values = df[df["affinity_pred_value"].notna()]
@@ -1209,8 +1215,31 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
                         st.metric("Average log(IC50)", f"{avg_affinity:.3f}")
                     with aff_col3:
                         if "affinity_probability_binary" in affinity_with_values.columns:
-                            high_prob_count = len(affinity_with_values[affinity_with_values["affinity_probability_binary"] > 0.5])
-                            st.metric("Predicted Binders", f"{high_prob_count}/{len(affinity_with_values)}")
+                            # Count unique binders to avoid double counting
+                            binders_df = affinity_with_values[affinity_with_values["affinity_probability_binary"] > 0.5]
+                            
+                            # Determine the best unique identifier to use
+                            if "variant_id" in binders_df.columns:
+                                unique_binders = binders_df["variant_id"].nunique()
+                                total_unique = affinity_with_values["variant_id"].nunique()
+                                identifier_type = "unique variants"
+                            elif "barcode" in binders_df.columns:
+                                unique_binders = binders_df["barcode"].nunique()
+                                total_unique = affinity_with_values["barcode"].nunique()
+                                identifier_type = "unique barcodes"
+                            elif "compound_id" in binders_df.columns:
+                                unique_binders = binders_df["compound_id"].nunique()
+                                total_unique = affinity_with_values["compound_id"].nunique()
+                                identifier_type = "unique compounds"
+                            else:
+                                # Fallback to row count if no identifier available
+                                unique_binders = len(binders_df)
+                                total_unique = len(affinity_with_values)
+                                identifier_type = "entries"
+                            
+                            st.metric("Predicted Binders", f"{unique_binders}/{total_unique}")
+                            if identifier_type != "entries":
+                                st.caption(f"({identifier_type})")
                         else:
                             st.metric("Predictions", len(affinity_with_values))
                     with aff_col4:
@@ -1289,7 +1318,34 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
                     
                     # Show top affinity performers (lowest log(IC50) values are best)
                     st.markdown("**🏆 Top 10 log(IC50) Predictions (Lowest/Best Values):**")
-                    top_affinity = affinity_with_values.nsmallest(10, "affinity_pred_value")
+                    
+                    # Get unique top performers to avoid showing the same compound multiple times
+                    # Determine the best unique identifier to use
+                    if "variant_id" in affinity_with_values.columns:
+                        # Group by variant_id and take the best (lowest) affinity_pred_value for each
+                        unique_identifier = "variant_id"
+                        top_affinity = (affinity_with_values
+                                      .loc[affinity_with_values.groupby('variant_id')['affinity_pred_value'].idxmin()]
+                                      .nsmallest(10, "affinity_pred_value"))
+                        st.caption("(Showing best prediction per unique variant)")
+                    elif "barcode" in affinity_with_values.columns:
+                        # Group by barcode and take the best (lowest) affinity_pred_value for each
+                        unique_identifier = "barcode"
+                        top_affinity = (affinity_with_values
+                                      .loc[affinity_with_values.groupby('barcode')['affinity_pred_value'].idxmin()]
+                                      .nsmallest(10, "affinity_pred_value"))
+                        st.caption("(Showing best prediction per unique barcode)")
+                    elif "compound_id" in affinity_with_values.columns:
+                        # Group by compound_id and take the best (lowest) affinity_pred_value for each
+                        unique_identifier = "compound_id"
+                        top_affinity = (affinity_with_values
+                                      .loc[affinity_with_values.groupby('compound_id')['affinity_pred_value'].idxmin()]
+                                      .nsmallest(10, "affinity_pred_value"))
+                        st.caption("(Showing best prediction per unique compound)")
+                    else:
+                        # Fallback to simple nsmallest if no identifier available
+                        top_affinity = affinity_with_values.nsmallest(10, "affinity_pred_value")
+                        st.caption("(Showing top 10 entries - may include duplicates)")
                     
                     # Add IC50 conversion column for better interpretation
                     top_affinity_display = top_affinity.copy()
@@ -1303,6 +1359,8 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
                         aff_display_cols.insert(1, "variant_id")
                     if "barcode" in top_affinity_display.columns:
                         aff_display_cols.insert(2, "barcode")
+                    if "smiles" in top_affinity_display.columns:
+                        aff_display_cols.insert(-1, "smiles")
                     if "affinity_probability_binary" in top_affinity_display.columns:
                         aff_display_cols.insert(-1, "affinity_probability_binary")
                     
@@ -1326,6 +1384,316 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
                     )
                     
                     st.caption("💡 estimated_IC50_uM = 10^(log(IC50)); pIC50_kcal_mol = (6 - log(IC50)) × 1.364")
+                    
+                    # Show top binding probability performers if probability data is available
+                    if "affinity_probability_binary" in affinity_with_values.columns:
+                        st.markdown("**🎯 Top 10 Highest Binding Probability (Highest Values):**")
+                        
+                        # Get unique top probability performers to avoid showing the same compound multiple times
+                        # Determine the best unique identifier to use
+                        if "variant_id" in affinity_with_values.columns:
+                            # Group by variant_id and take the best (highest) affinity_probability_binary for each
+                            top_probability = (affinity_with_values
+                                             .loc[affinity_with_values.groupby('variant_id')['affinity_probability_binary'].idxmax()]
+                                             .nlargest(10, "affinity_probability_binary"))
+                            st.caption("(Showing highest probability per unique variant)")
+                        elif "barcode" in affinity_with_values.columns:
+                            # Group by barcode and take the best (highest) affinity_probability_binary for each
+                            top_probability = (affinity_with_values
+                                             .loc[affinity_with_values.groupby('barcode')['affinity_probability_binary'].idxmax()]
+                                             .nlargest(10, "affinity_probability_binary"))
+                            st.caption("(Showing highest probability per unique barcode)")
+                        elif "compound_id" in affinity_with_values.columns:
+                            # Group by compound_id and take the best (highest) affinity_probability_binary for each
+                            top_probability = (affinity_with_values
+                                             .loc[affinity_with_values.groupby('compound_id')['affinity_probability_binary'].idxmax()]
+                                             .nlargest(10, "affinity_probability_binary"))
+                            st.caption("(Showing highest probability per unique compound)")
+                        else:
+                            # Fallback to simple nlargest if no identifier available
+                            top_probability = affinity_with_values.nlargest(10, "affinity_probability_binary")
+                            st.caption("(Showing top 10 entries - may include duplicates)")
+                        
+                        # Prepare display columns for probability table
+                        prob_display_cols = ["compound_id", "affinity_probability_binary", "affinity_pred_value", "round"]
+                        if "variant_id" in top_probability.columns:
+                            prob_display_cols.insert(1, "variant_id")
+                        if "barcode" in top_probability.columns:
+                            prob_display_cols.insert(2, "barcode")
+                        if "smiles" in top_probability.columns:
+                            prob_display_cols.insert(-1, "smiles")
+                        
+                        existing_prob_cols = [col for col in prob_display_cols if col in top_probability.columns]
+                        
+                        # Format the dataframe for better display
+                        prob_display_df = top_probability[existing_prob_cols].copy()
+                        if "affinity_probability_binary" in prob_display_df.columns:
+                            prob_display_df["affinity_probability_binary"] = prob_display_df["affinity_probability_binary"].round(3)
+                        if "affinity_pred_value" in prob_display_df.columns:
+                            prob_display_df["affinity_pred_value"] = prob_display_df["affinity_pred_value"].round(3)
+                        
+                        st.dataframe(
+                            prob_display_df,
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                        
+                        st.caption("💡 Higher probability values (closer to 1.0) indicate stronger predicted binding")
+                    
+                    # Add 3D visualization if we have docking data as well
+                    if ("docking_score" in df.columns and df["docking_score"].notna().any() and
+                        "affinity_probability_binary" in affinity_with_values.columns):
+                        
+                        st.subheader("🎲 3D Interactive Analysis: Affinity vs Probability vs Docking")
+                        
+                        # Get compounds that have all three metrics
+                        three_d_data = df[
+                            df["affinity_pred_value"].notna() & 
+                            df["affinity_probability_binary"].notna() &
+                            df["docking_score"].notna()
+                        ]
+                        
+                        if not three_d_data.empty:
+                            # Add IC50 conversion for better interpretation
+                            three_d_data_display = three_d_data.copy()
+                            three_d_data_display["estimated_IC50_uM"] = 10 ** three_d_data_display["affinity_pred_value"]
+                            
+                            # Create interactive 3D scatter plot
+                            fig_3d = go.Figure(data=go.Scatter3d(
+                                x=three_d_data_display["affinity_pred_value"],
+                                y=three_d_data_display["affinity_probability_binary"],
+                                z=three_d_data_display["docking_score"],
+                                mode='markers',
+                                marker=dict(
+                                    size=8,
+                                    color=three_d_data_display["affinity_probability_binary"],
+                                    colorscale='Viridis',
+                                    colorbar=dict(title="Binding Probability"),
+                                    opacity=0.8,
+                                    line=dict(width=1, color='black')
+                                ),
+                                text=[
+                                    f"ID: {row.get('compound_id', 'N/A')}<br>" +
+                                    f"Variant: {row.get('variant_id', 'N/A')}<br>" +
+                                    f"log(IC50): {row['affinity_pred_value']:.3f}<br>" +
+                                    f"IC50: {(10**row['affinity_pred_value']):.2e} μM<br>" +
+                                    f"Binding Prob: {row['affinity_probability_binary']:.3f}<br>" +
+                                    f"Docking Score: {row['docking_score']:.3f}<br>" +
+                                    f"Round: {row.get('round', 'N/A')}"
+                                    for _, row in three_d_data_display.iterrows()
+                                ],
+                                hovertemplate='%{text}<extra></extra>',
+                                name='Compounds'
+                            ))
+                            
+                            # Update layout for better visualization
+                            fig_3d.update_layout(
+                                title={
+                                    'text': '3D Analysis: log(IC50) vs Binding Probability vs Docking Score',
+                                    'x': 0.5,
+                                    'xanchor': 'center'
+                                },
+                                scene=dict(
+                                    xaxis_title='log(IC50) Prediction (lower = better)',
+                                    yaxis_title='Binding Probability (higher = better)',
+                                    zaxis_title='Docking Score (lower = better)',
+                                    camera=dict(
+                                        eye=dict(x=1.2, y=1.2, z=1.2)
+                                    )
+                                ),
+                                width=800,
+                                height=600,
+                                margin=dict(r=20, b=10, l=10, t=40)
+                            )
+                            
+                            st.plotly_chart(fig_3d, use_container_width=True)
+                            
+                            # Add interpretation guide
+                            with st.expander("📖 How to Interpret the 3D Plot", expanded=False):
+                                st.markdown("""
+                                **Ideal Compounds (Best Performers):**
+                                - 🎯 **Low X-axis** (log(IC50) < 0): Strong binding affinity
+                                - 🎯 **High Y-axis** (Probability > 0.7): High confidence binding
+                                - 🎯 **Low Z-axis** (Docking < -8): Good docking score
+                                
+                                **Interactive Features:**
+                                - **Rotate**: Click and drag to rotate the 3D plot
+                                - **Zoom**: Use mouse wheel or zoom controls
+                                - **Hover**: Point to see detailed compound information
+                                - **Color**: Darker points = higher binding probability
+                                
+                                **Quadrant Analysis:**
+                                - **Front-Top-Bottom**: High probability + good docking + strong affinity = 🌟 **Prime candidates**
+                                - **Back-Top-Bottom**: Low probability but good other metrics = ⚠️ **Uncertain binders**
+                                - **Front-Bottom-Top**: High probability but poor docking = 🤔 **Conflicting predictions**
+                                
+                                **Statistical Summary:**
+                                - Total compounds with all 3 metrics: **{:,}**
+                                - Best log(IC50): **{:.3f}** (IC50 ≈ {:.2e} μM)
+                                - Highest binding probability: **{:.3f}**
+                                - Best docking score: **{:.3f}**
+                                """.format(
+                                    len(three_d_data_display),
+                                    three_d_data_display["affinity_pred_value"].min(),
+                                    10**three_d_data_display["affinity_pred_value"].min(),
+                                    three_d_data_display["affinity_probability_binary"].max(),
+                                    three_d_data_display["docking_score"].min()
+                                ))
+                            
+                            # Show compounds in different regions of the 3D space
+                            st.markdown("**🌟 Prime Candidates (Top performers in all 3 metrics):**")
+                            
+                            # Add detailed explanation of candidate selection methodology
+                            with st.expander("🔬 Candidate Selection Methodology", expanded=False):
+                                st.markdown("""
+                                **How Prime Candidates Are Selected:**
+                                
+                                Our algorithm identifies compounds that excel in **all three critical metrics** simultaneously using statistically robust quantile-based thresholds:
+                                
+                                📊 **Quantile-Based Excellence Criteria:**
+                                - **Affinity Excellence**: Must be in the **bottom 25%** of log(IC50) values (25th percentile or lower)
+                                  - *Rationale*: Lower log(IC50) = stronger binding affinity
+                                  - *Example*: If log(IC50) ranges from -2.5 to 3.0, excellent = ≤ -1.0
+                                
+                                - **Probability Excellence**: Must be in the **top 25%** of binding probabilities (75th percentile or higher)  
+                                  - *Rationale*: Higher probability = greater confidence in binding prediction
+                                  - *Example*: If probabilities range from 0.1 to 0.95, excellent = ≥ 0.8
+                                
+                                - **Docking Excellence**: Must be in the **bottom 25%** of docking scores (25th percentile or lower)
+                                  - *Rationale*: Lower docking score = better protein-ligand fit
+                                  - *Example*: If scores range from -12 to -6, excellent = ≤ -10
+                                
+                                🎯 **Prime Candidate Qualification:**
+                                A compound becomes a "Prime Candidate" **ONLY** if it meets **ALL THREE** criteria simultaneously:
+                                ```
+                                log(IC50) ≤ 25th percentile  AND
+                                Binding Probability ≥ 75th percentile  AND  
+                                Docking Score ≤ 25th percentile
+                                ```
+                                
+                                📈 **Why These Thresholds?**
+                                - **Data-Adaptive**: Works regardless of your specific score ranges
+                                - **Top Quartile Performance**: Identifies truly exceptional performers (top 25% in each metric)
+                                - **Conservative Selection**: Statistically, only ~6.25% of compounds can theoretically meet all criteria (0.25³ if metrics were independent)
+                                - **Balanced Approach**: Each metric contributes equally to selection
+                                
+                                🔢 **Statistical Reality:**
+                                In practice, even fewer compounds meet all criteria because the metrics are often correlated. This makes prime candidates genuinely rare and valuable for prioritization.
+                                
+                                🔄 **Fallback Strategy:**
+                                If no compounds meet the strict "excel in all three" criteria, we calculate a **Composite Score**:
+                                - Normalize each metric to 0-1 scale (accounting for whether lower/higher is better)
+                                - Average the three normalized scores  
+                                - Show top performers by this combined metric
+                                - This ensures you always get actionable results for compound prioritization
+                                """)
+                            
+                            # Define thresholds for "good" performance
+                            good_affinity_threshold = three_d_data_display["affinity_pred_value"].quantile(0.25)  # Best 25% (lower is better)
+                            good_probability_threshold = three_d_data_display["affinity_probability_binary"].quantile(0.75)  # Best 25% (higher is better)
+                            good_docking_threshold = three_d_data_display["docking_score"].quantile(0.25)  # Best 25% (lower is better)
+                            
+                            # Display the actual threshold values for transparency
+                            st.markdown("**📊 Current Selection Thresholds:**")
+                            threshold_col1, threshold_col2, threshold_col3 = st.columns(3)
+                            with threshold_col1:
+                                st.metric(
+                                    "Affinity Threshold", 
+                                    f"{good_affinity_threshold:.3f}",
+                                    help="log(IC50) ≤ this value qualifies as excellent (lower = better)"
+                                )
+                            with threshold_col2:
+                                st.metric(
+                                    "Probability Threshold", 
+                                    f"{good_probability_threshold:.3f}",
+                                    help="Binding probability ≥ this value qualifies as excellent (higher = better)"
+                                )
+                            with threshold_col3:
+                                st.metric(
+                                    "Docking Threshold", 
+                                    f"{good_docking_threshold:.3f}",
+                                    help="Docking score ≤ this value qualifies as excellent (lower = better)"
+                                )
+                            
+                            prime_candidates = three_d_data_display[
+                                (three_d_data_display["affinity_pred_value"] <= good_affinity_threshold) &
+                                (three_d_data_display["affinity_probability_binary"] >= good_probability_threshold) &
+                                (three_d_data_display["docking_score"] <= good_docking_threshold)
+                            ]
+                            
+                            if not prime_candidates.empty:
+                                # Show top 5 prime candidates
+                                prime_display = prime_candidates.head(5).copy()
+                                prime_display["estimated_IC50_uM"] = prime_display["estimated_IC50_uM"].apply(lambda x: f"{x:.2e}")
+                                
+                                display_cols_3d = ["compound_id", "affinity_pred_value", "estimated_IC50_uM", "affinity_probability_binary", "docking_score"]
+                                if "variant_id" in prime_display.columns:
+                                    display_cols_3d.insert(1, "variant_id")
+                                if "round" in prime_display.columns:
+                                    display_cols_3d.append("round")
+                                
+                                existing_cols_3d = [col for col in display_cols_3d if col in prime_display.columns]
+                                
+                                st.dataframe(
+                                    prime_display[existing_cols_3d].round(3),
+                                    use_container_width=True,
+                                    hide_index=True
+                                )
+                                st.success(f"✅ Found {len(prime_candidates)} compounds that excel in all three metrics!")
+                            else:
+                                st.info("No compounds meet the top 25% threshold in all three metrics simultaneously.")
+                                
+                                # Show the best compromise candidates instead
+                                st.markdown("**🎯 Best Compromise Candidates:**")
+                                st.info("🔄 **Fallback Strategy Activated:** No compounds met the strict top-25% threshold in all three metrics simultaneously. Showing compounds with the best overall performance using composite scoring.")
+                                
+                                # Create a composite score (normalized)
+                                three_d_normalized = three_d_data_display.copy()
+                                # Normalize affinity (lower is better, so we invert)
+                                three_d_normalized["affinity_norm"] = (
+                                    (three_d_data_display["affinity_pred_value"].max() - three_d_data_display["affinity_pred_value"]) / 
+                                    (three_d_data_display["affinity_pred_value"].max() - three_d_data_display["affinity_pred_value"].min())
+                                )
+                                # Normalize probability (higher is better)
+                                three_d_normalized["probability_norm"] = (
+                                    (three_d_data_display["affinity_probability_binary"] - three_d_data_display["affinity_probability_binary"].min()) / 
+                                    (three_d_data_display["affinity_probability_binary"].max() - three_d_data_display["affinity_probability_binary"].min())
+                                )
+                                # Normalize docking (lower is better, so we invert)
+                                three_d_normalized["docking_norm"] = (
+                                    (three_d_data_display["docking_score"].max() - three_d_data_display["docking_score"]) / 
+                                    (three_d_data_display["docking_score"].max() - three_d_data_display["docking_score"].min())
+                                )
+                                
+                                # Create composite score (equal weighting)
+                                three_d_normalized["composite_score"] = (
+                                    three_d_normalized["affinity_norm"] + 
+                                    three_d_normalized["probability_norm"] + 
+                                    three_d_normalized["docking_norm"]
+                                ) / 3
+                                
+                                # Get top 5 by composite score
+                                top_composite = three_d_normalized.nlargest(5, "composite_score")
+                                top_composite["estimated_IC50_uM"] = top_composite["estimated_IC50_uM"].apply(lambda x: f"{x:.2e}" if isinstance(x, (int, float)) else x)
+                                
+                                composite_display_cols = ["compound_id", "affinity_pred_value", "estimated_IC50_uM", "affinity_probability_binary", "docking_score", "composite_score"]
+                                if "variant_id" in top_composite.columns:
+                                    composite_display_cols.insert(1, "variant_id")
+                                if "round" in top_composite.columns:
+                                    composite_display_cols.append("round")
+                                
+                                existing_composite_cols = [col for col in composite_display_cols if col in top_composite.columns]
+                                
+                                st.dataframe(
+                                    top_composite[existing_composite_cols].round(3),
+                                    use_container_width=True,
+                                    hide_index=True
+                                )
+                                st.caption("Composite score: weighted average of normalized metrics (higher = better overall)")
+                        else:
+                            st.info("No compounds have all three metrics (affinity, probability, and docking) for 3D visualization.")
+                    else:
+                        st.info("💡 3D visualization requires compounds with affinity predictions, binding probabilities, and docking scores.")
 
             # Docking score distribution if available
             if "docking_score" in df.columns and df["docking_score"].notna().any():
@@ -1385,12 +1753,38 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
                 
                 # Show top performers (lowest/best scores)
                 st.markdown("**🏆 Top 10 Docking Performers (Lowest/Best Scores):**")
-                top_performers = docked_with_scores.nsmallest(10, "docking_score")
+                
+                # Get unique top performers to avoid showing the same compound multiple times
+                # Determine the best unique identifier to use
+                if "variant_id" in docked_with_scores.columns:
+                    # Group by variant_id and take the best (lowest) docking_score for each
+                    top_performers = (docked_with_scores
+                                    .loc[docked_with_scores.groupby('variant_id')['docking_score'].idxmin()]
+                                    .nsmallest(10, "docking_score"))
+                    st.caption("(Showing best score per unique variant)")
+                elif "barcode" in docked_with_scores.columns:
+                    # Group by barcode and take the best (lowest) docking_score for each
+                    top_performers = (docked_with_scores
+                                    .loc[docked_with_scores.groupby('barcode')['docking_score'].idxmin()]
+                                    .nsmallest(10, "docking_score"))
+                    st.caption("(Showing best score per unique barcode)")
+                elif "compound_id" in docked_with_scores.columns:
+                    # Group by compound_id and take the best (lowest) docking_score for each
+                    top_performers = (docked_with_scores
+                                    .loc[docked_with_scores.groupby('compound_id')['docking_score'].idxmin()]
+                                    .nsmallest(10, "docking_score"))
+                    st.caption("(Showing best score per unique compound)")
+                else:
+                    # Fallback to simple nsmallest if no identifier available
+                    top_performers = docked_with_scores.nsmallest(10, "docking_score")
+                    st.caption("(Showing top 10 entries - may include duplicates)")
                 display_cols = ["compound_id", "docking_score", "round"]
                 if "variant_id" in top_performers.columns:
                     display_cols.insert(1, "variant_id")
                 if "barcode" in top_performers.columns:
                     display_cols.insert(2, "barcode")
+                if "smiles" in top_performers.columns:
+                    display_cols.insert(-1, "smiles")
                 
                 existing_cols = [col for col in display_cols if col in top_performers.columns]
                 st.dataframe(
@@ -1454,12 +1848,37 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
                     # Add estimated IC50 for better interpretation
                     combined_data_normalized["estimated_IC50_uM"] = 10 ** combined_data_normalized["affinity_pred_value"]
                     
-                    top_combined = combined_data_normalized.nlargest(10, "combined_score")
+                    # Get unique top combined performers to avoid showing the same compound multiple times
+                    # Determine the best unique identifier to use
+                    if "variant_id" in combined_data_normalized.columns:
+                        # Group by variant_id and take the best (highest) combined_score for each
+                        top_combined = (combined_data_normalized
+                                      .loc[combined_data_normalized.groupby('variant_id')['combined_score'].idxmax()]
+                                      .nlargest(10, "combined_score"))
+                        st.caption("(Showing best combined score per unique variant)")
+                    elif "barcode" in combined_data_normalized.columns:
+                        # Group by barcode and take the best (highest) combined_score for each
+                        top_combined = (combined_data_normalized
+                                      .loc[combined_data_normalized.groupby('barcode')['combined_score'].idxmax()]
+                                      .nlargest(10, "combined_score"))
+                        st.caption("(Showing best combined score per unique barcode)")
+                    elif "compound_id" in combined_data_normalized.columns:
+                        # Group by compound_id and take the best (highest) combined_score for each
+                        top_combined = (combined_data_normalized
+                                      .loc[combined_data_normalized.groupby('compound_id')['combined_score'].idxmax()]
+                                      .nlargest(10, "combined_score"))
+                        st.caption("(Showing best combined score per unique compound)")
+                    else:
+                        # Fallback to simple nlargest if no identifier available
+                        top_combined = combined_data_normalized.nlargest(10, "combined_score")
+                        st.caption("(Showing top 10 entries - may include duplicates)")
                     combined_display_cols = ["compound_id", "docking_score", "affinity_pred_value", "estimated_IC50_uM", "combined_score"]
                     if "variant_id" in top_combined.columns:
                         combined_display_cols.insert(1, "variant_id")
                     if "barcode" in top_combined.columns:
                         combined_display_cols.insert(2, "barcode")
+                    if "smiles" in top_combined.columns:
+                        combined_display_cols.insert(-1, "smiles")
                     if "affinity_probability_binary" in top_combined.columns:
                         combined_display_cols.insert(-1, "affinity_probability_binary")
                     
@@ -1477,6 +1896,205 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
                     )
                 else:
                     st.info("No compounds have both affinity and docking data for correlation analysis.")
+            
+            # Boltz-2 Score Analysis Section (use precomputed column if available, else compute from available inputs)
+            has_boltz_cols = (
+                ("affinity_pred_value1" in df.columns and df["affinity_pred_value1"].notna().any() and
+                 "affinity_probability_binary1" in df.columns and df["affinity_probability_binary1"].notna().any())
+                or
+                ("boltz2_score" in df.columns and df["boltz2_score"].notna().any())
+            )
+            if has_boltz_cols:
+                
+                st.markdown("---")
+                st.subheader("🧮 Boltz-2 Score (From Paper)")
+                
+                st.markdown("""
+                **Formula:** score = max((-affinity + 2) / 4, 0) × likelihood
+                
+                Where:
+                - **affinity**: log(IC50) prediction (lower = better). Prefer ensemble-1 if present.
+                - **likelihood**: binding probability (0-1 scale). Prefer ensemble-1 if present.
+                
+                **Note:** If `boltz2_score` exists in the tracking file it will be used directly; otherwise it is computed on-the-fly.
+                """)
+                
+                # Use/compute score
+                if "boltz2_score" in df.columns and df["boltz2_score"].notna().any():
+                    scored_data = df[df["boltz2_score"].notna()].copy()
+                else:
+                    scored_data = df.copy()
+                    use_aff = "affinity_pred_value1"
+                    use_prob = "affinity_probability_binary1"
+                    if use_aff in scored_data.columns and use_prob in scored_data.columns:
+                        scored_data = scored_data[scored_data[use_aff].notna() & scored_data[use_prob].notna()].copy()
+                        try:
+                            scored_data["boltz2_score"] = (
+                                scored_data.apply(lambda row: max(((-float(row[use_aff])) + 2.0) / 4.0, 0.0) * float(row[use_prob]), axis=1)
+                            )
+                        except Exception:
+                            scored_data["boltz2_score"] = pd.NA
+                    else:
+                        scored_data = pd.DataFrame()
+                
+                if not scored_data.empty:
+                    # Create summary metrics with proper unique counting
+                    score_col1, score_col2, score_col3, score_col4 = st.columns(4)
+                    
+                    # Determine the best unique identifier to use for counting
+                    if "variant_id" in scored_data.columns:
+                        unique_count = scored_data["variant_id"].nunique()
+                        identifier_type = "unique variants"
+                    elif "barcode" in scored_data.columns:
+                        unique_count = scored_data["barcode"].nunique()
+                        identifier_type = "unique barcodes"
+                    elif "compound_id" in scored_data.columns:
+                        unique_count = scored_data["compound_id"].nunique()
+                        identifier_type = "unique compounds"
+                    else:
+                        unique_count = len(scored_data)
+                        identifier_type = "entries"
+                    
+                    with score_col1:
+                        best_score = scored_data["boltz2_score"].max()
+                        st.metric("Best Score", f"{best_score:.4f}")
+                    with score_col2:
+                        avg_score = scored_data["boltz2_score"].mean()
+                        st.metric("Average Score", f"{avg_score:.4f}")
+                    with score_col3:
+                        st.metric("Compounds Scored", unique_count)
+                        if identifier_type != "entries":
+                            st.caption(f"({identifier_type})")
+                    with score_col4:
+                        high_score_data = scored_data[scored_data["boltz2_score"] > 0.5]
+                        if identifier_type == "unique variants" and "variant_id" in high_score_data.columns:
+                            high_score_count = high_score_data["variant_id"].nunique()
+                        elif identifier_type == "unique barcodes" and "barcode" in high_score_data.columns:
+                            high_score_count = high_score_data["barcode"].nunique()
+                        elif identifier_type == "unique compounds" and "compound_id" in high_score_data.columns:
+                            high_score_count = high_score_data["compound_id"].nunique()
+                        else:
+                            high_score_count = len(high_score_data)
+                        st.metric("High Scores (>0.5)", high_score_count)
+
+                    # Boltz-2 score distribution
+                    st.markdown("**Score Distribution**")
+                    try:
+                        fig_boltz_hist = px.histogram(
+                            scored_data,
+                            x="boltz2_score",
+                            nbins=20,
+                            title="Distribution of Boltz-2 Scores",
+                            color_discrete_sequence=["#38a169"],
+                            labels={"boltz2_score": "Boltz-2 Score", "count": "Number of Compounds"}
+                        )
+                        fig_boltz_hist.update_layout(bargap=0.1)
+                        st.plotly_chart(fig_boltz_hist, use_container_width=True)
+                    except Exception as e:
+                        st.warning(f"Could not render Boltz-2 score histogram: {e}")
+                    
+                    # Top scoring compounds with deduplication
+                    st.markdown("**🏆 Top 10 Scoring Compounds**")
+                    
+                    # Get unique top performers to avoid showing the same compound multiple times
+                    # Determine the best unique identifier to use
+                    if "variant_id" in scored_data.columns:
+                        # Group by variant_id and take the best (highest) boltz2_score for each
+                        top_scored = (scored_data
+                                    .loc[scored_data.groupby('variant_id')['boltz2_score'].idxmax()]
+                                    .nlargest(10, "boltz2_score"))
+                        st.caption("(Showing highest score per unique variant)")
+                    elif "barcode" in scored_data.columns:
+                        # Group by barcode and take the best (highest) boltz2_score for each
+                        top_scored = (scored_data
+                                    .loc[scored_data.groupby('barcode')['boltz2_score'].idxmax()]
+                                    .nlargest(10, "boltz2_score"))
+                        st.caption("(Showing highest score per unique barcode)")
+                    elif "compound_id" in scored_data.columns:
+                        # Group by compound_id and take the best (highest) boltz2_score for each
+                        top_scored = (scored_data
+                                    .loc[scored_data.groupby('compound_id')['boltz2_score'].idxmax()]
+                                    .nlargest(10, "boltz2_score"))
+                        st.caption("(Showing highest score per unique compound)")
+                    else:
+                        # Fallback to simple nlargest if no identifier available
+                        top_scored = scored_data.nlargest(10, "boltz2_score")
+                        st.caption("(Showing top 10 entries - may include duplicates)")
+                    
+                    # Prepare display columns
+                    display_columns = ["compound_id", "boltz2_score", "affinity_pred_value1", "affinity_probability_binary1"]
+                    if "variant_id" in top_scored.columns:
+                        display_columns.insert(1, "variant_id")
+                    if "barcode" in top_scored.columns:
+                        display_columns.insert(2, "barcode")
+                    if "smiles" in top_scored.columns:
+                        display_columns.append("smiles")
+                    if "docking_score" in top_scored.columns and top_scored["docking_score"].notna().any():
+                        display_columns.append("docking_score")
+                    
+                    # Only include columns that exist
+                    existing_display_cols = [col for col in display_columns if col in top_scored.columns]
+                    
+                    # Format the dataframe for better display
+                    display_df = top_scored[existing_display_cols].copy()
+                    display_df["boltz2_score"] = display_df["boltz2_score"].round(4)
+                    display_df["affinity_pred_value1"] = display_df["affinity_pred_value1"].round(3)
+                    display_df["affinity_probability_binary1"] = display_df["affinity_probability_binary1"].round(3)
+                    if "docking_score" in display_df.columns:
+                        display_df["docking_score"] = display_df["docking_score"].round(3)
+                    
+                    st.dataframe(
+                        display_df,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    st.caption("💡 Compounds are ranked by Boltz-2 score (higher = better). The score combines affinity predictions and confidence levels.")
+                    
+                    # Download option for top scores with deduplication
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        # Download unique top scores
+                        if "variant_id" in scored_data.columns:
+                            unique_top_100 = (scored_data
+                                            .loc[scored_data.groupby('variant_id')['boltz2_score'].idxmax()]
+                                            .nlargest(100, "boltz2_score"))
+                            filename = "top_100_unique_boltz2_scores.csv"
+                            button_text = "📥 Download Top 100 Unique Scores"
+                        elif "barcode" in scored_data.columns:
+                            unique_top_100 = (scored_data
+                                            .loc[scored_data.groupby('barcode')['boltz2_score'].idxmax()]
+                                            .nlargest(100, "boltz2_score"))
+                            filename = "top_100_unique_boltz2_scores.csv"
+                            button_text = "📥 Download Top 100 Unique Scores"
+                        elif "compound_id" in scored_data.columns:
+                            unique_top_100 = (scored_data
+                                            .loc[scored_data.groupby('compound_id')['boltz2_score'].idxmax()]
+                                            .nlargest(100, "boltz2_score"))
+                            filename = "top_100_unique_boltz2_scores.csv"
+                            button_text = "📥 Download Top 100 Unique Scores"
+                        else:
+                            unique_top_100 = scored_data.nlargest(100, "boltz2_score")
+                            filename = "top_100_boltz2_scores.csv"
+                            button_text = "📥 Download Top 100 Scores"
+                        
+                        st.download_button(
+                            button_text,
+                            data=unique_top_100.to_csv(index=False).encode('utf-8'),
+                            file_name=filename,
+                            mime="text/csv"
+                        )
+                    
+                    with col2:
+                        # Download all scores (with duplicates)
+                        st.download_button(
+                            "📥 Download All Scores (with duplicates)",
+                            data=scored_data.to_csv(index=False).encode('utf-8'),
+                            file_name="all_boltz2_scores.csv",
+                            mime="text/csv"
+                        )
+                else:
+                    st.warning("No compounds found with both first ensemble model affinity predictions (affinity_pred_value1) and probability values.")
 
         elif st.session_state.selected_view == "Compounds":
             st.header("Generated Compounds")
@@ -1999,10 +2617,30 @@ if st.session_state.results_data and st.session_state.results_data.get("tracking
                 stats["average_log_ic50"] = float(df[df["affinity_pred_value"].notna()]["affinity_pred_value"].mean())
                 stats["best_log_ic50"] = float(df[df["affinity_pred_value"].notna()]["affinity_pred_value"].min())  # Lower is better
                 if "affinity_probability_binary" in df.columns:
-                    predicted_binders = len(df[df["affinity_probability_binary"] > 0.5])
-                    stats["predicted_binders"] = predicted_binders
+                    # Count unique binders to avoid double counting
+                    binders_df = df[df["affinity_probability_binary"] > 0.5]
+                    
+                    # Determine the best unique identifier to use
+                    if "variant_id" in binders_df.columns:
+                        unique_binders = binders_df["variant_id"].nunique()
+                        stats["predicted_binders_unique_variants"] = unique_binders
+                    elif "barcode" in binders_df.columns:
+                        unique_binders = binders_df["barcode"].nunique()
+                        stats["predicted_binders_unique_barcodes"] = unique_binders
+                    elif "compound_id" in binders_df.columns:
+                        unique_binders = binders_df["compound_id"].nunique()
+                        stats["predicted_binders_unique_compounds"] = unique_binders
+                    else:
+                        # Fallback to row count if no identifier available
+                        unique_binders = len(binders_df)
+                        stats["predicted_binders_entries"] = unique_binders
+                    
+                    # Also keep the total row count for comparison
+                    stats["predicted_binders_total_entries"] = len(binders_df)
             
             st.json(stats)
+
+
 
     # Dashboard footer
     st.divider()
@@ -2037,5 +2675,6 @@ else:
     - 🧬 Compound and variant exploration
     - 🎯 Docking results with 3D visualization
     - 🤖 Boltz-2 affinity predictions analysis
+    - 🧮 Boltz-2 score ranking (from paper formula using first ensemble model)
     - 💾 Export and download capabilities
     """) 

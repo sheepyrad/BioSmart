@@ -63,4 +63,7 @@ __all__ = [
     
     # Boltz filtering
     'boltz_filter_variants',
+
+    # ChemAP filtering
+    'chemap_filter_variants',
 ] 

@@ -14,3 +14,5 @@ dependencies:
   - cuda-nvcc=12.4
   - cuda-cudart-dev=12.4
   - pytorch-cuda=12.4 
+  - omegaconf
+  - rdkit

@@ -4,11 +4,13 @@ channels:
   - bioconda
   - nvidia
 dependencies:
-  - python=3.10
-  - unidock
+  - python
+  - unidock=1.1.3
   - ambertools
   - reduce
   - cuda-toolkit
+  - libboost
+  - numpy=1.25
   - pip
   - pip:
-    - git+https://github.com/dptech-corp/Uni-Dock.git#subdirectory=unidock_tools 
+    - git+https://github.com/dptech-corp/Uni-Dock.git#subdirectory=unidock_tools

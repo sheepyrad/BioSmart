@@ -119,6 +119,8 @@ if "score_threshold_input" not in st.session_state:
 # Boltz-2 Specific
 if "boltz_pocket_residues_input" not in st.session_state:
     st.session_state.boltz_pocket_residues_input = ""
+if "msa_path_input" not in st.session_state:
+    st.session_state.msa_path_input = "/home/conrad_hku/Drug_pipeline/msa/NS5_full.a3m"
 
 # Box Generation Input
 if "generate_box_residues_input" not in st.session_state:
@@ -129,6 +131,14 @@ if "medchem_rule_threshold" not in st.session_state:
     st.session_state.medchem_rule_threshold = 13
 if "medchem_structural_threshold" not in st.session_state:
     st.session_state.medchem_structural_threshold = 27
+if "medchem_filter_mode" not in st.session_state:
+    st.session_state.medchem_filter_mode = "threshold"
+
+# CGFlow Specific
+if "cgflow_checkpoint_path" not in st.session_state:
+    st.session_state.cgflow_checkpoint_path = "src/cgflow/result/opt/unidock_qed/NS5/250812_160000/model_state.pt"
+if "cgflow_config_path" not in st.session_state:
+    st.session_state.cgflow_config_path = "src/cgflow/configs/opt/NS5.yaml"
 
 # --- Control flow for applying loaded config ---
 if "_apply_loaded_config_on_next_run" not in st.session_state:
@@ -164,10 +174,12 @@ if st.session_state._apply_loaded_config_on_next_run:
             
             # Load Boltz-2 configuration
             st.session_state.boltz_pocket_residues_input = pending_config.get("boltz_pocket_residues", st.session_state.boltz_pocket_residues_input)
+            st.session_state.msa_path_input = pending_config.get("msa_path", st.session_state.msa_path_input)
 
             # Load MedChem filter thresholds
             st.session_state.medchem_rule_threshold = int(pending_config.get("medchem_rule_threshold", st.session_state.medchem_rule_threshold))
             st.session_state.medchem_structural_threshold = int(pending_config.get("medchem_structural_threshold", st.session_state.medchem_structural_threshold))
+            st.session_state.medchem_filter_mode = pending_config.get("medchem_filter_mode", st.session_state.medchem_filter_mode)
 
             if "out_dir" in pending_config:
                 st.session_state.output_dir_path_input = pending_config["out_dir"]
@@ -185,6 +197,9 @@ if st.session_state._apply_loaded_config_on_next_run:
                     st.session_state.pocket2mol_dock_size_x = float(pending_config["box_size"][0])
                     st.session_state.pocket2mol_dock_size_y = float(pending_config["box_size"][1])
                     st.session_state.pocket2mol_dock_size_z = float(pending_config["box_size"][2])
+            elif current_model_loaded == "cgflow":
+                st.session_state.cgflow_checkpoint_path = pending_config.get("checkpoint", st.session_state.cgflow_checkpoint_path)
+                st.session_state.cgflow_config_path = pending_config.get("cgflow_config", st.session_state.cgflow_config_path)
 
             apply_success = True
             st.success("Configuration loaded successfully and fields updated. Review and finalize.")
@@ -388,8 +403,8 @@ with st.form(key="model_selection_form", border=True):
     # Model selection - uses key 'model_selection'
     st.selectbox(
         "AI Model for Molecule Generation *",
-        options=["diffsbdd", "pocket2mol"],
-        format_func=lambda x: "DiffSBDD" if x == "diffsbdd" else "Pocket2Mol",
+        options=["diffsbdd", "pocket2mol", "cgflow"],
+        format_func=lambda x: {"diffsbdd": "DiffSBDD", "pocket2mol": "Pocket2Mol", "cgflow": "CGFlow (finetuned)"}[x],
         # index is automatically handled by key binding if key exists
         key="model_selection",
         help="Select the AI model for generating molecules"
@@ -400,6 +415,15 @@ with st.form(key="model_selection_form", border=True):
 
 # Check if model update was requested and trigger rerun
 if st.session_state.model_update_requested:
+    # Apply cgflow-specific defaults on model change
+    if st.session_state.model_selection == "cgflow":
+        st.session_state.pocket2mol_dock_size_x = 20.0
+        st.session_state.pocket2mol_dock_size_y = 20.0
+        st.session_state.pocket2mol_dock_size_z = 20.0
+        if "cgflow_checkpoint_path" not in st.session_state:
+            st.session_state.cgflow_checkpoint_path = "src/cgflow/result/opt/unidock_qed/NS5/250812_160000/model_state.pt"
+        if "cgflow_config_path" not in st.session_state:
+            st.session_state.cgflow_config_path = "src/cgflow/configs/opt/NS5.yaml"
     st.session_state.model_update_requested = False
     st.rerun()
 
@@ -473,9 +497,22 @@ with tab1:
             help="Apply sanitization to generated molecules",
             key="diffsbdd_sanitize"
         )
-    else:
+    elif current_model == "pocket2mol":
         # Display a message for Pocket2Mol
         st.info("Pocket2Mol uses 3D pocket information instead of residue lists. The bounding box settings can be configured in the 'Box Settings' tab.")
+    else:
+        st.subheader("CGFlow")
+        st.info("Using a fine-tuned CGFlow checkpoint specific to the target pocket. Only common parameters, Boltz-2, MedChem and output directory are shown.")
+        st.text_input(
+            "Checkpoint Path (.pt) *",
+            help="Path to the fine-tuned CGFlow checkpoint file on the server",
+            key="cgflow_checkpoint_path"
+        )
+        st.text_input(
+            "Config Path (.yaml) *",
+            help="Path to the CGFlow YAML configuration file on the server",
+            key="cgflow_config_path"
+        )
 
     # Common parameters - simplified since Unidock handles program choice and scoring
     col3, col4 = st.columns(2)
@@ -485,7 +522,7 @@ with tab1:
         st.number_input(
             "Number of Samples *",
             min_value=1,
-            max_value=500, # Adjust max if needed
+            max_value=50000, # Adjust max if needed
             step=1,
             help="Number of compounds to generate",
             key="n_samples_input"
@@ -495,10 +532,14 @@ with tab1:
         pass
 
 with tab2:
-    # --- Box Generation Expander (Moved outside the form) ---
-    with st.expander("Generate Box from Residues (Experimental)"):
-        st.markdown("Automatically calculate box center and dimensions based on selected residues.")
-        st.caption("Grid generation logic adapted from code by Pritam Kumar Panda.")
+    # Skip box configuration UI for CGFlow (finetuned pocket)
+    if current_model == "cgflow":
+        st.info("CGFlow uses a fine-tuned target pocket. Box configuration is not required and is hidden for this model.")
+    else:
+        # --- Box Generation Expander (Moved outside the form) ---
+        with st.expander("Generate Box from Residues (Experimental)"):
+            st.markdown("Automatically calculate box center and dimensions based on selected residues.")
+            st.caption("Grid generation logic adapted from code by Pritam Kumar Panda.")
 
         # Use the residue list from DiffSBDD input if available
         # Read directly from the widget state key
@@ -623,7 +664,7 @@ with tab2:
                 key="diffsbdd_size_z"
             )
 
-    else:  # pocket2mol
+    elif current_model == "pocket2mol":  # pocket2mol
         # Generation box (bounding box) for Pocket2Mol
         st.subheader("Molecule Generation Box (Pocket2Mol)")
         st.info("This defines the cubic space where Pocket2Mol will generate molecules.")
@@ -659,6 +700,33 @@ with tab2:
             )
         with col13:
             # Docking Size Z Input - uses key 'pocket2mol_dock_size_z'
+            st.number_input(
+                "Docking Size Z",
+                min_value=1.0,
+                format="%.1f",
+                key="pocket2mol_dock_size_z"
+            )
+    else:  # cgflow
+        # Docking box for CGFlow (no generation box)
+        st.subheader("Docking Box Dimensions (CGFlow)")
+        st.info("Define the box used for docking generated molecules.")
+
+        col11, col12, col13 = st.columns(3)
+        with col11:
+            st.number_input(
+                "Docking Size X",
+                min_value=1.0,
+                format="%.1f",
+                key="pocket2mol_dock_size_x"
+            )
+        with col12:
+            st.number_input(
+                "Docking Size Y",
+                min_value=1.0,
+                format="%.1f",
+                key="pocket2mol_dock_size_y"
+            )
+        with col13:
             st.number_input(
                 "Docking Size Z",
                 min_value=1.0,
@@ -725,6 +793,14 @@ with tab3:
         key="boltz_pocket_residues_input"
     )
     
+    # MSA file path for Boltz-2
+    st.text_input(
+        "MSA File Path (.a3m)",
+        placeholder="/path/to/alignment.a3m",
+        help="Absolute path to a precomputed MSA in A3M format used by Boltz-2.",
+        key="msa_path_input"
+    )
+    
     st.caption("""
     **Pocket Constraints:** Specify key residues that define the binding pocket for Boltz-2 structure prediction. 
     These should be residue numbers (1-indexed) that are important for ligand binding. 
@@ -737,27 +813,40 @@ with tab3:
 
     st.info("MedChem filtering evaluates compounds against medicinal chemistry rules and structural alerts. Compounds must pass the minimum number of specified filters to proceed to docking.")
     
-    col_medchem1, col_medchem2 = st.columns(2)
-    
-    with col_medchem1:
-        st.number_input(
-            "Minimum Rules Passed",
-            min_value=0,
-            max_value=20,
-            step=1,
-            help="Minimum number of medicinal chemistry rules a compound must pass (e.g., Lipinski's Rule of 5, Ghose, Veber, etc.). Default: 13 out of ~15 total rules.",
-            key="medchem_rule_threshold"
-        )
-    
-    with col_medchem2:
-        st.number_input(
-            "Minimum Structural Filters Passed",
-            min_value=0,
-            max_value=40,
-            step=1,
-            help="Minimum number of structural/functional filters a compound must pass (e.g., PAINS, Glaxo alerts, NIBR filter, etc.). Default: 27 out of ~30 total filters.",
-            key="medchem_structural_threshold"
-        )
+    # Mode selection
+    st.selectbox(
+        "MedChem Filter Mode",
+        options=["threshold", "generative"],
+        format_func=lambda x: {
+            "threshold": "Threshold-based (pass-count across many rules)",
+            "generative": "Generative design (must pass both generative rules)"
+        }[x],
+        key="medchem_filter_mode",
+        help="Choose between classic threshold-based filtering or a strict generative design rule-only filter."
+    )
+
+    if st.session_state.medchem_filter_mode == "threshold":
+        col_medchem1, col_medchem2 = st.columns(2)
+        with col_medchem1:
+            st.number_input(
+                "Minimum Rules Passed",
+                min_value=0,
+                max_value=20,
+                step=1,
+                help="Minimum number of medicinal chemistry rules a compound must pass (e.g., Lipinski's Rule of 5, Ghose, Veber, etc.). Default: 13 out of ~15 total rules.",
+                key="medchem_rule_threshold"
+            )
+        with col_medchem2:
+            st.number_input(
+                "Minimum Structural Filters Passed",
+                min_value=0,
+                max_value=40,
+                step=1,
+                help="Minimum number of structural/functional filters a compound must pass (e.g., PAINS, Glaxo alerts, NIBR filter, etc.). Default: 27 out of ~30 total filters.",
+                key="medchem_structural_threshold"
+            )
+    else:
+        st.info("Generative design mode will only keep compounds that pass BOTH 'rule_of_generative_design' and 'rule_of_generative_design_strict'. Threshold values are ignored in this mode.")
     
     st.caption("""
     **Filter Categories:**
@@ -841,9 +930,19 @@ with col_dl:
                  st.session_state.diffsbdd_size_y, 
                  st.session_state.diffsbdd_size_z
              ]
-        else: # pocket2mol
+        elif download_config["model"] == "pocket2mol": # pocket2mol
             download_config["bbox_size"] = st.session_state.pocket2mol_bbox_size
             download_config["box_size"] = [ # Docking box for pocket2mol
+                st.session_state.pocket2mol_dock_size_x,
+                st.session_state.pocket2mol_dock_size_y,
+                st.session_state.pocket2mol_dock_size_z
+            ]
+        else:
+            # cgflow presets
+            download_config["checkpoint"] = st.session_state.cgflow_checkpoint_path
+            download_config["cgflow_config"] = st.session_state.cgflow_config_path
+            # Docking box for CGFlow
+            download_config["box_size"] = [
                 st.session_state.pocket2mol_dock_size_x,
                 st.session_state.pocket2mol_dock_size_y,
                 st.session_state.pocket2mol_dock_size_z
@@ -860,10 +959,12 @@ with col_dl:
         
         # Add Boltz-2 configuration
         download_config["boltz_pocket_residues"] = st.session_state.boltz_pocket_residues_input
+        download_config["msa_path"] = st.session_state.msa_path_input
         
         # Add MedChem filter thresholds
         download_config["medchem_rule_threshold"] = st.session_state.medchem_rule_threshold
         download_config["medchem_structural_threshold"] = st.session_state.medchem_structural_threshold
+        download_config["medchem_filter_mode"] = st.session_state.medchem_filter_mode
         
         # Use output dir path for config value and extract name for filename
         output_dir_path_value = st.session_state.get("output_dir_path_input", "outputs/pipeline_output")
@@ -1036,9 +1137,19 @@ if finalize_submitted:
                     st.session_state.diffsbdd_size_y,
                     st.session_state.diffsbdd_size_z
                 ]
-            else:  # pocket2mol
+            elif current_model_final == "pocket2mol":
                 config["bbox_size"] = st.session_state.pocket2mol_bbox_size
                 # Docking box for Pocket2Mol
+                config["box_size"] = [
+                    st.session_state.pocket2mol_dock_size_x,
+                    st.session_state.pocket2mol_dock_size_y,
+                    st.session_state.pocket2mol_dock_size_z
+                ]
+            else:  # cgflow
+                # Default CGFlow settings; not exposed in UI per requirements
+                config["checkpoint"] = st.session_state.cgflow_checkpoint_path
+                config["cgflow_config"] = st.session_state.cgflow_config_path
+                # Docking box for CGFlow (reuses docking keys)
                 config["box_size"] = [
                     st.session_state.pocket2mol_dock_size_x,
                     st.session_state.pocket2mol_dock_size_y,
@@ -1056,10 +1167,12 @@ if finalize_submitted:
             
             # Add Boltz-2 configuration
             config["boltz_pocket_residues"] = st.session_state.boltz_pocket_residues_input
+            config["msa_path"] = st.session_state.msa_path_input
             
             # Add MedChem filter thresholds
             config["medchem_rule_threshold"] = st.session_state.medchem_rule_threshold
             config["medchem_structural_threshold"] = st.session_state.medchem_structural_threshold
+            config["medchem_filter_mode"] = st.session_state.medchem_filter_mode
             
             config["out_dir"] = str(output_path) # Use the validated, absolute path
 
@@ -1121,7 +1234,7 @@ if pdb_content_for_vis:
             st.session_state.diffsbdd_size_y,
             st.session_state.diffsbdd_size_z
         ]
-    else:  # pocket2mol
+    elif current_vis_model == "pocket2mol":  # pocket2mol
         selected_residues_vis = None
         # Pocket2Mol uses different keys for docking box vs generation box
         box_size_vis = [ # Docking box
@@ -1130,6 +1243,15 @@ if pdb_content_for_vis:
             st.session_state.pocket2mol_dock_size_z
         ]
         bbox_size_vis = st.session_state.pocket2mol_bbox_size # Generation box size
+    else:  # cgflow
+        selected_residues_vis = None
+        # Show docking box for CGFlow using docking keys; default 20s are set on model selection
+        box_size_vis = [
+            st.session_state.pocket2mol_dock_size_x,
+            st.session_state.pocket2mol_dock_size_y,
+            st.session_state.pocket2mol_dock_size_z
+        ]
+        bbox_size_vis = None
 
     try:
         # Create visualization with appropriate box
