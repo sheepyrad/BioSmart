@@ -111,6 +111,15 @@ fi
 ## 3. Create CGFlow environment and setup
 echo_step "Setting up CGFlow environment"
 
+# Clone cgflow repository if not present
+if [ ! -d "src/cgflow" ]; then
+    echo "Cloning cgflow repository"
+    mkdir -p src
+    cd src
+    git clone https://github.com/tsa87/cgflow.git cgflow
+    cd ..
+fi
+
 # Create conda env and install dependencies per user instructions
 if ! conda env list | grep -q "^cgflow-env "; then
     echo "Creating cgflow conda environment"
@@ -136,6 +145,16 @@ conda run -n cgflow-env pip install -e 'src/cgflow[unidock]'
 
 # 4. Create Synformer environment
 echo_step "Setting up Synformer environment"
+
+# Clone synformer repository if not present
+if [ ! -d "src/synformer" ]; then
+    echo "Cloning synformer repository"
+    mkdir -p src
+    cd src
+    git clone https://github.com/wenhao-gao/synformer.git synformer
+    cd ..
+fi
+
 create_env_if_not_exists "synformer-env" "$ENV_DIR/synformer.yml"
 
 # Setup synformer

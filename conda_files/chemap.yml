@@ -3,6 +3,8 @@ channels:
   - conda-forge
   - pytorch
 dependencies:
+  - gdown
+  - scikit-learn
   - _libgcc_mutex=0.1=conda_forge
   - _openmp_mutex=4.5=4_kmp_llvm
   - aom=3.5.0=h27087fc_0
