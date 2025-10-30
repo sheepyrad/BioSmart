@@ -144,6 +144,18 @@ def get_directory_tree(path, prefix="", is_last=True, max_depth=3, current_depth
     
     return output
 
+def extract_round_from_barcode(barcode):
+    """Extract round number from barcode pattern (e.g., 'R1-GEN-0001' -> 1)."""
+    if not barcode or not isinstance(barcode, str):
+        return None
+    try:
+        if barcode.startswith("R") and "-" in barcode:
+            round_str = barcode.split("-")[0][1:]  # Extract "1" from "R1"
+            return int(round_str)
+    except (ValueError, IndexError):
+        pass
+    return None
+
 # Function to load results
 def load_results(output_dir):
     """Load results from the output directory"""
@@ -529,9 +541,12 @@ with st.sidebar:
         df = st.session_state.results["tracking_report"]
         
         # Round filter (applies to all views)
-        if "round" in df.columns:
+        if "barcode" in df.columns:
             try:
-                round_options = sorted([r for r in df["round"].unique() if pd.notna(r)])
+                # Extract round from barcode
+                df_with_round = df.copy()
+                df_with_round["round"] = df_with_round["barcode"].apply(extract_round_from_barcode)
+                round_options = sorted([r for r in df_with_round["round"].unique() if pd.notna(r)])
                 sidebar_rounds = st.multiselect(
                     "Filter by Round",
                     options=round_options,
@@ -595,8 +610,10 @@ with st.sidebar:
         filtered_df = df.copy()
         
         # Apply round filter
-        if sidebar_rounds and "round" in df.columns:
+        if sidebar_rounds and "barcode" in df.columns:
             try:
+                # Extract round from barcode and filter
+                filtered_df["round"] = filtered_df["barcode"].apply(extract_round_from_barcode)
                 filtered_df = filtered_df[filtered_df["round"].isin(sidebar_rounds)]
             except Exception as e:
                 st.error(f"Error applying round filter: {e}")
@@ -913,7 +930,7 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                     - To pIC50 in kcal/mol: pIC50 = (6 - log(IC50)) × 1.364
                     
                     📊 **Counting Method:**
-                    - "Predicted Binders" counts unique molecules (by variant_id, barcode, or compound_id)
+                    - "Predicted Binders" counts unique molecules (by barcode or variant_id)
                     - This prevents double-counting when the same molecule appears in multiple rounds
                     - The displayed count represents distinct chemical entities, not data entries
                     """)
@@ -934,18 +951,14 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                             binders_df = affinity_with_values[affinity_with_values["affinity_probability_binary1"] > 0.5]
                             
                             # Determine the best unique identifier to use
-                            if "variant_id" in binders_df.columns:
-                                unique_binders = binders_df["variant_id"].nunique()
-                                total_unique = affinity_with_values["variant_id"].nunique()
-                                identifier_type = "unique variants"
-                            elif "barcode" in binders_df.columns:
+                            if "barcode" in binders_df.columns:
                                 unique_binders = binders_df["barcode"].nunique()
                                 total_unique = affinity_with_values["barcode"].nunique()
                                 identifier_type = "unique barcodes"
-                            elif "compound_id" in binders_df.columns:
-                                unique_binders = binders_df["compound_id"].nunique()
-                                total_unique = affinity_with_values["compound_id"].nunique()
-                                identifier_type = "unique compounds"
+                            elif "variant_id" in binders_df.columns:
+                                unique_binders = binders_df["variant_id"].nunique()
+                                total_unique = affinity_with_values["variant_id"].nunique()
+                                identifier_type = "unique variants"
                             else:
                                 # Fallback to row count if no identifier available
                                 unique_binders = len(binders_df)
@@ -979,7 +992,7 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                             labels={"affinity_pred_value1": "log(IC50) Prediction", "count": "Number of Compounds"}
                         )
                         fig_aff.update_layout(bargap=0.1)
-                        st.plotly_chart(fig_aff, use_container_width=True)
+                        st.plotly_chart(fig_aff, width='stretch')
                     
                     with viz_col2:
                         # Affinity vs Probability scatter plot if probability data exists
@@ -996,22 +1009,42 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                                     "affinity_probability_binary1": "Binding Probability"
                                 }
                             )
-                            st.plotly_chart(fig_scatter, use_container_width=True)
+                            st.plotly_chart(fig_scatter, width='stretch')
                         else:
                             # Show affinity by round if multiple rounds exist
-                            if "round" in affinity_with_values.columns and len(affinity_with_values["round"].unique()) > 1:
-                                fig_box_aff = px.box(
-                                    affinity_with_values,
-                                    x="round",
-                                    y="affinity_pred_value1",
-                                    title="log(IC50) Predictions by Round (Lower = Better)",
-                                    color_discrete_sequence=["#48bb78"]
-                                )
-                                fig_box_aff.update_layout(
-                                    xaxis_title="Round",
-                                    yaxis_title="log(IC50) Prediction"
-                                )
-                                st.plotly_chart(fig_box_aff, use_container_width=True)
+                            if "barcode" in affinity_with_values.columns:
+                                affinity_with_values["round"] = affinity_with_values["barcode"].apply(extract_round_from_barcode)
+                                if len(affinity_with_values["round"].unique()) > 1:
+                                    fig_box_aff = px.box(
+                                        affinity_with_values,
+                                        x="round",
+                                        y="affinity_pred_value1",
+                                        title="log(IC50) Predictions by Round (Lower = Better)",
+                                        color_discrete_sequence=["#48bb78"]
+                                    )
+                                    fig_box_aff.update_layout(
+                                        xaxis_title="Round",
+                                        yaxis_title="log(IC50) Prediction"
+                                    )
+                                    st.plotly_chart(fig_box_aff, width='stretch')
+                                else:
+                                    # Show affinity statistics
+                                    st.markdown("**log(IC50) Statistics:**")
+                                    aff_stats = affinity_with_values["affinity_pred_value1"].describe()
+                                    aff_stats_df = pd.DataFrame({
+                                        "Statistic": ["Count", "Mean", "Std", "Min", "25%", "50%", "75%", "Max"],
+                                        "Value": [
+                                            f"{aff_stats['count']:.0f}",
+                                            f"{aff_stats['mean']:.3f}",
+                                            f"{aff_stats['std']:.3f}",
+                                            f"{aff_stats['min']:.3f}",
+                                            f"{aff_stats['25%']:.3f}",
+                                            f"{aff_stats['50%']:.3f}",
+                                            f"{aff_stats['75%']:.3f}",
+                                            f"{aff_stats['max']:.3f}"
+                                        ]
+                                    })
+                                    st.dataframe(aff_stats_df, width='stretch', hide_index=True)
                             else:
                                 # Show affinity statistics
                                 st.markdown("**log(IC50) Statistics:**")
@@ -1029,34 +1062,27 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                                         f"{aff_stats['max']:.3f}"
                                     ]
                                 })
-                                st.dataframe(aff_stats_df, use_container_width=True, hide_index=True)
+                                st.dataframe(aff_stats_df, width='stretch', hide_index=True)
                     
                     # Show top affinity performers (lowest log(IC50) values are best)
                     st.markdown("**🏆 Top 10 log(IC50) Predictions (Lowest/Best Values):**")
                     
                     # Get unique top performers to avoid showing the same compound multiple times
                     # Determine the best unique identifier to use
-                    if "variant_id" in affinity_with_values.columns:
-                        # Group by variant_id and take the best (lowest) affinity_pred_value for each
-                        unique_identifier = "variant_id"
-                        top_affinity = (affinity_with_values
-                                      .loc[affinity_with_values.groupby('variant_id')['affinity_pred_value1'].idxmin()]
-                                      .nsmallest(10, "affinity_pred_value1"))
-                        st.caption("(Showing best prediction per unique variant)")
-                    elif "barcode" in affinity_with_values.columns:
+                    if "barcode" in affinity_with_values.columns:
                         # Group by barcode and take the best (lowest) affinity_pred_value for each
                         unique_identifier = "barcode"
                         top_affinity = (affinity_with_values
                                       .loc[affinity_with_values.groupby('barcode')['affinity_pred_value1'].idxmin()]
                                       .nsmallest(10, "affinity_pred_value1"))
                         st.caption("(Showing best prediction per unique barcode)")
-                    elif "compound_id" in affinity_with_values.columns:
-                        # Group by compound_id and take the best (lowest) affinity_pred_value for each
-                        unique_identifier = "compound_id"
+                    elif "variant_id" in affinity_with_values.columns:
+                        # Group by variant_id and take the best (lowest) affinity_pred_value for each
+                        unique_identifier = "variant_id"
                         top_affinity = (affinity_with_values
-                                      .loc[affinity_with_values.groupby('compound_id')['affinity_pred_value1'].idxmin()]
+                                      .loc[affinity_with_values.groupby('variant_id')['affinity_pred_value1'].idxmin()]
                                       .nsmallest(10, "affinity_pred_value1"))
-                        st.caption("(Showing best prediction per unique compound)")
+                        st.caption("(Showing best prediction per unique variant)")
                     else:
                         # Fallback to simple nsmallest if no identifier available
                         top_affinity = affinity_with_values.nsmallest(10, "affinity_pred_value1")
@@ -1068,12 +1094,12 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                     top_affinity_display["estimated_IC50_uM"] = 10 ** top_affinity_display["affinity_pred_value1"]
                     # Convert to pIC50 in kcal/mol: pIC50 = (6 - log(IC50)) × 1.364
                     top_affinity_display["pIC50_kcal_mol"] = (6 - top_affinity_display["affinity_pred_value1"]) * 1.364
+                    # Extract round from barcode
+                    top_affinity_display["round"] = top_affinity_display["barcode"].apply(extract_round_from_barcode)
                     
-                    aff_display_cols = ["compound_id", "affinity_pred_value1", "estimated_IC50_uM", "pIC50_kcal_mol", "round"]
+                    aff_display_cols = ["barcode", "affinity_pred_value1", "estimated_IC50_uM", "pIC50_kcal_mol", "round"]
                     if "variant_id" in top_affinity_display.columns:
                         aff_display_cols.insert(1, "variant_id")
-                    if "barcode" in top_affinity_display.columns:
-                        aff_display_cols.insert(2, "barcode")
                     if "smiles" in top_affinity_display.columns:
                         aff_display_cols.insert(-1, "smiles")
                     if "affinity_probability_binary1" in top_affinity_display.columns:
@@ -1094,7 +1120,7 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                     
                     st.dataframe(
                         display_df,
-                        use_container_width=True,
+                        width='stretch',
                         hide_index=True
                     )
                     
@@ -1106,35 +1132,30 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                         
                         # Get unique top probability performers to avoid showing the same compound multiple times
                         # Determine the best unique identifier to use
-                        if "variant_id" in affinity_with_values.columns:
-                            # Group by variant_id and take the best (highest) affinity_probability_binary1 for each
-                            top_probability = (affinity_with_values
-                                             .loc[affinity_with_values.groupby('variant_id')['affinity_probability_binary1'].idxmax()]
-                                             .nlargest(10, "affinity_probability_binary1"))
-                            st.caption("(Showing highest probability per unique variant)")
-                        elif "barcode" in affinity_with_values.columns:
+                        if "barcode" in affinity_with_values.columns:
                             # Group by barcode and take the best (highest) affinity_probability_binary1 for each
                             top_probability = (affinity_with_values
                                              .loc[affinity_with_values.groupby('barcode')['affinity_probability_binary1'].idxmax()]
                                              .nlargest(10, "affinity_probability_binary1"))
                             st.caption("(Showing highest probability per unique barcode)")
-                        elif "compound_id" in affinity_with_values.columns:
-                            # Group by compound_id and take the best (highest) affinity_probability_binary1 for each
+                        elif "variant_id" in affinity_with_values.columns:
+                            # Group by variant_id and take the best (highest) affinity_probability_binary1 for each
                             top_probability = (affinity_with_values
-                                             .loc[affinity_with_values.groupby('compound_id')['affinity_probability_binary1'].idxmax()]
+                                             .loc[affinity_with_values.groupby('variant_id')['affinity_probability_binary1'].idxmax()]
                                              .nlargest(10, "affinity_probability_binary1"))
-                            st.caption("(Showing highest probability per unique compound)")
+                            st.caption("(Showing highest probability per unique variant)")
                         else:
                             # Fallback to simple nlargest if no identifier available
                             top_probability = affinity_with_values.nlargest(10, "affinity_probability_binary1")
                             st.caption("(Showing top 10 entries - may include duplicates)")
                         
                         # Prepare display columns for probability table
-                        prob_display_cols = ["compound_id", "affinity_probability_binary1", "affinity_pred_value1", "round"]
+                        prob_display_cols = ["barcode", "affinity_probability_binary1", "affinity_pred_value1"]
+                        # Extract round from barcode
+                        top_probability["round"] = top_probability["barcode"].apply(extract_round_from_barcode)
+                        prob_display_cols.append("round")
                         if "variant_id" in top_probability.columns:
                             prob_display_cols.insert(1, "variant_id")
-                        if "barcode" in top_probability.columns:
-                            prob_display_cols.insert(2, "barcode")
                         if "smiles" in top_probability.columns:
                             prob_display_cols.insert(-1, "smiles")
                         
@@ -1149,7 +1170,7 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                         
                         st.dataframe(
                             prob_display_df,
-                            use_container_width=True,
+                            width='stretch',
                             hide_index=True
                         )
                         
@@ -1175,23 +1196,43 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                             labels={"docking_score": "Docking Score", "count": "Number of Compounds"}
                         )
                         fig_hist.update_layout(bargap=0.1)
-                        st.plotly_chart(fig_hist, use_container_width=True)
+                        st.plotly_chart(fig_hist, width='stretch')
                     
                     with viz_col2:
                         # Box plot by round if multiple rounds exist
-                        if "round" in docked_with_scores.columns and len(docked_with_scores["round"].unique()) > 1:
-                            fig_box = px.box(
-                                docked_with_scores,
-                                x="round",
-                                y="docking_score",
-                                title="Docking Scores by Round",
-                                color_discrete_sequence=["#f56565"]
-                            )
-                            fig_box.update_layout(
-                                xaxis_title="Round",
-                                yaxis_title="Docking Score"
-                            )
-                            st.plotly_chart(fig_box, use_container_width=True)
+                        if "barcode" in docked_with_scores.columns:
+                            docked_with_scores["round"] = docked_with_scores["barcode"].apply(extract_round_from_barcode)
+                            if len(docked_with_scores["round"].unique()) > 1:
+                                fig_box = px.box(
+                                    docked_with_scores,
+                                    x="round",
+                                    y="docking_score",
+                                    title="Docking Scores by Round",
+                                    color_discrete_sequence=["#f56565"]
+                                )
+                                fig_box.update_layout(
+                                    xaxis_title="Round",
+                                    yaxis_title="Docking Score"
+                                )
+                                st.plotly_chart(fig_box, width='stretch')
+                            else:
+                                # Show summary statistics instead
+                                st.markdown("**Summary Statistics:**")
+                                stats = docked_with_scores["docking_score"].describe()
+                                stats_df = pd.DataFrame({
+                                    "Statistic": ["Count", "Mean", "Std", "Min", "25%", "50%", "75%", "Max"],
+                                    "Value": [
+                                        f"{stats['count']:.0f}",
+                                        f"{stats['mean']:.2f}",
+                                        f"{stats['std']:.2f}",
+                                        f"{stats['min']:.2f}",
+                                        f"{stats['25%']:.2f}",
+                                        f"{stats['50%']:.2f}",
+                                        f"{stats['75%']:.2f}",
+                                        f"{stats['max']:.2f}"
+                                    ]
+                                })
+                                st.dataframe(stats_df, width='stretch', hide_index=True)
                         else:
                             # Show summary statistics instead
                             st.markdown("**Summary Statistics:**")
@@ -1209,47 +1250,41 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                                     f"{stats['max']:.2f}"
                                 ]
                             })
-                            st.dataframe(stats_df, use_container_width=True, hide_index=True)
+                            st.dataframe(stats_df, width='stretch', hide_index=True)
                 
                 # Show top performers (lowest/best scores)
                 st.markdown("**🏆 Top 10 Docking Performers (Lowest/Best Scores):**")
                 
                 # Get unique top performers to avoid showing the same compound multiple times
                 # Determine the best unique identifier to use
-                if "variant_id" in docked_with_scores.columns:
-                    # Group by variant_id and take the best (lowest) docking_score for each
-                    top_performers = (docked_with_scores
-                                    .loc[docked_with_scores.groupby('variant_id')['docking_score'].idxmin()]
-                                    .nsmallest(10, "docking_score"))
-                    st.caption("(Showing best score per unique variant)")
-                elif "barcode" in docked_with_scores.columns:
+                if "barcode" in docked_with_scores.columns:
                     # Group by barcode and take the best (lowest) docking_score for each
                     top_performers = (docked_with_scores
                                     .loc[docked_with_scores.groupby('barcode')['docking_score'].idxmin()]
                                     .nsmallest(10, "docking_score"))
                     st.caption("(Showing best score per unique barcode)")
-                elif "compound_id" in docked_with_scores.columns:
-                    # Group by compound_id and take the best (lowest) docking_score for each
+                elif "variant_id" in docked_with_scores.columns:
+                    # Group by variant_id and take the best (lowest) docking_score for each
                     top_performers = (docked_with_scores
-                                    .loc[docked_with_scores.groupby('compound_id')['docking_score'].idxmin()]
+                                    .loc[docked_with_scores.groupby('variant_id')['docking_score'].idxmin()]
                                     .nsmallest(10, "docking_score"))
-                    st.caption("(Showing best score per unique compound)")
+                    st.caption("(Showing best score per unique variant)")
                 else:
                     # Fallback to simple nsmallest if no identifier available
                     top_performers = docked_with_scores.nsmallest(10, "docking_score")
                     st.caption("(Showing top 10 entries - may include duplicates)")
-                display_cols = ["compound_id", "docking_score", "round"]
+                # Extract round from barcode
+                top_performers["round"] = top_performers["barcode"].apply(extract_round_from_barcode)
+                display_cols = ["barcode", "docking_score", "round"]
                 if "variant_id" in top_performers.columns:
                     display_cols.insert(1, "variant_id")
-                if "barcode" in top_performers.columns:
-                    display_cols.insert(2, "barcode")
                 if "smiles" in top_performers.columns:
                     display_cols.insert(-1, "smiles")
                 
                 existing_cols = [col for col in display_cols if col in top_performers.columns]
                 st.dataframe(
                     top_performers[existing_cols],
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True
                 )
             else:
@@ -1275,14 +1310,14 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                         y="affinity_pred_value1",
                         color="affinity_probability_binary1" if "affinity_probability_binary1" in combined_data.columns else None,
                         title="Docking Score vs log(IC50) Prediction (Both Lower = Better)",
-                        hover_data=["compound_id", "barcode"] if "barcode" in combined_data.columns else ["compound_id"],
+                        hover_data=["barcode"] if "barcode" in combined_data.columns else [],
                         labels={
                             "docking_score": "Docking Score (lower=better)",
                             "affinity_pred_value1": "log(IC50) Prediction (lower=better)",
                             "affinity_probability_binary1": "Binding Probability"
                         }
                     )
-                    st.plotly_chart(fig_corr, use_container_width=True)
+                    st.plotly_chart(fig_corr, width='stretch')
                     
                     # Show correlation coefficient
                     correlation = combined_data["docking_score"].corr(combined_data["affinity_pred_value1"])
@@ -1310,33 +1345,25 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                     
                     # Get unique top combined performers to avoid showing the same compound multiple times
                     # Determine the best unique identifier to use
-                    if "variant_id" in combined_data_normalized.columns:
-                        # Group by variant_id and take the best (highest) combined_score for each
-                        top_combined = (combined_data_normalized
-                                      .loc[combined_data_normalized.groupby('variant_id')['combined_score'].idxmax()]
-                                      .nlargest(10, "combined_score"))
-                        st.caption("(Showing best combined score per unique variant)")
-                    elif "barcode" in combined_data_normalized.columns:
+                    if "barcode" in combined_data_normalized.columns:
                         # Group by barcode and take the best (highest) combined_score for each
                         top_combined = (combined_data_normalized
                                       .loc[combined_data_normalized.groupby('barcode')['combined_score'].idxmax()]
                                       .nlargest(10, "combined_score"))
                         st.caption("(Showing best combined score per unique barcode)")
-                    elif "compound_id" in combined_data_normalized.columns:
-                        # Group by compound_id and take the best (highest) combined_score for each
+                    elif "variant_id" in combined_data_normalized.columns:
+                        # Group by variant_id and take the best (highest) combined_score for each
                         top_combined = (combined_data_normalized
-                                      .loc[combined_data_normalized.groupby('compound_id')['combined_score'].idxmax()]
+                                      .loc[combined_data_normalized.groupby('variant_id')['combined_score'].idxmax()]
                                       .nlargest(10, "combined_score"))
-                        st.caption("(Showing best combined score per unique compound)")
+                        st.caption("(Showing best combined score per unique variant)")
                     else:
                         # Fallback to simple nlargest if no identifier available
                         top_combined = combined_data_normalized.nlargest(10, "combined_score")
                         st.caption("(Showing top 10 entries - may include duplicates)")
-                    combined_display_cols = ["compound_id", "docking_score", "affinity_pred_value1", "estimated_IC50_uM", "combined_score"]
+                    combined_display_cols = ["barcode", "docking_score", "affinity_pred_value1", "estimated_IC50_uM", "combined_score"]
                     if "variant_id" in top_combined.columns:
                         combined_display_cols.insert(1, "variant_id")
-                    if "barcode" in top_combined.columns:
-                        combined_display_cols.insert(2, "barcode")
                     if "smiles" in top_combined.columns:
                         combined_display_cols.insert(-1, "smiles")
                     if "affinity_probability_binary1" in top_combined.columns:
@@ -1351,7 +1378,7 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                     
                     st.dataframe(
                         display_combined.round(3),
-                        use_container_width=True,
+                        width='stretch',
                         hide_index=True
                     )
                 else:
@@ -1392,18 +1419,14 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                     # Summary metrics (unique count by best identifier)
                     score_col1, score_col2, score_col3, score_col4 = st.columns(4)
                     # unique identification hierarchy
-                    if "variant_id" in scored_data.columns:
-                        unique_count = scored_data["variant_id"].nunique()
-                        high_score_count = scored_data[scored_data["boltz2_score"] > 0.5]["variant_id"].nunique()
-                        ident_caption = "unique variants"
-                    elif "barcode" in scored_data.columns:
+                    if "barcode" in scored_data.columns:
                         unique_count = scored_data["barcode"].nunique()
                         high_score_count = scored_data[scored_data["boltz2_score"] > 0.5]["barcode"].nunique()
                         ident_caption = "unique barcodes"
-                    elif "compound_id" in scored_data.columns:
-                        unique_count = scored_data["compound_id"].nunique()
-                        high_score_count = scored_data[scored_data["boltz2_score"] > 0.5]["compound_id"].nunique()
-                        ident_caption = "unique compounds"
+                    elif "variant_id" in scored_data.columns:
+                        unique_count = scored_data["variant_id"].nunique()
+                        high_score_count = scored_data[scored_data["boltz2_score"] > 0.5]["variant_id"].nunique()
+                        ident_caption = "unique variants"
                     else:
                         unique_count = len(scored_data)
                         high_score_count = len(scored_data[scored_data["boltz2_score"] > 0.5])
@@ -1432,38 +1455,36 @@ if st.session_state.results is not None and st.session_state.results.get("tracki
                             labels={"boltz2_score": "Boltz-2 Score", "count": "Number of Compounds"}
                         )
                         fig_boltz_hist.update_layout(bargap=0.1)
-                        st.plotly_chart(fig_boltz_hist, use_container_width=True)
+                        st.plotly_chart(fig_boltz_hist, width='stretch')
                     except Exception as e:
                         st.warning(f"Could not render Boltz-2 score histogram: {e}")
 
                     # Top scoring (deduplicated by best identifier)
                     st.markdown("**🏆 Top 10 Boltz-2 Scores**")
-                    if "variant_id" in scored_data.columns:
-                        top_scored = (scored_data
-                                      .loc[scored_data.groupby('variant_id')["boltz2_score"].idxmax()]
-                                      .nlargest(10, "boltz2_score"))
-                    elif "barcode" in scored_data.columns:
+                    if "barcode" in scored_data.columns:
                         top_scored = (scored_data
                                       .loc[scored_data.groupby('barcode')["boltz2_score"].idxmax()]
                                       .nlargest(10, "boltz2_score"))
-                    elif "compound_id" in scored_data.columns:
+                    elif "variant_id" in scored_data.columns:
                         top_scored = (scored_data
-                                      .loc[scored_data.groupby('compound_id')["boltz2_score"].idxmax()]
+                                      .loc[scored_data.groupby('variant_id')["boltz2_score"].idxmax()]
                                       .nlargest(10, "boltz2_score"))
                     else:
                         top_scored = scored_data.nlargest(10, "boltz2_score")
 
-                    display_columns = ["compound_id", "boltz2_score"]
+                    display_columns = ["barcode", "boltz2_score"]
                     if "variant_id" in top_scored.columns:
                         display_columns.insert(1, "variant_id")
-                    if "barcode" in top_scored.columns:
-                        display_columns.insert(2, "barcode")
-                    for extra in ["affinity_pred_value1", "affinity_probability_binary1", "affinity_pred_value", "affinity_probability_binary", "docking_score", "round", "smiles"]:
+                    for extra in ["affinity_pred_value1", "affinity_probability_binary1", "affinity_pred_value", "affinity_probability_binary", "docking_score", "smiles"]:
                         if extra in top_scored.columns and extra not in display_columns:
                             display_columns.append(extra)
+                    # Extract round from barcode
+                    if "barcode" in top_scored.columns:
+                        top_scored["round"] = top_scored["barcode"].apply(extract_round_from_barcode)
+                        display_columns.append("round")
 
                     existing_display_cols = [c for c in display_columns if c in top_scored.columns]
-                    st.dataframe(top_scored[existing_display_cols].round(3), use_container_width=True, hide_index=True)
+                    st.dataframe(top_scored[existing_display_cols].round(3), width='stretch', hide_index=True)
                 else:
                     st.info("No sufficient Boltz-2 inputs found to compute scores.")
 
@@ -1565,15 +1586,12 @@ with export_col3:
                 binders_df = df[df["affinity_probability_binary1"] > 0.5]
                 
                 # Determine the best unique identifier to use
-                if "variant_id" in binders_df.columns:
-                    unique_binders = binders_df["variant_id"].nunique()
-                    stats["predicted_binders_unique_variants"] = unique_binders
-                elif "barcode" in binders_df.columns:
+                if "barcode" in binders_df.columns:
                     unique_binders = binders_df["barcode"].nunique()
                     stats["predicted_binders_unique_barcodes"] = unique_binders
-                elif "compound_id" in binders_df.columns:
-                    unique_binders = binders_df["compound_id"].nunique()
-                    stats["predicted_binders_unique_compounds"] = unique_binders
+                elif "variant_id" in binders_df.columns:
+                    unique_binders = binders_df["variant_id"].nunique()
+                    stats["predicted_binders_unique_variants"] = unique_binders
                 else:
                     # Fallback to row count if no identifier available
                     unique_binders = len(binders_df)
