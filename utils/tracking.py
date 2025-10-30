@@ -6,6 +6,10 @@ import logging
 from pathlib import Path
 import pandas as pd
 from datetime import datetime
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from utils.duckdb_store import DuckDBStore
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
@@ -27,10 +31,7 @@ def generate_tracking_report(compounds, variants, redock_results, out_dir):
         # Add original compounds
         for comp in compounds:
             row = {
-                'compound_id': comp.get('compound_id', 'unknown'),
                 'barcode': comp.get('barcode', 'unknown'),
-                'generation': comp.get('generation', '1'),
-                'round': comp.get('round', 1),
                 'smiles': comp.get('smiles', ''),
                 'parent_id': 'NONE',
                 'status': 'GENERATED',
@@ -40,14 +41,23 @@ def generate_tracking_report(compounds, variants, redock_results, out_dir):
         
         # Add all variants
         for var in variants:
+            # Extract parent barcode from variant barcode (format: R{round}-{parent_barcode}-V-{vidx})
+            parent_barcode = 'unknown'
+            variant_barcode = var.get('barcode', '')
+            if variant_barcode and '-V-' in variant_barcode:
+                # Extract parent barcode: everything between "R{round}-" and "-V-"
+                parts = variant_barcode.split('-V-')
+                if parts:
+                    parent_part = parts[0]
+                    # Remove the round prefix (R{round}-)
+                    if '-' in parent_part:
+                        parent_barcode = parent_part.split('-', 1)[1] if len(parent_part.split('-')) > 1 else parent_part
+            
             row = {
-                'compound_id': var.get('variant_id', 'unknown'),
-                'barcode': var.get('barcode', 'unknown'),
-                'generation': var.get('generation', '2'),
-                'round': var.get('round', 1),
+                'barcode': variant_barcode,
                 'smiles': var.get('smiles', ''),
                 'parent_id': var.get('source_compound', 'unknown'),
-                'parent_barcode': next((c.get('barcode') for c in compounds if c.get('compound_id') == var.get('source_compound')), 'unknown'),
+                'parent_barcode': parent_barcode,
                 'status': 'SYNTHETIZED',
                 'source': 'RETROSYNTHESIS',
                 'score': var.get('score', None)
@@ -114,7 +124,7 @@ def generate_tracking_report(compounds, variants, redock_results, out_dir):
         logger.error(f"Error generating tracking report: {e}")
         return None
 
-def update_tracking_report(report_file, new_data, report_type="compound"):
+def update_tracking_report(report_file, new_data, report_type="compound", duckdb_store: Optional["DuckDBStore"] = None):
     """
     Incrementally update the tracking report with new data.
     
@@ -122,11 +132,69 @@ def update_tracking_report(report_file, new_data, report_type="compound"):
         report_file: Path to the report CSV file
         new_data: Dictionary containing the new data to add
         report_type: Type of data being added ("compound", "variant", or "docking")
+        duckdb_store: Optional DuckDBStore instance to also write to DuckDB
     """
     try:
+        # Write to DuckDB if provided
+        if duckdb_store is not None:
+            try:
+                if report_type == "compound":
+                    # Write to molecules table
+                    molecules_data = [{
+                        "barcode": new_data.get("barcode", ""),
+                        "smiles": new_data.get("smiles", ""),
+                        "generation": None,  # Not stored in molecules table anymore
+                        "status": new_data.get("status", ""),
+                        "source": new_data.get("source", "")
+                    }]
+                    duckdb_store.upsert_molecules(molecules_data)
+                elif report_type == "variant":
+                    # Write to variants table
+                    variant_data = [{
+                        "barcode": new_data.get("barcode", ""),
+                        "smiles": new_data.get("smiles", ""),
+                        "score": new_data.get("score"),
+                        "status": new_data.get("status", ""),
+                        "parent_id": new_data.get("source_compound", new_data.get("parent_id", ""))
+                    }]
+                    duckdb_store.upsert_variants(variant_data)
+                elif report_type == "variant_status_update":
+                    # Update status in variants table
+                    # If we only have barcode and status, try to get existing variant data
+                    barcode = new_data.get("barcode", "")
+                    if barcode:
+                        existing_variant = duckdb_store.get_variant_by_barcode(barcode)
+                        if existing_variant:
+                            variant_data = [{
+                                "barcode": barcode,
+                                "smiles": existing_variant.get("smiles", new_data.get("smiles", "")),
+                                "score": existing_variant.get("score", new_data.get("score")),
+                                "status": new_data.get("status", existing_variant.get("status", "")),
+                                "parent_id": existing_variant.get("parent_id", new_data.get("parent_id", ""))
+                            }]
+                        else:
+                            # Fallback: use what we have
+                            variant_data = [{
+                                "barcode": barcode,
+                                "smiles": new_data.get("smiles", ""),
+                                "score": new_data.get("score"),
+                                "status": new_data.get("status", ""),
+                                "parent_id": new_data.get("parent_id", "")
+                            }]
+                        duckdb_store.upsert_variants(variant_data)
+                    else:
+                        logger.warning("No barcode provided for variant status update in DuckDB")
+                elif report_type == "docking":
+                    # Update docking results - this is handled separately in the pipeline
+                    # via upsert_docking_results, so we don't need to handle it here
+                    pass
+            except Exception as e:
+                logger.warning(f"Failed to write to DuckDB: {e}")
+        
+        # Continue with CSV write (existing logic)
         # Create base columns for the report
         base_columns = [
-            'compound_id', 'barcode', 'generation', 'round', 'smiles',
+            'barcode', 'smiles',
             'parent_id', 'status', 'source', 'timestamp'
         ]
         

@@ -66,4 +66,7 @@ __all__ = [
 
     # ChemAP filtering
     'chemap_filter_variants',
+
+    # DuckDB storage
+    'DuckDBStore',
 ] 
