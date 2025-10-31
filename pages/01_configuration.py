@@ -109,8 +109,6 @@ if "num_rounds_input" not in st.session_state:
     st.session_state.num_rounds_input = 1
 if "top_n_input" not in st.session_state:
     st.session_state.top_n_input = 5
-if "max_variants_input" not in st.session_state:
-    st.session_state.max_variants_input = 5
 if "output_dir_path_input" not in st.session_state:
     st.session_state.output_dir_path_input = "outputs/pipeline_output"
 if "score_threshold_input" not in st.session_state:
@@ -126,13 +124,7 @@ if "msa_path_input" not in st.session_state:
 if "generate_box_residues_input" not in st.session_state:
     st.session_state.generate_box_residues_input = ""
 
-# MedChem Filter Thresholds
-if "medchem_rule_threshold" not in st.session_state:
-    st.session_state.medchem_rule_threshold = 13
-if "medchem_structural_threshold" not in st.session_state:
-    st.session_state.medchem_structural_threshold = 27
-if "medchem_filter_mode" not in st.session_state:
-    st.session_state.medchem_filter_mode = "threshold"
+# MedChem Filter - Only generative design mode supported
 
 # CGFlow Specific
 if "cgflow_checkpoint_path" not in st.session_state:
@@ -167,8 +159,12 @@ if st.session_state._apply_loaded_config_on_next_run:
 
             st.session_state.n_samples_input = int(pending_config.get("n_samples", st.session_state.n_samples_input))
             st.session_state.exhaustiveness_level_input = pending_config.get("exhaustiveness_level", st.session_state.exhaustiveness_level_input)
-            st.session_state.top_n_input = int(pending_config.get("top_n", st.session_state.top_n_input))
-            st.session_state.max_variants_input = int(pending_config.get("max_variants", st.session_state.max_variants_input))
+            # Handle top_n - use max_variants if present for backward compatibility
+            if "top_n" in pending_config:
+                st.session_state.top_n_input = int(pending_config.get("top_n"))
+            elif "max_variants" in pending_config:
+                st.session_state.top_n_input = int(pending_config.get("max_variants"))
+            # Otherwise keep existing value
             st.session_state.num_rounds_input = int(pending_config.get("num_rounds", st.session_state.num_rounds_input))
             st.session_state.score_threshold_input = float(pending_config.get("score_threshold", st.session_state.score_threshold_input))
             
@@ -176,10 +172,7 @@ if st.session_state._apply_loaded_config_on_next_run:
             st.session_state.boltz_pocket_residues_input = pending_config.get("boltz_pocket_residues", st.session_state.boltz_pocket_residues_input)
             st.session_state.msa_path_input = pending_config.get("msa_path", st.session_state.msa_path_input)
 
-            # Load MedChem filter thresholds
-            st.session_state.medchem_rule_threshold = int(pending_config.get("medchem_rule_threshold", st.session_state.medchem_rule_threshold))
-            st.session_state.medchem_structural_threshold = int(pending_config.get("medchem_structural_threshold", st.session_state.medchem_structural_threshold))
-            st.session_state.medchem_filter_mode = pending_config.get("medchem_filter_mode", st.session_state.medchem_filter_mode)
+            # MedChem filter mode is now always generative (backward compatibility: ignore old threshold settings)
 
             if "out_dir" in pending_config:
                 st.session_state.output_dir_path_input = pending_config["out_dir"]
@@ -396,23 +389,6 @@ st.markdown("""
 # Get current model from session state (using the selectbox key)
 current_model = st.session_state.model_selection
 
-# Model selection form
-with st.form(key="model_selection_form", border=True):
-    st.markdown("""<div class="form-header"><h3>Model Selection</h3></div>""", unsafe_allow_html=True)
-
-    # Model selection - uses key 'model_selection'
-    st.selectbox(
-        "AI Model for Molecule Generation *",
-        options=["diffsbdd", "pocket2mol", "cgflow"],
-        format_func=lambda x: {"diffsbdd": "DiffSBDD", "pocket2mol": "Pocket2Mol", "cgflow": "CGFlow (finetuned)"}[x],
-        # index is automatically handled by key binding if key exists
-        key="model_selection",
-        help="Select the AI model for generating molecules"
-    )
-
-    # Submit button for model selection
-    model_submitted = st.form_submit_button("Update Model Selection", on_click=update_model_choice)
-
 # Check if model update was requested and trigger rerun
 if st.session_state.model_update_requested:
     # Apply cgflow-specific defaults on model change
@@ -427,144 +403,137 @@ if st.session_state.model_update_requested:
     st.session_state.model_update_requested = False
     st.rerun()
 
-# Create tabs for better organization
-tab1, tab2, tab3 = st.tabs(["Basic Configuration", "Box Settings", "Advanced Settings"])
+# ============================================================================
+# SECTION 1: MODEL SELECTION
+# ============================================================================
+st.markdown("---")
+st.header("🤖 Step 1: Select AI Model")
+st.selectbox(
+    "AI Model for Molecule Generation *",
+    options=["diffsbdd", "pocket2mol", "cgflow"],
+    format_func=lambda x: {"diffsbdd": "DiffSBDD", "pocket2mol": "Pocket2Mol", "cgflow": "CGFlow (finetuned)"}[x],
+    key="model_selection",
+    help="Select the AI model for generating molecules. Changing this will update available parameters below.",
+    on_change=update_model_choice
+)
 
-# --- Forms no longer strictly needed for saving state, but kept for visual grouping ---
-with tab1:
-    st.markdown("""<div class="form-header"><h3>File Uploads and Parameters</h3></div>""", unsafe_allow_html=True)
+# ============================================================================
+# SECTION 2: PDB FILE INPUT
+# ============================================================================
+st.markdown("---")
+st.header("📁 Step 2: Target Protein Structure")
 
-    # Single PDB file upload section
-    st.subheader("Target Protein PDB File")    
-    
-    # Add PDB indexing reminder
-    st.warning("""
-    **⚠️ Important PDB Indexing Requirement:**
-    
-    The input protein PDB file **must be 1-indexed** (residue numbering starts from 1). 
-    If your PDB file uses non-standard indexing (e.g., starting from 0 or with gaps), 
-    please use [pdb-tools](https://www.bonvinlab.org/pdb-tools/) to renumber it before uploading:
-    
-    ```bash
-    pdb_reres -1 input.pdb > output_reindexed.pdb
-    ```
-    
-    The pipeline does not currently support automatic renumbering of non-1-indexed PDB files.
-    """)
-    
-    col1, col2 = st.columns(2)
+# Add PDB indexing reminder
+st.info("""
+**⚠️ Important:** The input protein PDB file **must be 1-indexed** (residue numbering starts from 1). 
+If your PDB file uses non-standard indexing, use [pdb-tools](https://www.bonvinlab.org/pdb-tools/) to renumber it: `pdb_reres -1 input.pdb > output_reindexed.pdb`
+""")
 
-    with col1:
-        # PDB File upload
-        pdb_file = st.file_uploader(
-            "Upload PDB File",
-            type=["pdb"],
-            help="Upload the target protein PDB file",
-            key="pdb_file_uploader"
-        )
+col1, col2 = st.columns(2)
+with col1:
+    pdb_file = st.file_uploader(
+        "Upload PDB File",
+        type=["pdb"],
+        help="Upload the target protein PDB file",
+        key="pdb_file_uploader"
+    )
+with col2:
+    st.text_input(
+        "OR Enter PDB File Path *",
+        placeholder="Path to PDB file on server",
+        help="Specify the path to the PDB file on the server",
+        key="pdb_path_input"
+    )
 
-    with col2:
-        # PDB Path Input - uses key 'pdb_path_input'
-        st.text_input(
-            "OR Enter PDB File Path *",
-            placeholder="Path to PDB file on server",
-            help="Specify the path to the PDB file on the server",
-            key="pdb_path_input"
-        )
+# Check if PDB file is provided (required)
+pdb_file_state = st.session_state.get("pdb_file_uploader")
+pdb_path_state = st.session_state.get("pdb_path_input", "")
 
-    # Check if PDB file is provided (required)
-    pdb_file_state = st.session_state.get("pdb_file_uploader")
-    pdb_path_state = st.session_state.get("pdb_path_input", "")
-    
-    if not pdb_file_state and not pdb_path_state:
-        st.error("⚠️ **Required**: Please upload a PDB file or specify a PDB file path. This file will be used for both molecule generation and docking.")
+if not pdb_file_state and not pdb_path_state:
+    st.error("⚠️ **Required**: Please upload a PDB file or specify a PDB file path.")
 
-    st.markdown("""<div class="form-header"><h3>Model Parameters</h3></div>""", unsafe_allow_html=True)
+# ============================================================================
+# SECTION 3: MODEL-SPECIFIC PARAMETERS
+# ============================================================================
+st.markdown("---")
+st.header("⚙️ Step 3: Model Configuration")
 
-    # Show model-specific parameters based on current selection
-    if current_model == "diffsbdd":
-        st.subheader("DiffSBDD Parameters")
-        # Residue List Input - uses key 'diffsbdd_resi_list'
-        st.text_input(
-            "Residue List *",
-            help="Space-separated residue identifiers (format: CHAIN:RESIDUE)",
-            key="diffsbdd_resi_list"
-        )
+if current_model == "diffsbdd":
+    st.subheader("DiffSBDD Parameters")
+    st.text_input(
+        "Residue List *",
+        help="Space-separated residue identifiers (format: CHAIN:RESIDUE, e.g., 'A:719 A:770 A:841')",
+        key="diffsbdd_resi_list"
+    )
+    st.checkbox(
+        "Sanitize Generated Molecules",
+        help="Apply sanitization to generated molecules",
+        key="diffsbdd_sanitize"
+    )
+elif current_model == "pocket2mol":
+    st.info("Pocket2Mol uses 3D pocket information. Configure the bounding box in the Box Settings section below.")
+elif current_model == "cgflow":
+    st.subheader("CGFlow Configuration")
+    st.text_input(
+        "Checkpoint Path (.pt) *",
+        help="Path to the fine-tuned CGFlow checkpoint file on the server",
+        key="cgflow_checkpoint_path"
+    )
+    st.text_input(
+        "Config Path (.yaml) *",
+        help="Path to the CGFlow YAML configuration file on the server",
+        key="cgflow_config_path"
+    )
 
-        # Sanitize Checkbox - uses key 'diffsbdd_sanitize'
-        st.checkbox(
-            "Sanitize Generated Molecules",
-            help="Apply sanitization to generated molecules",
-            key="diffsbdd_sanitize"
-        )
-    elif current_model == "pocket2mol":
-        # Display a message for Pocket2Mol
-        st.info("Pocket2Mol uses 3D pocket information instead of residue lists. The bounding box settings can be configured in the 'Box Settings' tab.")
-    else:
-        st.subheader("CGFlow")
-        st.info("Using a fine-tuned CGFlow checkpoint specific to the target pocket. Only common parameters, Boltz-2, MedChem and output directory are shown.")
-        st.text_input(
-            "Checkpoint Path (.pt) *",
-            help="Path to the fine-tuned CGFlow checkpoint file on the server",
-            key="cgflow_checkpoint_path"
-        )
-        st.text_input(
-            "Config Path (.yaml) *",
-            help="Path to the CGFlow YAML configuration file on the server",
-            key="cgflow_config_path"
-        )
+# ============================================================================
+# SECTION 4: GENERATION PARAMETERS
+# ============================================================================
+st.markdown("---")
+st.header("🧪 Step 4: Generation Settings")
 
-    # Common parameters - simplified since Unidock handles program choice and scoring
-    col3, col4 = st.columns(2)
+st.number_input(
+    "Number of Samples to Generate *",
+    min_value=1,
+    max_value=50000,
+    step=1,
+    help="Number of compounds to generate per round",
+    key="n_samples_input"
+)
 
-    with col3:
-        # Number of Samples Input - uses key 'n_samples_input'
-        st.number_input(
-            "Number of Samples *",
-            min_value=1,
-            max_value=50000, # Adjust max if needed
-            step=1,
-            help="Number of compounds to generate",
-            key="n_samples_input"
-        )
+# ============================================================================
+# SECTION 5: BOX CONFIGURATION
+# ============================================================================
+st.markdown("---")
+st.header("📦 Step 5: Binding Site Box Configuration")
 
-    with col4:
-        pass
-
-with tab2:
-    # Skip box configuration UI for CGFlow (finetuned pocket)
-    if current_model == "cgflow":
-        st.info("CGFlow uses a fine-tuned target pocket. Box configuration is not required and is hidden for this model.")
-    else:
-        # --- Box Generation Expander (Moved outside the form) ---
-        with st.expander("Generate Box from Residues (Experimental)"):
-            st.markdown("Automatically calculate box center and dimensions based on selected residues.")
-            st.caption("Grid generation logic adapted from code by Pritam Kumar Panda.")
-
-        # Use the residue list from DiffSBDD input if available
-        # Read directly from the widget state key
+if current_model == "cgflow":
+    st.info("CGFlow uses a fine-tuned target pocket. Only docking box configuration is needed below.")
+else:
+    # Box Generation Tool
+    with st.expander("🔧 Auto-Generate Box from Residues", expanded=False):
+        st.markdown("Automatically calculate box center and dimensions based on selected residues.")
+        st.caption("Grid generation logic adapted from code by Pritam Kumar Panda.")
+        
+        # Pre-fill with DiffSBDD residues if available
         default_residues_for_boxgen = ""
         if current_model == "diffsbdd":
             space_separated_residues = st.session_state.get("diffsbdd_resi_list", "")
             residue_parts = [res for res in space_separated_residues.split() if res.strip()]
             if residue_parts:
-                # Use newline separated for the text_area display
                 default_residues_for_boxgen = "\\n".join(residue_parts)
-
-        # Residues Text Area - uses key 'generate_box_residues_input'
+        
         st.text_area(
             "Residues for Box Generation",
-            value=default_residues_for_boxgen, # Set initial value based on diffsbdd input
-            help="Enter target residues in format 'Chain:ResidueNumber', one per line or space-separated (e.g., A:156). These residues will define the box boundaries.",
+            value=default_residues_for_boxgen,
+            help="Enter target residues in format 'Chain:ResidueNumber', one per line or space-separated (e.g., A:156).",
             key="generate_box_residues_input"
         )
-
+        
         if st.button("Calculate and Populate Box Dimensions", key="generate_box_button"):
             pdb_content_for_gen = None
-            # Prioritize uploaded file, then path
-            pdb_file_state = st.session_state.get("pdb_file_uploader") # Use state key
-            pdb_path_state = st.session_state.get("pdb_path_input")    # Use state key
-
+            pdb_file_state = st.session_state.get("pdb_file_uploader")
+            pdb_path_state = st.session_state.get("pdb_path_input")
+            
             if pdb_file_state is not None:
                 try:
                     pdb_content_for_gen = pdb_file_state.getvalue().decode('utf-8')
@@ -579,328 +548,267 @@ with tab2:
                 except Exception as e:
                     st.error(f"Error reading PDB file from path: {e}")
             else:
-                st.error("Please upload or specify a valid PDB file path in the 'Basic Configuration' tab first.")
-
-            # Read residue list directly from widget state
+                st.error("Please upload or specify a valid PDB file path first.")
+            
             residues_for_boxgen_state = st.session_state.get("generate_box_residues_input", "")
             if pdb_content_for_gen and residues_for_boxgen_state:
                 with st.spinner("Calculating box dimensions..."):
                     box_params = calculate_box_from_residues(pdb_content_for_gen, residues_for_boxgen_state)
-
+                
                 if box_params:
-                    # Update session state keys DIRECTLY
                     st.session_state.center_x = float(box_params['center'][0])
                     st.session_state.center_y = float(box_params['center'][1])
                     st.session_state.center_z = float(box_params['center'][2])
-
-                    calculated_size = box_params['size'] # Store size for reuse
+                    
+                    calculated_size = box_params['size']
                     if current_model == "diffsbdd":
                         st.session_state.diffsbdd_size_x = float(calculated_size[0])
                         st.session_state.diffsbdd_size_y = float(calculated_size[1])
                         st.session_state.diffsbdd_size_z = float(calculated_size[2])
-                    else: # pocket2mol
-                        # Update Pocket2Mol docking box sizes
+                    else:  # pocket2mol
                         st.session_state.pocket2mol_dock_size_x = float(calculated_size[0])
                         st.session_state.pocket2mol_dock_size_y = float(calculated_size[1])
                         st.session_state.pocket2mol_dock_size_z = float(calculated_size[2])
-
-                        # Update the cubic generation box size (use max dimension)
                         st.session_state.pocket2mol_bbox_size = float(round(max(calculated_size)))
-
-                    st.success("Box dimensions calculated and populated below.")
-                    # Rerun is important here to make the number_input widgets update their displayed values
+                    
+                    st.success("✅ Box dimensions calculated and populated below!")
                     st.rerun()
                 else:
                     st.error("Failed to calculate box dimensions.")
             elif not residues_for_boxgen_state:
-                    st.warning("Please enter residues for box generation.")
-    # --- End Box Generation Expander ---
+                st.warning("Please enter residues for box generation.")
 
-    # --- Box Configuration Section (No form needed for state saving) ---
-    st.markdown("""<div class="form-header"><h3>Box Configuration</h3></div>""", unsafe_allow_html=True)
+# Center Coordinates
+st.subheader("Box Center Coordinates")
+col_center1, col_center2, col_center3 = st.columns(3)
+with col_center1:
+    st.number_input("Center X", format="%.3f", key="center_x")
+with col_center2:
+    st.number_input("Center Y", format="%.3f", key="center_y")
+with col_center3:
+    st.number_input("Center Z", format="%.3f", key="center_z")
 
-    # Common center coordinates
-    st.subheader("Center Coordinates (used for generation and/or docking)")
-    col5, col6, col7 = st.columns(3)
+# Model-specific box dimensions
+if current_model == "diffsbdd":
+    st.subheader("Docking Box Dimensions")
+    st.caption("DiffSBDD uses the residue list for molecule generation. These dimensions define the docking box.")
+    col_box1, col_box2, col_box3 = st.columns(3)
+    with col_box1:
+        st.number_input("Docking Size X", min_value=1.0, format="%.1f", key="diffsbdd_size_x")
+    with col_box2:
+        st.number_input("Docking Size Y", min_value=1.0, format="%.1f", key="diffsbdd_size_y")
+    with col_box3:
+        st.number_input("Docking Size Z", min_value=1.0, format="%.1f", key="diffsbdd_size_z")
+elif current_model == "pocket2mol":
+    st.subheader("Molecule Generation Box (Pocket2Mol)")
+    st.caption("Cubic space where Pocket2Mol will generate molecules.")
+    st.number_input(
+        "Generation Box Size",
+        min_value=1.0,
+        format="%.1f",
+        help="Single value used for all dimensions (cubic box)",
+        key="pocket2mol_bbox_size"
+    )
+    st.subheader("Docking Box Dimensions")
+    st.caption("Space where molecule docking will occur (can differ from generation box).")
+    col_box1, col_box2, col_box3 = st.columns(3)
+    with col_box1:
+        st.number_input("Docking Size X", min_value=1.0, format="%.1f", key="pocket2mol_dock_size_x")
+    with col_box2:
+        st.number_input("Docking Size Y", min_value=1.0, format="%.1f", key="pocket2mol_dock_size_y")
+    with col_box3:
+        st.number_input("Docking Size Z", min_value=1.0, format="%.1f", key="pocket2mol_dock_size_z")
+elif current_model == "cgflow":
+    st.subheader("Docking Box Dimensions")
+    st.caption("Box used for docking generated molecules.")
+    col_box1, col_box2, col_box3 = st.columns(3)
+    with col_box1:
+        st.number_input("Docking Size X", min_value=1.0, format="%.1f", key="pocket2mol_dock_size_x")
+    with col_box2:
+        st.number_input("Docking Size Y", min_value=1.0, format="%.1f", key="pocket2mol_dock_size_y")
+    with col_box3:
+        st.number_input("Docking Size Z", min_value=1.0, format="%.1f", key="pocket2mol_dock_size_z")
 
-    with col5:
-        # Center X Input - uses key 'center_x'
-        st.number_input("Center X", format="%.3f", key="center_x")
-    with col6:
-        # Center Y Input - uses key 'center_y'
-        st.number_input("Center Y", format="%.3f", key="center_y")
-    with col7:
-        # Center Z Input - uses key 'center_z'
-        st.number_input("Center Z", format="%.3f", key="center_z")
+# ============================================================================
+# SECTION 6: DOCKING PARAMETERS
+# ============================================================================
+st.markdown("---")
+st.header("🎯 Step 6: Docking Configuration")
 
-    # Model-specific box configurations
-    if current_model == "diffsbdd":
-        st.subheader("Docking Box Dimensions")
-        st.info("DiffSBDD uses the residue list for molecule generation. These dimensions define the docking box.")
+col_dock1, col_dock2 = st.columns(2)
+with col_dock1:
+    st.selectbox(
+        "Docking Exhaustiveness Level",
+        options=["fast", "balance", "detail"],
+        format_func=lambda x: {
+            "fast": "Fast (128) - Quick screening",
+            "balance": "Balance (384) - Balanced speed/accuracy", 
+            "detail": "Detail (512) - Thorough search"
+        }[x],
+        help="Higher levels provide more thorough search but take longer.",
+        key="exhaustiveness_level_input"
+    )
+with col_dock2:
+    st.number_input(
+        "Number of Pipeline Rounds",
+        min_value=1,
+        max_value=1000,
+        step=1,
+        help="Number of rounds to run the pipeline iteratively",
+        key="num_rounds_input"
+    )
 
-        col8, col9, col10 = st.columns(3)
-        with col8:
-            # Docking Size X Input - uses key 'diffsbdd_size_x'
-            st.number_input(
-                "Docking Size X",
-                min_value=1.0,
-                format="%.1f",
-                key="diffsbdd_size_x"
-            )
-        with col9:
-            # Docking Size Y Input - uses key 'diffsbdd_size_y'
-            st.number_input(
-                "Docking Size Y",
-                min_value=1.0,
-                 format="%.1f",
-                key="diffsbdd_size_y"
-            )
-        with col10:
-            # Docking Size Z Input - uses key 'diffsbdd_size_z'
-            st.number_input(
-                "Docking Size Z",
-                min_value=1.0,
-                 format="%.1f",
-                key="diffsbdd_size_z"
-            )
+# ============================================================================
+# SECTION 7: FILTERING PARAMETERS
+# ============================================================================
+st.markdown("---")
+st.header("🔍 Step 7: Filtering Configuration")
 
-    elif current_model == "pocket2mol":  # pocket2mol
-        # Generation box (bounding box) for Pocket2Mol
-        st.subheader("Molecule Generation Box (Pocket2Mol)")
-        st.info("This defines the cubic space where Pocket2Mol will generate molecules.")
-        # Generation Box Size Input - uses key 'pocket2mol_bbox_size'
-        st.number_input(
-            "Generation Box Size",
-            min_value=1.0,
-            format="%.1f",
-            help="Size of the cubic bounding box for Pocket2Mol generation (single value used for all dimensions)",
-            key="pocket2mol_bbox_size"
-        )
+# Retrosynthesis Filtering
+with st.expander("Retrosynthesis Filtering", expanded=True):
+    st.number_input(
+        "Retrosynthesis Score Threshold",
+        min_value=0.0,
+        max_value=1.0,
+        step=0.1,
+        format="%.1f",
+        help="Minimum score threshold for variants to proceed to MedChem filtering. Higher = more restrictive.",
+        key="score_threshold_input"
+    )
 
-        # Docking box for Pocket2Mol
-        st.subheader("Docking Box Dimensions (Pocket2Mol)")
-        st.info("This defines the space where molecule docking will occur (can be different from generation box).")
+# MedChem Filtering
+with st.expander("MedChem Filtering", expanded=True):
+    st.info("Evaluates compounds against medicinal chemistry rules. Uses generative design filtering - compounds must pass BOTH generative design rules.")
 
-        col11, col12, col13 = st.columns(3) # Use different column variables
-        with col11:
-            # Docking Size X Input - uses key 'pocket2mol_dock_size_x'
-            st.number_input(
-                "Docking Size X",
-                min_value=1.0,
-                format="%.1f",
-                key="pocket2mol_dock_size_x"
-            )
-        with col12:
-            # Docking Size Y Input - uses key 'pocket2mol_dock_size_y'
-            st.number_input(
-                "Docking Size Y",
-                min_value=1.0,
-                format="%.1f",
-                key="pocket2mol_dock_size_y"
-            )
-        with col13:
-            # Docking Size Z Input - uses key 'pocket2mol_dock_size_z'
-            st.number_input(
-                "Docking Size Z",
-                min_value=1.0,
-                format="%.1f",
-                key="pocket2mol_dock_size_z"
-            )
-    else:  # cgflow
-        # Docking box for CGFlow (no generation box)
-        st.subheader("Docking Box Dimensions (CGFlow)")
-        st.info("Define the box used for docking generated molecules.")
-
-        col11, col12, col13 = st.columns(3)
-        with col11:
-            st.number_input(
-                "Docking Size X",
-                min_value=1.0,
-                format="%.1f",
-                key="pocket2mol_dock_size_x"
-            )
-        with col12:
-            st.number_input(
-                "Docking Size Y",
-                min_value=1.0,
-                format="%.1f",
-                key="pocket2mol_dock_size_y"
-            )
-        with col13:
-            st.number_input(
-                "Docking Size Z",
-                min_value=1.0,
-                format="%.1f",
-                key="pocket2mol_dock_size_z"
-            )
-
-    # No need for "Save Box Config" button
-
-with tab3:
-    st.markdown("""<div class="form-header"><h3>Advanced Parameters</h3></div>""", unsafe_allow_html=True)
-
-    col14, col15 = st.columns(2) # Use different column variables
-
-    with col14:
-        # Exhaustiveness Input - uses key 'exhaustiveness_level_input'
-        st.selectbox(
-            "Exhaustiveness Level",
-            options=["fast", "balance", "detail"],
-            format_func=lambda x: {
-                "fast": "Fast (128) - Quick docking for screening",
-                "balance": "Balance (384) - Good balance of speed and accuracy", 
-                "detail": "Detail (512) - Thorough search for final results"
-            }[x],
-            help="Select the exhaustiveness level for docking. Higher levels provide more thorough search but take longer.",
-            key="exhaustiveness_level_input"
-        )
-
-    with col15:
-        # Number of Rounds Input - uses key 'num_rounds_input'
-        st.number_input(
-            "Number of Rounds",
-            min_value=1,
-            max_value=1000, # Sensible max?
-            step=1,
-            help="Number of pipeline rounds to run",
-            key="num_rounds_input"
-        )
-
-    st.markdown("""<div class="form-header"><h3>Retrosynthesis Filtering Configuration</h3></div>""", unsafe_allow_html=True)
-
-    col_score, col_empty = st.columns(2)
-    with col_score:
-        # Score Threshold Input - uses key 'score_threshold_input'
-        st.number_input(
-            "Retrosynthesis Score Threshold",
-            min_value=0.0,
-            max_value=1.0,
-            step=0.1,
-            format="%.1f",
-            help="Minimum retrosynthesis score threshold for filtering variants. Only variants with scores >= this threshold will proceed to MedChem filtering. Higher values are more restrictive.",
-            key="score_threshold_input"
-        )
-
-    st.markdown("""<div class="form-header"><h3>Boltz-2 Filtering Configuration</h3></div>""", unsafe_allow_html=True)
-
-    st.info("Boltz-2 filtering predicts protein-ligand structures and evaluates binding affinity. The filter uses spatial evaluation (any ligand atom within the docking box) and provides affinity predictions with confidence scores.")
-    
-    # Boltz-2 pocket constraints configuration
+# Boltz-2 Filtering
+with st.expander("Boltz-2 Structure Prediction", expanded=False):
+    st.info("Predicts protein-ligand structures and evaluates binding affinity. Provides annotations only (no filtering).")
     st.text_input(
         "Pocket Constraint Residues (comma-separated)",
         placeholder="e.g., 156,158,202,204",
-        help="Enter residue numbers (1-indexed) to define pocket constraints for Boltz-2. These residues will be used to guide the protein-ligand binding prediction. Leave empty to use no constraints.",
+        help="Residue numbers (1-indexed) to guide binding prediction. Leave empty for no constraints.",
         key="boltz_pocket_residues_input"
     )
-    
-    # MSA file path for Boltz-2
     st.text_input(
         "MSA File Path (.a3m)",
         placeholder="/path/to/alignment.a3m",
-        help="Absolute path to a precomputed MSA in A3M format used by Boltz-2.",
+        help="Absolute path to precomputed MSA in A3M format for Boltz-2.",
         key="msa_path_input"
     )
-    
-    st.caption("""
-    **Pocket Constraints:** Specify key residues that define the binding pocket for Boltz-2 structure prediction. 
-    These should be residue numbers (1-indexed) that are important for ligand binding. 
-    The constraints help guide the structural prediction to focus on the correct binding site.
-    """)
-    
-    st.info("💡 **Tip:** You can use the same residues from your DiffSBDD residue list or docking box generation residues as pocket constraints.")
+    st.caption("💡 **Tip:** Use the same residues from your DiffSBDD residue list as pocket constraints.")
 
-    st.markdown("""<div class="form-header"><h3>MedChem Filtering Configuration</h3></div>""", unsafe_allow_html=True)
+# ============================================================================
+# SECTION 8: PIPELINE EXECUTION PARAMETERS
+# ============================================================================
+st.markdown("---")
+st.header("⚡ Step 8: Pipeline Execution Settings")
 
-    st.info("MedChem filtering evaluates compounds against medicinal chemistry rules and structural alerts. Compounds must pass the minimum number of specified filters to proceed to docking.")
-    
-    # Mode selection
-    st.selectbox(
-        "MedChem Filter Mode",
-        options=["threshold", "generative"],
-        format_func=lambda x: {
-            "threshold": "Threshold-based (pass-count across many rules)",
-            "generative": "Generative design (must pass both generative rules)"
-        }[x],
-        key="medchem_filter_mode",
-        help="Choose between classic threshold-based filtering or a strict generative design rule-only filter."
-    )
+st.number_input(
+    "Top Variants per Compound",
+    min_value=1,
+    max_value=50,
+    step=1,
+    help="Maximum number of variants to extract per compound after retrosynthesis",
+    key="top_n_input"
+)
 
-    if st.session_state.medchem_filter_mode == "threshold":
-        col_medchem1, col_medchem2 = st.columns(2)
-        with col_medchem1:
-            st.number_input(
-                "Minimum Rules Passed",
-                min_value=0,
-                max_value=20,
-                step=1,
-                help="Minimum number of medicinal chemistry rules a compound must pass (e.g., Lipinski's Rule of 5, Ghose, Veber, etc.). Default: 13 out of ~15 total rules.",
-                key="medchem_rule_threshold"
-            )
-        with col_medchem2:
-            st.number_input(
-                "Minimum Structural Filters Passed",
-                min_value=0,
-                max_value=40,
-                step=1,
-                help="Minimum number of structural/functional filters a compound must pass (e.g., PAINS, Glaxo alerts, NIBR filter, etc.). Default: 27 out of ~30 total filters.",
-                key="medchem_structural_threshold"
-            )
+# ============================================================================
+# SECTION 9: OUTPUT CONFIGURATION (Less Important - Moved Later)
+# ============================================================================
+st.markdown("---")
+st.header("💾 Step 9: Output Settings")
+
+st.text_input(
+    "Output Directory Path *",
+    help="Path where results will be stored. Can be absolute or relative to project root.",
+    key="output_dir_path_input"
+)
+st.caption("**Examples:** `outputs/my_experiment` (relative) or `/home/user/results` (absolute)")
+
+# ============================================================================
+# SECTION 10: VISUALIZATION
+# ============================================================================
+st.markdown("---")
+st.header("🔬 Step 10: Structure Visualization")
+
+# Get PDB content for visualization
+pdb_file_state = st.session_state.get("pdb_file_uploader")
+pdb_path_state = st.session_state.get("pdb_path_input")
+current_vis_model = st.session_state.model_selection
+
+pdb_content_for_vis = None
+if pdb_file_state is not None:
+    try:
+        pdb_content_for_vis = pdb_file_state.getvalue().decode('utf-8')
+    except Exception as e:
+        st.error(f"Error reading uploaded PDB for visualization: {e}")
+elif pdb_path_state and os.path.exists(pdb_path_state):
+    try:
+        with open(pdb_path_state, 'r') as f:
+            pdb_content_for_vis = f.read()
+    except Exception as e:
+        st.error(f"Error reading PDB file from path for visualization: {e}")
+
+if pdb_content_for_vis:
+    if current_vis_model == "diffsbdd":
+        st.write("Selected residues are highlighted in **red**. Docking box shown in **blue**.")
+    elif current_vis_model == "pocket2mol":
+        st.write("Pocket2Mol generation box shown in **green**. Docking box shown in **blue**.")
     else:
-        st.info("Generative design mode will only keep compounds that pass BOTH 'rule_of_generative_design' and 'rule_of_generative_design_strict'. Threshold values are ignored in this mode.")
+        st.write("Docking box shown in **blue**.")
     
-    st.caption("""
-    **Filter Categories:**
-    - **Rules:** Druglikeness rules (Lipinski, Ghose, Veber, REOS, etc.)
-    - **Structural Filters:** Alert filters (PAINS, Glaxo, BMS, etc.) and functional filters (NIBR, Bredt, etc.)
+    # Get current box parameters
+    center_vis = [st.session_state.center_x, st.session_state.center_y, st.session_state.center_z]
+    box_size_vis = None
+    bbox_size_vis = None
     
-    Higher thresholds are more restrictive and will filter out more compounds. Lower thresholds are more permissive.
-    """)
-
-    st.markdown("""<div class="form-header"><h3>Output Configuration</h3></div>""", unsafe_allow_html=True)
-
-    col16, col17 = st.columns(2) # Use different column variables
-
-    with col16:
-        # Output Directory Path Input - uses key 'output_dir_path_input'
-        st.text_input(
-            "Output Directory Path *",
-            help="Path to the output directory where results will be stored. Can be absolute (e.g., '/home/user/results') or relative to project root (e.g., 'outputs/my_experiment')",
-            key="output_dir_path_input"
+    if current_vis_model == "diffsbdd":
+        selected_residues_vis = parse_residue_list(st.session_state.diffsbdd_resi_list)
+        box_size_vis = [
+            st.session_state.diffsbdd_size_x,
+            st.session_state.diffsbdd_size_y,
+            st.session_state.diffsbdd_size_z
+        ]
+    elif current_vis_model == "pocket2mol":
+        selected_residues_vis = None
+        box_size_vis = [
+            st.session_state.pocket2mol_dock_size_x,
+            st.session_state.pocket2mol_dock_size_y,
+            st.session_state.pocket2mol_dock_size_z
+        ]
+        bbox_size_vis = st.session_state.pocket2mol_bbox_size
+    else:  # cgflow
+        selected_residues_vis = None
+        box_size_vis = [
+            st.session_state.pocket2mol_dock_size_x,
+            st.session_state.pocket2mol_dock_size_y,
+            st.session_state.pocket2mol_dock_size_z
+        ]
+        bbox_size_vis = None
+    
+    try:
+        view, html = visualize_protein_residues(
+            pdb_content_for_vis,
+            selected_residues=selected_residues_vis,
+            center=center_vis,
+            box_size=box_size_vis,
+            bbox_size=bbox_size_vis
         )
-        
-        # Add helpful information about path formats
+        components.html(html, height=600, width=800)
         st.caption("""
-        **Path Examples:**
-        - Relative: `outputs/my_experiment` (relative to project root)
-        - Absolute: `/home/user/drug_discovery_results`
-        - With subdirectories: `outputs/experiments/2024/january`
+        **Controls:** Rotate (click+drag) | Zoom (scroll) | Pan (right-click+drag) | Reset (double-click)
         """)
+    except Exception as e:
+        st.error(f"Error generating protein visualization: {e}")
+        logger.error(f"Error during py3Dmol visualization: {e}", exc_info=True)
+else:
+    st.info("Upload or specify a PDB file above to see the structure visualization.")
 
-        # Top N Input - uses key 'top_n_input'
-        st.number_input(
-            "Top N Compounds",
-            min_value=1,
-            max_value=100, # Adjust if needed
-            step=1,
-            help="Number of top compounds to select/process per round",
-            key="top_n_input"
-        )
-
-    with col17:
-        # Max Variants Input - uses key 'max_variants_input'
-        st.number_input(
-            "Maximum Variants per Compound",
-            min_value=1,
-            max_value=50, # Adjust if needed
-            step=1,
-            help="Maximum number of variants to generate/process per compound (if applicable)",
-            key="max_variants_input"
-        )
-
-    # No need for "Save Advanced Config" button
-
-# --- Manage Configuration Section (Download/Upload) ---
-st.header("Manage Configuration")
+# ============================================================================
+# SECTION 11: CONFIGURATION MANAGEMENT
+# ============================================================================
+st.markdown("---")
+st.header("💾 Configuration Management")
 
 col_dl, col_ul = st.columns(2)
 
@@ -953,18 +861,12 @@ with col_dl:
         download_config["center"] = [st.session_state.center_x, st.session_state.center_y, st.session_state.center_z]
         download_config["exhaustiveness_level"] = st.session_state.exhaustiveness_level_input
         download_config["top_n"] = st.session_state.top_n_input
-        download_config["max_variants"] = st.session_state.max_variants_input
         download_config["num_rounds"] = st.session_state.num_rounds_input
         download_config["score_threshold"] = st.session_state.score_threshold_input
         
         # Add Boltz-2 configuration
         download_config["boltz_pocket_residues"] = st.session_state.boltz_pocket_residues_input
         download_config["msa_path"] = st.session_state.msa_path_input
-        
-        # Add MedChem filter thresholds
-        download_config["medchem_rule_threshold"] = st.session_state.medchem_rule_threshold
-        download_config["medchem_structural_threshold"] = st.session_state.medchem_structural_threshold
-        download_config["medchem_filter_mode"] = st.session_state.medchem_filter_mode
         
         # Use output dir path for config value and extract name for filename
         output_dir_path_value = st.session_state.get("output_dir_path_input", "outputs/pipeline_output")
@@ -1025,13 +927,18 @@ with col_ul:
         else:
             st.warning("Please upload a JSON configuration file first.")
 
-# --- Finalize Configuration Section ---
-st.header("Finalize Configuration")
-finalize_container = st.container()
-with finalize_container:
-    finalize_col1, finalize_col2 = st.columns([3, 1]) # Adjust column ratio if needed
-    with finalize_col2:
-        finalize_submitted = st.button("Finalize & Save All Configuration", type="primary", use_container_width=True)
+# ============================================================================
+# SECTION 12: FINALIZE CONFIGURATION
+# ============================================================================
+st.markdown("---")
+st.header("✅ Finalize Configuration")
+
+st.info("""
+**Ready to run?** Review all settings above, then click the button below to save your configuration.
+You'll be able to proceed to the Execution page once the configuration is finalized.
+""")
+
+finalize_submitted = st.button("✨ Finalize & Save All Configuration", type="primary", use_container_width=True)
 
 # Handle finalization submission
 if finalize_submitted:
@@ -1161,18 +1068,12 @@ if finalize_submitted:
             config["center"] = [st.session_state.center_x, st.session_state.center_y, st.session_state.center_z]
             config["exhaustiveness_level"] = st.session_state.exhaustiveness_level_input
             config["top_n"] = st.session_state.top_n_input
-            config["max_variants"] = st.session_state.max_variants_input
             config["num_rounds"] = st.session_state.num_rounds_input
             config["score_threshold"] = st.session_state.score_threshold_input
             
             # Add Boltz-2 configuration
             config["boltz_pocket_residues"] = st.session_state.boltz_pocket_residues_input
             config["msa_path"] = st.session_state.msa_path_input
-            
-            # Add MedChem filter thresholds
-            config["medchem_rule_threshold"] = st.session_state.medchem_rule_threshold
-            config["medchem_structural_threshold"] = st.session_state.medchem_structural_threshold
-            config["medchem_filter_mode"] = st.session_state.medchem_filter_mode
             
             config["out_dir"] = str(output_path) # Use the validated, absolute path
 
@@ -1186,106 +1087,10 @@ if finalize_submitted:
                 st.info(f"Resolved path: `{output_path}`")
             
             logger.info(f"Finalized pipeline config: {config}")
-            # We might want to store the temp_dir_path if files were uploaded,
-            # so they can be cleaned up later, but managing temp dirs across sessions/pages is tricky.
-            # For now, rely on OS tmp cleanup? Or pass path via session state?
-            # If passing, store: st.session_state.temp_upload_dir = str(temp_dir_path)
 
-
-# --- Visualization Section ---
-# Add visualization section if PDB is available (uploaded or path)
-# Define state variables again for clarity before the check
-pdb_file_state = st.session_state.get("pdb_file_uploader")
-pdb_path_state = st.session_state.get("pdb_path_input")
-current_vis_model = st.session_state.model_selection # Use the current model selection
-
-pdb_content_for_vis = None
-if pdb_file_state is not None:
-     try:
-        pdb_content_for_vis = pdb_file_state.getvalue().decode('utf-8')
-     except Exception as e:
-         st.error(f"Error reading uploaded PDB for visualization: {e}")
-elif pdb_path_state and os.path.exists(pdb_path_state):
-    try:
-        with open(pdb_path_state, 'r') as f:
-            pdb_content_for_vis = f.read()
-    except Exception as e:
-        st.error(f"Error reading PDB file from path for visualization: {e}")
-
-if pdb_content_for_vis:
-    st.markdown("---") # Separator
-    st.write("### Protein Structure Visualization")
-
-    if current_vis_model == "diffsbdd":
-        st.write("Selected residues (from input field) are highlighted in red. Docking box (from settings below) shown in blue.")
-    else:  # pocket2mol
-        st.write("Pocket2Mol generation box (from settings below) shown in green. Docking box (also from settings below) shown in blue.")
-
-    # Get current box parameters directly from session state keys
-    center_vis = [st.session_state.center_x, st.session_state.center_y, st.session_state.center_z]
-    box_size_vis = None
-    bbox_size_vis = None
-
-    if current_vis_model == "diffsbdd":
-        # Parse residue list for DiffSBDD directly from its state key
-        selected_residues_vis = parse_residue_list(st.session_state.diffsbdd_resi_list)
-        box_size_vis = [
-            st.session_state.diffsbdd_size_x,
-            st.session_state.diffsbdd_size_y,
-            st.session_state.diffsbdd_size_z
-        ]
-    elif current_vis_model == "pocket2mol":  # pocket2mol
-        selected_residues_vis = None
-        # Pocket2Mol uses different keys for docking box vs generation box
-        box_size_vis = [ # Docking box
-            st.session_state.pocket2mol_dock_size_x,
-            st.session_state.pocket2mol_dock_size_y,
-            st.session_state.pocket2mol_dock_size_z
-        ]
-        bbox_size_vis = st.session_state.pocket2mol_bbox_size # Generation box size
-    else:  # cgflow
-        selected_residues_vis = None
-        # Show docking box for CGFlow using docking keys; default 20s are set on model selection
-        box_size_vis = [
-            st.session_state.pocket2mol_dock_size_x,
-            st.session_state.pocket2mol_dock_size_y,
-            st.session_state.pocket2mol_dock_size_z
-        ]
-        bbox_size_vis = None
-
-    try:
-        # Create visualization with appropriate box
-        view, html = visualize_protein_residues(
-            pdb_content_for_vis,
-            selected_residues=selected_residues_vis,
-            center=center_vis,
-            box_size=box_size_vis,
-            bbox_size=bbox_size_vis
-        )
-
-        # Display the visualization using HTML component
-        components.html(html, height=600, width=800)
-
-        # Add some helpful instructions
-        st.caption("""
-        **Controls:**
-        - Rotate: Click and drag
-        - Zoom: Scroll wheel
-        - Pan: Right click and drag
-        - Reset view: Double click
-
-        **Visualization Guide:**
-        - Protein backbone: Light gray cartoon
-        - Selected residues (DiffSBDD only): Red cartoon and sticks
-        - Docking box: Blue transparent box with wireframe
-        - Pocket2Mol generation box: Green cubic box with wireframe (Pocket2Mol only)
-        """)
-    except Exception as e:
-        st.error(f"Error generating protein visualization: {e}")
-        logger.error(f"Error during py3Dmol visualization: {e}", exc_info=True)
-
-
-# --- Display Current Finalized Configuration ---
+# ============================================================================
+# SECTION 13: FINALIZED CONFIGURATION DISPLAY
+# ============================================================================
 if st.session_state.get("pipeline_config") is not None:
     st.markdown("---") # Separator
     st.header("Current Finalized Configuration")
