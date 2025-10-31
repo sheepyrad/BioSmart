@@ -17,12 +17,9 @@
     ],
     "exhaustiveness_level": "detail",
     "top_n": 5,
-    "max_variants": 5,
     "num_rounds": 1,
     "score_threshold": 1.0,
     "boltz_pocket_residues": "17,57,138,153,184,185",
-    "medchem_rule_threshold": 13,
-    "medchem_structural_threshold": 27,
-    "medchem_filter_mode": "generative",
+    "msa_path": "/home/conrad_hku/Drug_pipeline/msa/NS5_crop.a3m",
     "out_dir": "/media/data/conrad_hku/NS5_crop_500_1"
 }
