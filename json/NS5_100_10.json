@@ -16,7 +16,6 @@
     ],
     "exhaustiveness_level": "detail",
     "top_n": 5,
-    "max_variants": 5,
     "num_rounds": 10,
     "score_threshold": 0.7,
     "out_dir": "outputs/NS5_100_10"
