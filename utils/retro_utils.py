@@ -13,13 +13,13 @@ logger = logging.getLogger(__name__)
 # Import the retrosynthesis function
 from utils.retrosynformer import run_retrosynthesis
 
-def extract_variants_from_retrosynthesis(retro_result_file, max_variants=5):
+def extract_variants_from_retrosynthesis(retro_result_file, top_n=5):
     """
     Extract synthetic variants from a retrosynthesis result file.
     
     Args:
         retro_result_file: Path to the CSV file with retrosynthesis results
-        max_variants: Maximum number of variants to extract
+        top_n: Maximum number of variants to extract
         
     Returns:
         List of dicts with variant_id and smiles
@@ -55,8 +55,8 @@ def extract_variants_from_retrosynthesis(retro_result_file, max_variants=5):
             df = df.sort_values('score', ascending=False)
             logger.info(f"Sorting variants by 'score' column (higher is better)")
         
-        # Extract up to max_variants
-        for idx, row in df.head(max_variants).iterrows():
+        # Extract up to top_n
+        for idx, row in df.head(top_n).iterrows():
             smiles = row[smiles_col]
             # Get score if available for labeling
             score_text = ""

@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 from utils.ligand_generation import run_ligand_generation, combine_pocket2mol_outputs
 from utils.redocking import redock_compound, run_batch_compound_redocking
 from utils.retrosynformer import run_retrosynthesis
-from utils.medchem_filter import filter_by_pass_count, filter_by_generative_design, generate_filter_plots
+from utils.medchem_filter import filter_by_generative_design, generate_filter_plots
 from utils.boltz_filter import boltz_predict_variants
 from utils.chemap_filter import chemap_filter_variants
 
@@ -63,9 +63,8 @@ from utils.duckdb_store import DuckDBStore
 
 def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_list=None, 
          n_samples=200, sanitize=True, center=(114.817, 75.602, 82.416), box_size=(38, 70, 58),
-         bbox_size=23.0, exhaustiveness="balance", top_n=5, max_variants=5, num_rounds=1, 
-         score_threshold=0.7, boltz_pocket_residues=None, medchem_rule_threshold=13, 
-         medchem_structural_threshold=27, medchem_filter_mode="threshold", stop_flag=None, cgflow_config=None,
+         bbox_size=23.0, exhaustiveness="balance", top_n=5, num_rounds=1, 
+         score_threshold=0.7, boltz_pocket_residues=None, stop_flag=None, cgflow_config=None,
          msa_path="/home/conrad_hku/Drug_pipeline/msa/NS5_full.a3m"):
     """
     Multi-round quick pipeline main function with batch filtering optimization.
@@ -82,14 +81,10 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         box_size: Box dimensions (x, y, z) for docking 
         bbox_size: Single box size value for Pocket2Mol
         exhaustiveness: Docking exhaustiveness level ("fast", "balance", or "detail")
-        top_n: Number of top compounds to process
-        max_variants: Maximum number of variants per compound
+        top_n: Maximum number of variants to extract per compound after retrosynthesis
         num_rounds: Number of rounds to run
         score_threshold: Minimum retrosynthesis score threshold for variants (default: 0.7)
         boltz_pocket_residues: Comma-separated string of residue indices for Boltz-2 pocket constraints
-        medchem_rule_threshold: Minimum number of medicinal chemistry rules a compound must pass (default: 13)
-        medchem_structural_threshold: Minimum number of structural/functional filters a compound must pass (default: 27)
-        medchem_filter_mode: Either 'threshold' to use pass-count filtering or 'generative' to require both generative design rules
         stop_flag: Dictionary containing status information for stopping the pipeline
         cgflow_config: Path to CGFlow YAML config (CGFlow only)
     """
@@ -333,7 +328,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             success = run_retrosynthesis_with_timeout(smiles, retro_output, timeout=300)
             
             if success:
-                variants = extract_variants_from_retrosynthesis(retro_output, max_variants=max_variants)
+                variants = extract_variants_from_retrosynthesis(retro_output, top_n=top_n)
                 
                 # Add metadata to variants
                 for vidx, variant in enumerate(variants):
@@ -385,25 +380,12 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             logger.warning(f"Round {round_num}: No variants passed score filtering. Skipping MedChem filtering and subsequent steps for this round.")
             continue # Skip to next round
 
-        # Step 5: Batch filtering of score-filtered variants using MedChem pass-count method
-        if medchem_filter_mode == "generative":
-            logger.info(f"\nRound {round_num}: Starting MedChem filtering (generative design rules) for {len(score_filtered_variants)} variants...")
-            filtered_variants, filter_results_df = filter_by_generative_design(
-                input_variants=score_filtered_variants,
-                smiles_key='smiles'
-            )
-        else:
-            logger.info(f"\nRound {round_num}: Starting MedChem filtering (pass-count) for {len(score_filtered_variants)} score-filtered variants...")
-            # Use configurable thresholds instead of hardcoded values
-            logger.info(f"Rule threshold >= {medchem_rule_threshold}, Structural threshold >= {medchem_structural_threshold}")
-
-            # Call filter_by_pass_count and capture both return values
-            filtered_variants, filter_results_df = filter_by_pass_count(
-                input_variants=score_filtered_variants,
-                rule_threshold=medchem_rule_threshold,
-                structural_threshold=medchem_structural_threshold,
-                smiles_key='smiles' # Ensure this matches the key used in variant dictionaries
-            )
+        # Step 5: Batch filtering of score-filtered variants using MedChem generative design rules
+        logger.info(f"\nRound {round_num}: Starting MedChem filtering (generative design rules) for {len(score_filtered_variants)} variants...")
+        filtered_variants, filter_results_df = filter_by_generative_design(
+            input_variants=score_filtered_variants,
+            smiles_key='smiles'
+        )
         
         # Generate plots using the returned DataFrame
         plots_dir = filter_dir / "plots"
@@ -682,21 +664,13 @@ if __name__ == "__main__":
     parser.add_argument("--exhaustiveness", type=str, choices=["fast", "balance", "detail"], default="balance",
                         help="Docking exhaustiveness level")
     parser.add_argument("--top_n", type=int, default=5, 
-                        help="Number of top compounds to process")
-    parser.add_argument("--max_variants", type=int, default=5,
-                        help="Maximum number of variants per compound")
+                        help="Maximum number of variants to extract per compound after retrosynthesis")
     parser.add_argument("--num_rounds", type=int, default=1,
                         help="Number of rounds to run the pipeline")
     parser.add_argument("--score_threshold", type=float, default=0.7,
                         help="Minimum retrosynthesis score threshold for variants (default: 0.7)")
     parser.add_argument("--boltz_pocket_residues", type=str, default="",
                         help="Comma-separated residue indices for Boltz-2 pocket constraints (e.g., '156,158,202')")
-    parser.add_argument("--medchem_rule_threshold", type=int, default=13,
-                        help="Minimum number of medicinal chemistry rules a compound must pass (default: 13)")
-    parser.add_argument("--medchem_structural_threshold", type=int, default=27,
-                        help="Minimum number of structural/functional filters a compound must pass (default: 27)")
-    parser.add_argument("--medchem_filter_mode", type=str, choices=["threshold", "generative"], default="threshold",
-                        help="MedChem filtering mode: 'threshold' for pass-count; 'generative' to require both generative design rules")
 
     
     args = parser.parse_args()
@@ -714,13 +688,8 @@ if __name__ == "__main__":
         bbox_size=args.bbox_size,
         exhaustiveness=args.exhaustiveness,
         top_n=args.top_n,
-        max_variants=args.max_variants,
         num_rounds=args.num_rounds,
         score_threshold=args.score_threshold,
         boltz_pocket_residues=args.boltz_pocket_residues,
-        medchem_rule_threshold=args.medchem_rule_threshold,
-        medchem_structural_threshold=args.medchem_structural_threshold,
-        medchem_filter_mode=args.medchem_filter_mode
-        ,
         cgflow_config=args.cgflow_config if args.cgflow_config else None
     )

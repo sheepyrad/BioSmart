@@ -131,3 +131,11 @@ synthesis_paths/
 # Unidock stuff
 receptor_grids/
 receptor_reader/
+
+# Source code
+src/cgflow/
+src/ChemAP
+src/DiffSBDD
+src/synformer
+src/Pocket2Mol
+src/Uni-Dock

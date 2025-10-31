@@ -191,7 +191,6 @@ if "pipeline_config" not in st.session_state:
         "is_selfies": False,
         "is_peptide": False,
         "top_n": 5,
-        "max_variants": 5,
         "num_rounds": 1
     }
 
