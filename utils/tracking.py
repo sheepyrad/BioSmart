@@ -124,6 +124,35 @@ def generate_tracking_report(compounds, variants, redock_results, out_dir):
         logger.error(f"Error generating tracking report: {e}")
         return None
 
+def _ensure_scalar(value, default=None):
+    """Ensure a value is a scalar (not DataFrame, Series, etc.) for DuckDB storage."""
+    if value is None:
+        return default
+    if isinstance(value, pd.DataFrame):
+        logger.warning(f"Attempted to store DataFrame as scalar, using default: {default}. DataFrame shape: {value.shape}")
+        return default
+    if isinstance(value, pd.Series):
+        # If it's a Series with one value, extract it
+        if len(value) == 1:
+            try:
+                return value.iloc[0]
+            except Exception:
+                return default
+        logger.warning(f"Attempted to store Series as scalar, using default: {default}. Series length: {len(value)}")
+        return default
+    # Convert to string if it's not a basic type
+    if not isinstance(value, (str, int, float, bool, type(None))):
+        # Try to convert to string, but check if it's a complex type first
+        try:
+            if hasattr(value, '__iter__') and not isinstance(value, (str, bytes)):
+                # It's an iterable but not a string/bytes - likely a list or other collection
+                # For lists, we could join them, but for DuckDB we probably want None or empty string
+                return default
+            return str(value)
+        except Exception:
+            return default
+    return value
+
 def update_tracking_report(report_file, new_data, report_type="compound", duckdb_store: Optional["DuckDBStore"] = None):
     """
     Incrementally update the tracking report with new data.
@@ -135,52 +164,80 @@ def update_tracking_report(report_file, new_data, report_type="compound", duckdb
         duckdb_store: Optional DuckDBStore instance to also write to DuckDB
     """
     try:
+        # First, sanitize the entire new_data dict to ensure no DataFrames/Series
+        sanitized_data = {}
+        for key, value in new_data.items():
+            # Check if value is DataFrame/Series before sanitizing
+            if isinstance(value, (pd.DataFrame, pd.Series)):
+                logger.warning(f"Found DataFrame/Series in new_data['{key}'] before sanitization. Type: {type(value)}")
+            sanitized_value = _ensure_scalar(value, None)
+            sanitized_data[key] = sanitized_value
+        new_data = sanitized_data
+        
         # Write to DuckDB if provided
         if duckdb_store is not None:
             try:
                 if report_type == "compound":
                     # Write to molecules table
                     molecules_data = [{
-                        "barcode": new_data.get("barcode", ""),
-                        "smiles": new_data.get("smiles", ""),
+                        "barcode": _ensure_scalar(new_data.get("barcode", ""), ""),
+                        "smiles": _ensure_scalar(new_data.get("smiles", ""), ""),
                         "generation": None,  # Not stored in molecules table anymore
-                        "status": new_data.get("status", ""),
-                        "source": new_data.get("source", "")
+                        "status": _ensure_scalar(new_data.get("status", ""), ""),
+                        "source": _ensure_scalar(new_data.get("source", ""), "")
                     }]
+                    # Final check before passing to DuckDB
+                    for m in molecules_data:
+                        for k, v in m.items():
+                            if isinstance(v, (pd.DataFrame, pd.Series)):
+                                logger.error(f"CRITICAL: DataFrame/Series in molecules_data['{k}']! Type: {type(v)}")
+                                m[k] = None
                     duckdb_store.upsert_molecules(molecules_data)
                 elif report_type == "variant":
                     # Write to variants table
                     variant_data = [{
-                        "barcode": new_data.get("barcode", ""),
-                        "smiles": new_data.get("smiles", ""),
-                        "score": new_data.get("score"),
-                        "status": new_data.get("status", ""),
-                        "parent_id": new_data.get("source_compound", new_data.get("parent_id", ""))
+                        "barcode": _ensure_scalar(new_data.get("barcode", ""), ""),
+                        "smiles": _ensure_scalar(new_data.get("smiles", ""), ""),
+                        "score": _ensure_scalar(new_data.get("score"), None),
+                        "status": _ensure_scalar(new_data.get("status", ""), ""),
+                        "parent_id": _ensure_scalar(new_data.get("source_compound", new_data.get("parent_id", "")), "")
                     }]
+                    # Final check before passing to DuckDB
+                    for v in variant_data:
+                        for k, val in v.items():
+                            if isinstance(val, (pd.DataFrame, pd.Series)):
+                                logger.error(f"CRITICAL: DataFrame/Series in variant_data['{k}']! Type: {type(val)}")
+                                v[k] = None
                     duckdb_store.upsert_variants(variant_data)
                 elif report_type == "variant_status_update":
                     # Update status in variants table
                     # If we only have barcode and status, try to get existing variant data
-                    barcode = new_data.get("barcode", "")
+                    barcode = _ensure_scalar(new_data.get("barcode", ""), "")
                     if barcode:
                         existing_variant = duckdb_store.get_variant_by_barcode(barcode)
                         if existing_variant:
                             variant_data = [{
                                 "barcode": barcode,
-                                "smiles": existing_variant.get("smiles", new_data.get("smiles", "")),
-                                "score": existing_variant.get("score", new_data.get("score")),
-                                "status": new_data.get("status", existing_variant.get("status", "")),
-                                "parent_id": existing_variant.get("parent_id", new_data.get("parent_id", ""))
+                                "smiles": _ensure_scalar(existing_variant.get("smiles", new_data.get("smiles", "")), ""),
+                                "score": _ensure_scalar(existing_variant.get("score", new_data.get("score")), None),
+                                "status": _ensure_scalar(new_data.get("status", existing_variant.get("status", "")), ""),
+                                "parent_id": _ensure_scalar(existing_variant.get("parent_id", new_data.get("parent_id", "")), "")
                             }]
                         else:
                             # Fallback: use what we have
                             variant_data = [{
                                 "barcode": barcode,
-                                "smiles": new_data.get("smiles", ""),
-                                "score": new_data.get("score"),
-                                "status": new_data.get("status", ""),
-                                "parent_id": new_data.get("parent_id", "")
+                                "smiles": _ensure_scalar(new_data.get("smiles", ""), ""),
+                                "score": _ensure_scalar(new_data.get("score"), None),
+                                "status": _ensure_scalar(new_data.get("status", ""), ""),
+                                "parent_id": _ensure_scalar(new_data.get("parent_id", ""), "")
                             }]
+                        # Final check before passing to DuckDB
+                        for v in variant_data:
+                            for k, val in v.items():
+                                if isinstance(val, (pd.DataFrame, pd.Series)):
+                                    logger.error(f"CRITICAL: DataFrame/Series in variant_data['{k}']! Type: {type(val)}")
+                                    v[k] = None
                         duckdb_store.upsert_variants(variant_data)
                     else:
                         logger.warning("No barcode provided for variant status update in DuckDB")

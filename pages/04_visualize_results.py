@@ -292,9 +292,18 @@ st.markdown("## 📁 Select Pipeline Output Directory")
 
 st.info("Enter the path to any completed pipeline output directory for visualization")
 
+# Check if navigating from jobs page
+if "selected_job_output_dir" in st.session_state and st.session_state.selected_job_output_dir:
+    default_dir = st.session_state.selected_job_output_dir
+    # Clear the flag after using it
+    del st.session_state.selected_job_output_dir
+else:
+    default_dir = st.session_state.get("output_dir", "")
+
 # Enter path manually
 dir_path = st.text_input(
     "Output Directory Path:", 
+    value=default_dir if default_dir else "",
     placeholder="/path/to/outputs/pipeline_run_name",
     help="Enter the full path to a pipeline output directory containing results to visualize"
 )

@@ -111,6 +111,8 @@ if "top_n_input" not in st.session_state:
     st.session_state.top_n_input = 5
 if "output_dir_path_input" not in st.session_state:
     st.session_state.output_dir_path_input = "outputs/pipeline_output"
+if "job_name_input" not in st.session_state:
+    st.session_state.job_name_input = ""
 if "score_threshold_input" not in st.session_state:
     st.session_state.score_threshold_input = 0.7
 
@@ -718,6 +720,14 @@ st.markdown("---")
 st.header("💾 Step 9: Output Settings")
 
 st.text_input(
+    "Job Name",
+    help="Optional name for this pipeline run (e.g., 'NS5_round1', 'experiment_2024'). If not provided, will use output directory name.",
+    key="job_name_input",
+    placeholder="e.g., NS5_round1"
+)
+st.caption("💡 This helps identify jobs in the Jobs page. Leave empty to auto-generate from output directory name.")
+
+st.text_input(
     "Output Directory Path *",
     help="Path where results will be stored. Can be absolute or relative to project root.",
     key="output_dir_path_input"
@@ -1073,6 +1083,9 @@ if finalize_submitted:
             # Add Boltz-2 configuration
             config["boltz_pocket_residues"] = st.session_state.boltz_pocket_residues_input
             config["msa_path"] = st.session_state.msa_path_input
+            
+            # Add job name
+            config["job_name"] = st.session_state.job_name_input.strip() if st.session_state.job_name_input else ""
             
             config["out_dir"] = str(output_path) # Use the validated, absolute path
 

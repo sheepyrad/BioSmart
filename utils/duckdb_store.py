@@ -16,6 +16,9 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import duckdb  # type: ignore
 import pandas as pd
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class DuckDBStore:
@@ -105,27 +108,98 @@ class DuckDBStore:
                     search_mode TEXT,
                     created_at TIMESTAMP
                 );
+
+                CREATE TABLE IF NOT EXISTS jobs (
+                    job_id TEXT PRIMARY KEY,
+                    job_name TEXT,
+                    output_dir TEXT UNIQUE NOT NULL,
+                    parameters_json TEXT,
+                    status TEXT,
+                    created_at TIMESTAMP,
+                    completed_at TIMESTAMP,
+                    user_id TEXT
+                );
                 """
             )
 
     # ------------- Upserts / writes -------------
+    def _ensure_scalar(self, value, default=None):
+        """Ensure a value is a scalar (not DataFrame, Series, etc.) for DuckDB storage."""
+        if value is None:
+            return default
+        if isinstance(value, pd.DataFrame):
+            logger.error(f"CRITICAL: DataFrame detected in _ensure_scalar! Shape: {value.shape}, Columns: {list(value.columns)}")
+            return default
+        if isinstance(value, pd.Series):
+            logger.error(f"CRITICAL: Series detected in _ensure_scalar! Length: {len(value)}, Index: {list(value.index)}")
+            # If it's a Series with one value, extract it
+            if len(value) == 1:
+                try:
+                    return value.iloc[0]
+                except Exception:
+                    return default
+            return default
+        return value
+    
     def upsert_molecules(self, molecules: Iterable[Dict[str, Any]]) -> None:
         """Upsert basic molecule info (barcode, smiles, generation, status, source)."""
         rows = []
         now = datetime.utcnow()
         for m in molecules:
+            # Aggressive sanitization - check every value
+            barcode = m.get("barcode", "")
+            smiles = m.get("smiles", "")
+            generation = m.get("generation")
+            status = m.get("status", "")
+            source = m.get("source", "")
+            
+            # Check each value individually
+            if isinstance(barcode, (pd.DataFrame, pd.Series)):
+                logger.error(f"CRITICAL: DataFrame/Series in barcode: {type(barcode)}")
+                barcode = ""
+            if isinstance(smiles, (pd.DataFrame, pd.Series)):
+                logger.error(f"CRITICAL: DataFrame/Series in smiles: {type(smiles)}")
+                smiles = ""
+            if isinstance(generation, (pd.DataFrame, pd.Series)):
+                logger.error(f"CRITICAL: DataFrame/Series in generation: {type(generation)}")
+                generation = None
+            if isinstance(status, (pd.DataFrame, pd.Series)):
+                logger.error(f"CRITICAL: DataFrame/Series in status: {type(status)}")
+                status = ""
+            if isinstance(source, (pd.DataFrame, pd.Series)):
+                logger.error(f"CRITICAL: DataFrame/Series in source: {type(source)}")
+                source = ""
+            
             rows.append(
                 (
-                    str(m.get("barcode", "")),
-                    str(m.get("smiles", "")),
-                    int(m.get("generation")) if m.get("generation") is not None else None,
-                    str(m.get("status", "")),
-                    str(m.get("source", "")),
+                    str(self._ensure_scalar(barcode, "")),
+                    str(self._ensure_scalar(smiles, "")),
+                    int(self._ensure_scalar(generation, None)) if self._ensure_scalar(generation, None) is not None else None,
+                    str(self._ensure_scalar(status, "")),
+                    str(self._ensure_scalar(source, "")),
                     now,
                 )
             )
         if not rows:
             return
+        
+        # Final check - ensure no DataFrames/Series in rows
+        cleaned_rows = []
+        for row_idx, row in enumerate(rows):
+            cleaned_row = []
+            for col_idx, val in enumerate(row):
+                if isinstance(val, (pd.DataFrame, pd.Series)):
+                    logger.error(f"CRITICAL: DataFrame/Series found in molecules row {row_idx}, col {col_idx}! Type: {type(val)}")
+                    # Convert to None or empty string depending on column
+                    if col_idx in [0, 1, 3, 4]:  # barcode, smiles, status, source - should be strings
+                        cleaned_row.append("")
+                    else:
+                        cleaned_row.append(None)
+                else:
+                    cleaned_row.append(val)
+            cleaned_rows.append(tuple(cleaned_row))
+        rows = cleaned_rows
+        
         df = pd.DataFrame(
             rows,
             columns=[
@@ -137,43 +211,130 @@ class DuckDBStore:
                 "created_at",
             ],
         )
+        
+        # Final check on the DataFrame itself - scan all cells
+        for col in df.columns:
+            for idx in df.index:
+                val = df.at[idx, col]
+                if isinstance(val, (pd.DataFrame, pd.Series)):
+                    logger.error(f"CRITICAL: DataFrame/Series found in molecules DataFrame at row {idx}, col '{col}'! Type: {type(val)}")
+                    df.at[idx, col] = "" if col != "generation" else None
+        
+        # Also check dtypes - if any column has object dtype with DataFrame/Series, convert
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                for idx in df.index:
+                    val = df.at[idx, col]
+                    if isinstance(val, (pd.DataFrame, pd.Series)):
+                        logger.error(f"CRITICAL: DataFrame/Series in object column '{col}' at row {idx}")
+                        df.at[idx, col] = "" if col != "generation" else None
+        
+        # Convert DataFrame to native Python types before passing to DuckDB
+        # This ensures no pandas objects remain - extract scalar from each cell
+        df_converted = df.copy()
+        for col in df_converted.columns:
+            for idx in df_converted.index:
+                val = df_converted.at[idx, col]
+                # If it's a DataFrame/Series, convert to string representation
+                if isinstance(val, pd.DataFrame):
+                    logger.error(f"CRITICAL: DataFrame still present in '{col}' at row {idx} after all checks!")
+                    df_converted.at[idx, col] = "" if col != "generation" else None
+                elif isinstance(val, pd.Series):
+                    logger.error(f"CRITICAL: Series still present in '{col}' at row {idx} after all checks!")
+                    df_converted.at[idx, col] = val.iloc[0] if len(val) > 0 else ("" if col != "generation" else None)
+                elif pd.isna(val):
+                    df_converted.at[idx, col] = None
+                else:
+                    # Convert to native Python type
+                    if isinstance(val, (pd.Timestamp, pd.Timedelta)):
+                        df_converted.at[idx, col] = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else str(val)
+                    elif isinstance(val, (pd.Interval, pd.Period)):
+                        df_converted.at[idx, col] = str(val)
+                    else:
+                        # Already a native type
+                        df_converted.at[idx, col] = val
+        
         with self._connect() as con:
-            con.execute(
-                """
-                CREATE TEMPORARY TABLE _molecules_tmp AS SELECT * FROM df
-                """,
-                {"df": df},
-            )
-            con.execute(
-                """
-                INSERT INTO molecules AS t
-                SELECT * FROM _molecules_tmp s
-                ON CONFLICT (barcode) DO UPDATE SET
-                    smiles = excluded.smiles,
-                    generation = excluded.generation,
-                    status = excluded.status,
-                    source = excluded.source,
-                    created_at = excluded.created_at
-                """,
-            )
+            temp_view = "_molecules_tmp_view"
+            con.register(temp_view, df_converted)
+            try:
+                con.execute(
+                    f"""
+                    INSERT INTO molecules AS t
+                    SELECT * FROM {temp_view} s
+                    ON CONFLICT (barcode) DO UPDATE SET
+                        smiles = excluded.smiles,
+                        generation = excluded.generation,
+                        status = excluded.status,
+                        source = excluded.source,
+                        created_at = excluded.created_at
+                    """
+                )
+            finally:
+                unregister = getattr(con, "unregister", None)
+                if callable(unregister):
+                    unregister(temp_view)
 
     def upsert_variants(self, variants: Iterable[Dict[str, Any]]) -> None:
         """Upsert basic variant info (barcode, smiles, score, status, parent_id)."""
         rows = []
         now = datetime.utcnow()
         for v in variants:
+            # Aggressive sanitization - check every value
+            barcode = v.get("barcode", "")
+            smiles = v.get("smiles", "")
+            score = v.get("score")
+            status = v.get("status", "")
+            parent_id = v.get("parent_id", "")
+            
+            # Check each value individually
+            if isinstance(barcode, (pd.DataFrame, pd.Series)):
+                logger.error(f"CRITICAL: DataFrame/Series in barcode: {type(barcode)}")
+                barcode = ""
+            if isinstance(smiles, (pd.DataFrame, pd.Series)):
+                logger.error(f"CRITICAL: DataFrame/Series in smiles: {type(smiles)}")
+                smiles = ""
+            if isinstance(score, (pd.DataFrame, pd.Series)):
+                logger.error(f"CRITICAL: DataFrame/Series in score: {type(score)}")
+                score = None
+            if isinstance(status, (pd.DataFrame, pd.Series)):
+                logger.error(f"CRITICAL: DataFrame/Series in status: {type(status)}")
+                status = ""
+            if isinstance(parent_id, (pd.DataFrame, pd.Series)):
+                logger.error(f"CRITICAL: DataFrame/Series in parent_id: {type(parent_id)}")
+                parent_id = ""
+            
+            score_val = self._ensure_scalar(score, None)
             rows.append(
                 (
-                    str(v.get("barcode", "")),
-                    str(v.get("smiles", "")),
-                    float(v.get("score")) if v.get("score") is not None else None,
-                    str(v.get("status", "")),
-                    str(v.get("parent_id", "")),
+                    str(self._ensure_scalar(barcode, "")),
+                    str(self._ensure_scalar(smiles, "")),
+                    float(score_val) if score_val is not None else None,
+                    str(self._ensure_scalar(status, "")),
+                    str(self._ensure_scalar(parent_id, "")),
                     now,
                 )
             )
         if not rows:
             return
+        
+        # Final check - ensure no DataFrames/Series in rows
+        cleaned_rows = []
+        for row_idx, row in enumerate(rows):
+            cleaned_row = []
+            for col_idx, val in enumerate(row):
+                if isinstance(val, (pd.DataFrame, pd.Series)):
+                    logger.error(f"CRITICAL: DataFrame/Series found in variants row {row_idx}, col {col_idx}! Type: {type(val)}")
+                    # Convert to None or empty string depending on column
+                    if col_idx in [0, 1, 3, 4]:  # barcode, smiles, status, parent_id - should be strings
+                        cleaned_row.append("")
+                    else:
+                        cleaned_row.append(None)
+                else:
+                    cleaned_row.append(val)
+            cleaned_rows.append(tuple(cleaned_row))
+        rows = cleaned_rows
+        
         df = pd.DataFrame(
             rows,
             columns=[
@@ -185,44 +346,126 @@ class DuckDBStore:
                 "created_at",
             ],
         )
+        
+        # Final check on the DataFrame itself - scan all cells
+        for col in df.columns:
+            for idx in df.index:
+                val = df.at[idx, col]
+                if isinstance(val, (pd.DataFrame, pd.Series)):
+                    logger.error(f"CRITICAL: DataFrame/Series found in variants DataFrame at row {idx}, col '{col}'! Type: {type(val)}")
+                    df.at[idx, col] = "" if col != "score" else None
+        
+        # Also check dtypes - if any column has object dtype with DataFrame/Series, convert
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                for idx in df.index:
+                    val = df.at[idx, col]
+                    if isinstance(val, (pd.DataFrame, pd.Series)):
+                        logger.error(f"CRITICAL: DataFrame/Series in object column '{col}' at row {idx}")
+                        df.at[idx, col] = "" if col != "score" else None
+        
+        # Convert DataFrame to native Python types before passing to DuckDB
+        # This ensures no pandas objects remain - extract scalar from each cell
+        df_converted = df.copy()
+        for col in df_converted.columns:
+            for idx in df_converted.index:
+                val = df_converted.at[idx, col]
+                # If it's a DataFrame/Series, convert to string representation
+                if isinstance(val, pd.DataFrame):
+                    logger.error(f"CRITICAL: DataFrame still present in '{col}' at row {idx} after all checks!")
+                    df_converted.at[idx, col] = "" if col != "score" else None
+                elif isinstance(val, pd.Series):
+                    logger.error(f"CRITICAL: Series still present in '{col}' at row {idx} after all checks!")
+                    df_converted.at[idx, col] = val.iloc[0] if len(val) > 0 else ("" if col != "score" else None)
+                elif pd.isna(val):
+                    df_converted.at[idx, col] = None
+                else:
+                    # Convert to native Python type
+                    if isinstance(val, (pd.Timestamp, pd.Timedelta)):
+                        df_converted.at[idx, col] = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else str(val)
+                    elif isinstance(val, (pd.Interval, pd.Period)):
+                        df_converted.at[idx, col] = str(val)
+                    else:
+                        # Already a native type
+                        df_converted.at[idx, col] = val
+        
         with self._connect() as con:
-            con.execute(
-                """
-                CREATE TEMPORARY TABLE _variants_tmp AS SELECT * FROM df
-                """,
-                {"df": df},
-            )
-            con.execute(
-                """
-                INSERT INTO variants AS t
-                SELECT * FROM _variants_tmp s
-                ON CONFLICT (barcode) DO UPDATE SET
-                    smiles = excluded.smiles,
-                    score = excluded.score,
-                    status = excluded.status,
-                    parent_id = excluded.parent_id,
-                    created_at = excluded.created_at
-                """,
-            )
+            temp_view = "_variants_tmp_view"
+            con.register(temp_view, df_converted)
+            try:
+                con.execute(
+                    f"""
+                    INSERT INTO variants AS t
+                    SELECT * FROM {temp_view} s
+                    ON CONFLICT (barcode) DO UPDATE SET
+                        smiles = excluded.smiles,
+                        score = excluded.score,
+                        status = excluded.status,
+                        parent_id = excluded.parent_id,
+                        created_at = excluded.created_at
+                    """
+                )
+            finally:
+                unregister = getattr(con, "unregister", None)
+                if callable(unregister):
+                    unregister(temp_view)
 
     def upsert_medchem_results(self, barcode_to_result: Dict[str, Dict[str, Any]]) -> None:
         rows = []
         now = datetime.utcnow()
         for barcode, payload in barcode_to_result.items():
+            # Ensure filter_flags_json and plots_json are JSON-serializable dicts, not DataFrames
+            filter_flags = payload.get("filter_flags_json", {})
+            if isinstance(filter_flags, pd.DataFrame):
+                filter_flags = filter_flags.to_dict() if not filter_flags.empty else {}
+            elif isinstance(filter_flags, pd.Series):
+                filter_flags = filter_flags.to_dict() if len(filter_flags) > 0 else {}
+            
+            plots_json = payload.get("plots_json", {})
+            if isinstance(plots_json, pd.DataFrame):
+                plots_json = plots_json.to_dict() if not plots_json.empty else {}
+            elif isinstance(plots_json, pd.Series):
+                plots_json = plots_json.to_dict() if len(plots_json) > 0 else {}
+            
+            # Ensure list values are lists, not Series
+            passed_rule_names = payload.get("passed_rule_names", [])
+            if isinstance(passed_rule_names, pd.Series):
+                passed_rule_names = passed_rule_names.tolist()
+            elif not isinstance(passed_rule_names, list):
+                passed_rule_names = []
+            
+            failed_rule_names = payload.get("failed_rule_names", [])
+            if isinstance(failed_rule_names, pd.Series):
+                failed_rule_names = failed_rule_names.tolist()
+            elif not isinstance(failed_rule_names, list):
+                failed_rule_names = []
+            
+            passed_structural_names = payload.get("passed_structural_names", [])
+            if isinstance(passed_structural_names, pd.Series):
+                passed_structural_names = passed_structural_names.tolist()
+            elif not isinstance(passed_structural_names, list):
+                passed_structural_names = []
+            
+            failed_structural_names = payload.get("failed_structural_names", [])
+            if isinstance(failed_structural_names, pd.Series):
+                failed_structural_names = failed_structural_names.tolist()
+            elif not isinstance(failed_structural_names, list):
+                failed_structural_names = []
+            
             rows.append(
                 (
-                    barcode,
-                    payload.get("n_rules_pass"),
-                    payload.get("n_structural_pass"),
-                    payload.get("rule_threshold"),
-                    payload.get("structural_threshold"),
-                    json.dumps(payload.get("filter_flags_json", {})),
-                    ",".join(payload.get("passed_rule_names", []) or []),
-                    ",".join(payload.get("failed_rule_names", []) or []),
-                    ",".join(payload.get("passed_structural_names", []) or []),
-                    ",".join(payload.get("failed_structural_names", []) or []),
-                    json.dumps(payload.get("plots_json", {})),
-                    bool(payload.get("passed")) if payload.get("passed") is not None else None,
+                    str(self._ensure_scalar(barcode, "")),
+                    self._ensure_scalar(payload.get("n_rules_pass"), None),
+                    self._ensure_scalar(payload.get("n_structural_pass"), None),
+                    self._ensure_scalar(payload.get("rule_threshold"), None),
+                    self._ensure_scalar(payload.get("structural_threshold"), None),
+                    json.dumps(filter_flags),
+                    ",".join(passed_rule_names),
+                    ",".join(failed_rule_names),
+                    ",".join(passed_structural_names),
+                    ",".join(failed_structural_names),
+                    json.dumps(plots_json),
+                    bool(self._ensure_scalar(payload.get("passed"), None)) if self._ensure_scalar(payload.get("passed"), None) is not None else None,
                     now,
                 )
             )
@@ -247,26 +490,32 @@ class DuckDBStore:
             ],
         )
         with self._connect() as con:
-            con.execute("CREATE TEMPORARY TABLE _medchem_tmp AS SELECT * FROM df", {"df": df})
-            con.execute(
-                """
-                INSERT INTO medchem_results AS t
-                SELECT * FROM _medchem_tmp s
-                ON CONFLICT (barcode) DO UPDATE SET
-                    n_rules_pass = excluded.n_rules_pass,
-                    n_structural_pass = excluded.n_structural_pass,
-                    rule_threshold = excluded.rule_threshold,
-                    structural_threshold = excluded.structural_threshold,
-                    filter_flags_json = excluded.filter_flags_json,
-                    passed_rule_names = excluded.passed_rule_names,
-                    failed_rule_names = excluded.failed_rule_names,
-                    passed_structural_names = excluded.passed_structural_names,
-                    failed_structural_names = excluded.failed_structural_names,
-                    plots_json = excluded.plots_json,
-                    passed = excluded.passed,
-                    created_at = excluded.created_at
-                """,
-            )
+            temp_view = "_medchem_tmp_view"
+            con.register(temp_view, df)
+            try:
+                con.execute(
+                    f"""
+                    INSERT INTO medchem_results AS t
+                    SELECT * FROM {temp_view} s
+                    ON CONFLICT (barcode) DO UPDATE SET
+                        n_rules_pass = excluded.n_rules_pass,
+                        n_structural_pass = excluded.n_structural_pass,
+                        rule_threshold = excluded.rule_threshold,
+                        structural_threshold = excluded.structural_threshold,
+                        filter_flags_json = excluded.filter_flags_json,
+                        passed_rule_names = excluded.passed_rule_names,
+                        failed_rule_names = excluded.failed_rule_names,
+                        passed_structural_names = excluded.passed_structural_names,
+                        failed_structural_names = excluded.failed_structural_names,
+                        plots_json = excluded.plots_json,
+                        passed = excluded.passed,
+                        created_at = excluded.created_at
+                    """
+                )
+            finally:
+                unregister = getattr(con, "unregister", None)
+                if callable(unregister):
+                    unregister(temp_view)
 
     def write_chemap_results(self, chemap_df: pd.DataFrame, smiles_to_barcode: Dict[str, str]) -> None:
         if chemap_df is None or chemap_df.empty:
@@ -274,43 +523,63 @@ class DuckDBStore:
         now = datetime.utcnow()
         records = []
         for _, row in chemap_df.iterrows():
-            smi = str(row.get("SMILES", ""))
-            barcode = smiles_to_barcode.get(smi, "")
-            pred = row.get("ChemAP_pred")
+            smi = str(self._ensure_scalar(row.get("SMILES", ""), ""))
+            barcode = self._ensure_scalar(smiles_to_barcode.get(smi, ""), "")
+            pred = self._ensure_scalar(row.get("ChemAP_pred"), None)
+            
+            # Build row dict, ensuring all values are scalars
+            row_dict = {}
+            for k in chemap_df.columns:
+                val = self._ensure_scalar(row.get(k), None)
+                row_dict[k] = val
+            
             records.append(
                 (
-                    barcode,
-                    smi,
+                    str(barcode),
+                    str(smi),
                     int(pred) if pd.notna(pred) else None,
-                    json.dumps({k: (row.get(k) if k in row else None) for k in chemap_df.columns}),
+                    json.dumps(row_dict),
                     now,
                 )
             )
         df = pd.DataFrame(records, columns=["barcode", "smiles", "chemap_pred", "raw_json", "created_at"])
         with self._connect() as con:
-            con.execute("CREATE TEMPORARY TABLE _chemap_tmp AS SELECT * FROM df", {"df": df})
-            con.execute(
-                """
-                INSERT INTO chemap_results
-                SELECT * FROM _chemap_tmp
-                """,
-            )
+            temp_view = "_chemap_tmp_view"
+            con.register(temp_view, df)
+            try:
+                con.execute(
+                    f"""
+                    INSERT INTO chemap_results
+                    SELECT * FROM {temp_view}
+                    """
+                )
+            finally:
+                unregister = getattr(con, "unregister", None)
+                if callable(unregister):
+                    unregister(temp_view)
 
     def upsert_boltz2_results(self, variants: Iterable[Dict[str, Any]]) -> None:
         rows = []
         now = datetime.utcnow()
         for v in variants:
+            pocket_residues = v.get("pocket_residues")
+            # Ensure pocket_residues is JSON-serializable
+            if isinstance(pocket_residues, pd.DataFrame):
+                pocket_residues = pocket_residues.to_dict() if not pocket_residues.empty else None
+            elif isinstance(pocket_residues, pd.Series):
+                pocket_residues = pocket_residues.tolist() if len(pocket_residues) > 0 else None
+            
             rows.append(
                 (
-                    str(v.get("barcode", "")),
-                    v.get("affinity_pred_value"),
-                    v.get("affinity_probability_binary"),
-                    v.get("affinity_pred_value1"),
-                    v.get("affinity_probability_binary1"),
-                    v.get("affinity_pred_value2"),
-                    v.get("affinity_probability_binary2"),
-                    v.get("boltz2_score"),
-                    json.dumps(v.get("pocket_residues")) if v.get("pocket_residues") is not None else None,
+                    str(self._ensure_scalar(v.get("barcode", ""), "")),
+                    self._ensure_scalar(v.get("affinity_pred_value"), None),
+                    self._ensure_scalar(v.get("affinity_probability_binary"), None),
+                    self._ensure_scalar(v.get("affinity_pred_value1"), None),
+                    self._ensure_scalar(v.get("affinity_probability_binary1"), None),
+                    self._ensure_scalar(v.get("affinity_pred_value2"), None),
+                    self._ensure_scalar(v.get("affinity_probability_binary2"), None),
+                    self._ensure_scalar(v.get("boltz2_score"), None),
+                    json.dumps(pocket_residues) if pocket_residues is not None else None,
                     now,
                 )
             )
@@ -332,23 +601,29 @@ class DuckDBStore:
             ],
         )
         with self._connect() as con:
-            con.execute("CREATE TEMPORARY TABLE _boltz_tmp AS SELECT * FROM df", {"df": df})
-            con.execute(
-                """
-                INSERT INTO boltz2_results AS t
-                SELECT * FROM _boltz_tmp s
-                ON CONFLICT (barcode) DO UPDATE SET
-                    affinity_pred_value = excluded.affinity_pred_value,
-                    affinity_probability_binary = excluded.affinity_probability_binary,
-                    affinity_pred_value1 = excluded.affinity_pred_value1,
-                    affinity_probability_binary1 = excluded.affinity_probability_binary1,
-                    affinity_pred_value2 = excluded.affinity_pred_value2,
-                    affinity_probability_binary2 = excluded.affinity_probability_binary2,
-                    boltz2_score = excluded.boltz2_score,
-                    pocket_residues = excluded.pocket_residues,
-                    created_at = excluded.created_at
-                """,
-            )
+            temp_view = "_boltz_tmp_view"
+            con.register(temp_view, df)
+            try:
+                con.execute(
+                    f"""
+                    INSERT INTO boltz2_results AS t
+                    SELECT * FROM {temp_view} s
+                    ON CONFLICT (barcode) DO UPDATE SET
+                        affinity_pred_value = excluded.affinity_pred_value,
+                        affinity_probability_binary = excluded.affinity_probability_binary,
+                        affinity_pred_value1 = excluded.affinity_pred_value1,
+                        affinity_probability_binary1 = excluded.affinity_probability_binary1,
+                        affinity_pred_value2 = excluded.affinity_pred_value2,
+                        affinity_probability_binary2 = excluded.affinity_probability_binary2,
+                        boltz2_score = excluded.boltz2_score,
+                        pocket_residues = excluded.pocket_residues,
+                        created_at = excluded.created_at
+                    """
+                )
+            finally:
+                unregister = getattr(con, "unregister", None)
+                if callable(unregister):
+                    unregister(temp_view)
 
     def upsert_docking_results(self, results: Dict[str, Dict[str, Any]], barcode_by_variant_id: Dict[str, str], search_mode: str) -> None:
         rows = []
@@ -356,18 +631,25 @@ class DuckDBStore:
         for variant_id, payload in results.items():
             if not isinstance(payload, dict) or "error" in payload:
                 continue
-            barcode = barcode_by_variant_id.get(variant_id)
+            barcode = self._ensure_scalar(barcode_by_variant_id.get(variant_id), None)
             if not barcode:
                 continue
+            
+            # Ensure all_scores is a list, not DataFrame
             all_scores = payload.get("all_scores", [])
+            if isinstance(all_scores, pd.DataFrame):
+                all_scores = all_scores.values.flatten().tolist() if not all_scores.empty else []
+            elif isinstance(all_scores, pd.Series):
+                all_scores = all_scores.tolist()
+            
             rows.append(
                 (
-                    barcode,
-                    payload.get("docking_score"),
-                    payload.get("pose_count"),
-                    payload.get("result_file"),
+                    str(barcode),
+                    self._ensure_scalar(payload.get("docking_score"), None),
+                    self._ensure_scalar(payload.get("pose_count"), None),
+                    str(self._ensure_scalar(payload.get("result_file"), None)) if payload.get("result_file") else None,
                     json.dumps(all_scores) if all_scores is not None else None,
-                    search_mode,
+                    str(self._ensure_scalar(search_mode, "")),
                     now,
                 )
             )
@@ -386,20 +668,26 @@ class DuckDBStore:
             ],
         )
         with self._connect() as con:
-            con.execute("CREATE TEMPORARY TABLE _dock_tmp AS SELECT * FROM df", {"df": df})
-            con.execute(
-                """
-                INSERT INTO docking_results AS t
-                SELECT * FROM _dock_tmp s
-                ON CONFLICT (barcode) DO UPDATE SET
-                    best_score_kcal_mol = excluded.best_score_kcal_mol,
-                    pose_count = excluded.pose_count,
-                    result_file = excluded.result_file,
-                    all_scores_json = excluded.all_scores_json,
-                    search_mode = excluded.search_mode,
-                    created_at = excluded.created_at
-                """,
-            )
+            temp_view = "_dock_tmp_view"
+            con.register(temp_view, df)
+            try:
+                con.execute(
+                    f"""
+                    INSERT INTO docking_results AS t
+                    SELECT * FROM {temp_view} s
+                    ON CONFLICT (barcode) DO UPDATE SET
+                        best_score_kcal_mol = excluded.best_score_kcal_mol,
+                        pose_count = excluded.pose_count,
+                        result_file = excluded.result_file,
+                        all_scores_json = excluded.all_scores_json,
+                        search_mode = excluded.search_mode,
+                        created_at = excluded.created_at
+                    """
+                )
+            finally:
+                unregister = getattr(con, "unregister", None)
+                if callable(unregister):
+                    unregister(temp_view)
 
     # ------------- Read methods -------------
     def _extract_round_from_barcode(self, barcode: str) -> Optional[int]:
@@ -507,7 +795,22 @@ class DuckDBStore:
             if df.empty:
                 return None
             row = df.iloc[0].to_dict()
-            return row
+            # Ensure all values are scalars (not DataFrames/Series)
+            cleaned_row = {}
+            for key, value in row.items():
+                if isinstance(value, pd.DataFrame):
+                    logger.warning(f"Found DataFrame in {key}, converting to None")
+                    cleaned_row[key] = None
+                elif isinstance(value, pd.Series):
+                    # If it's a Series with one value, extract it
+                    if len(value) == 1:
+                        cleaned_row[key] = value.iloc[0]
+                    else:
+                        logger.warning(f"Found Series in {key}, converting to None")
+                        cleaned_row[key] = None
+                else:
+                    cleaned_row[key] = value
+            return cleaned_row
 
     def get_all_tracking_data(self, round_num: Optional[int] = None) -> pd.DataFrame:
         """Combined view joining all tables to mimic CSV tracking report structure.
@@ -629,6 +932,116 @@ class DuckDBStore:
                 return pd.DataFrame(columns=[
                     "barcode", "smiles", "docking_score", "pose_count", 
                     "result_file", "all_scores", "search_mode"
+                ])
+            
+            return df
+
+    # ------------- Job management methods -------------
+    def create_job(self, job_id: str, output_dir: str, parameters: Dict[str, Any], 
+                   status: str = "running", user_id: Optional[str] = None, 
+                   job_name: Optional[str] = None) -> None:
+        """Create a new job record with parameters."""
+        now = datetime.utcnow()
+        with self._connect() as con:
+            con.execute(
+                """
+                INSERT INTO jobs (job_id, job_name, output_dir, parameters_json, status, created_at, user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (job_id) DO UPDATE SET
+                    job_name = excluded.job_name,
+                    parameters_json = excluded.parameters_json,
+                    status = excluded.status,
+                    created_at = excluded.created_at
+                """,
+                [
+                    job_id,
+                    job_name,
+                    output_dir,
+                    json.dumps(parameters),
+                    status,
+                    now,
+                    user_id
+                ]
+            )
+
+    def update_job_status(self, job_id: str, status: str) -> None:
+        """Update job status and optionally set completed_at timestamp."""
+        now = datetime.utcnow()
+        with self._connect() as con:
+            if status in ["completed", "failed"]:
+                con.execute(
+                    """
+                    UPDATE jobs 
+                    SET status = ?, completed_at = ?
+                    WHERE job_id = ?
+                    """,
+                    [status, now, job_id]
+                )
+            else:
+                con.execute(
+                    """
+                    UPDATE jobs 
+                    SET status = ?
+                    WHERE job_id = ?
+                    """,
+                    [status, job_id]
+                )
+
+    def get_job_by_output_dir(self, output_dir: str) -> Optional[Dict[str, Any]]:
+        """Get job record by output directory path."""
+        with self._connect() as con:
+            df = con.execute(
+                """
+                SELECT job_id, job_name, output_dir, parameters_json, status, created_at, completed_at, user_id
+                FROM jobs
+                WHERE output_dir = ?
+                """,
+                [output_dir]
+            ).df()
+            
+            if df.empty:
+                return None
+            
+            row = df.iloc[0].to_dict()
+            # Parse JSON parameters
+            if row.get("parameters_json"):
+                try:
+                    row["parameters"] = json.loads(row["parameters_json"])
+                except json.JSONDecodeError:
+                    row["parameters"] = {}
+            else:
+                row["parameters"] = {}
+            return row
+
+    def get_all_jobs(self, user_id: Optional[str] = None, limit: int = 100) -> pd.DataFrame:
+        """Get all jobs, optionally filtered by user_id."""
+        with self._connect() as con:
+            if user_id:
+                df = con.execute(
+                    """
+                    SELECT job_id, job_name, output_dir, parameters_json, status, created_at, completed_at, user_id
+                    FROM jobs
+                    WHERE user_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    [user_id, limit]
+                ).df()
+            else:
+                df = con.execute(
+                    """
+                    SELECT job_id, job_name, output_dir, parameters_json, status, created_at, completed_at, user_id
+                    FROM jobs
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    [limit]
+                ).df()
+            
+            if df.empty:
+                return pd.DataFrame(columns=[
+                    "job_id", "job_name", "output_dir", "parameters_json", "status", 
+                    "created_at", "completed_at", "user_id"
                 ])
             
             return df

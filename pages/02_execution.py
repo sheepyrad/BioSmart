@@ -247,6 +247,7 @@ def run_pipeline(config, status_dict, stop_event):
             "score_threshold": config.get("score_threshold", 0.7),  # Add score threshold with default
             "boltz_pocket_residues": config.get("boltz_pocket_residues", ""),  # Add Boltz-2 pocket residues
             "msa_path": config.get("msa_path", "/home/conrad_hku/Drug_pipeline/msa/uniref_cleaned.a3m"),
+            "job_name": config.get("job_name", ""),  # Add job name
             
             "stop_flag": status_dict  # Pass the status dict for stop checking
         }
