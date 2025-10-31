@@ -174,25 +174,7 @@ st.markdown("""
 
 # Initialize session state variables if they don't exist
 if "pipeline_config" not in st.session_state:
-    st.session_state.pipeline_config = {
-        "out_dir": None,
-        "checkpoint": None,
-        "pdbfile": None,
-        "resi_list": None,
-        "n_samples": 200,
-        "sanitize": True,
-        "protein_file": None,
-        "receptor": None,
-        "program_choice": "qvina",
-        "scoring_function": "nnscore2",
-        "center": [114.817, 75.602, 82.416],
-        "box_size": [38, 70, 58],
-        "exhaustiveness": 32,
-        "is_selfies": False,
-        "is_peptide": False,
-        "top_n": 5,
-        "num_rounds": 1
-    }
+    st.session_state.pipeline_config = None
 
 if "pipeline_status" not in st.session_state:
     st.session_state.pipeline_status = {

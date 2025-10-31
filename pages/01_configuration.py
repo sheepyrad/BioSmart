@@ -376,23 +376,33 @@ def visualize_protein_residues(pdb_content, selected_residues=None, center=None,
     return view, html
 
 
-def update_model_choice():
-    """Function to update model choice based on form submission"""
-    st.session_state.model_update_requested = True
-
 st.title("⚙️ Pipeline Configuration")
 st.markdown("""
     Configure the parameters for your drug discovery pipeline run.
     Required fields are marked with an asterisk (*).
 """)
 
-# Get current model from session state (using the selectbox key)
-current_model = st.session_state.model_selection
+# Track previous model selection to detect changes
+if "previous_model_selection" not in st.session_state:
+    st.session_state.previous_model_selection = st.session_state.get("model_selection", "diffsbdd")
 
-# Check if model update was requested and trigger rerun
-if st.session_state.model_update_requested:
+# ============================================================================
+# SECTION 1: MODEL SELECTION
+# ============================================================================
+st.markdown("---")
+st.header("🤖 Step 1: Select AI Model")
+selected_model = st.selectbox(
+    "AI Model for Molecule Generation *",
+    options=["diffsbdd", "pocket2mol", "cgflow"],
+    format_func=lambda x: {"diffsbdd": "DiffSBDD", "pocket2mol": "Pocket2Mol", "cgflow": "CGFlow (finetuned)"}[x],
+    key="model_selection",
+    help="Select the AI model for generating molecules. Changing this will update available parameters below."
+)
+
+# Check if model changed and apply defaults
+if selected_model != st.session_state.previous_model_selection:
     # Apply cgflow-specific defaults on model change
-    if st.session_state.model_selection == "cgflow":
+    if selected_model == "cgflow":
         st.session_state.pocket2mol_dock_size_x = 20.0
         st.session_state.pocket2mol_dock_size_y = 20.0
         st.session_state.pocket2mol_dock_size_z = 20.0
@@ -400,22 +410,11 @@ if st.session_state.model_update_requested:
             st.session_state.cgflow_checkpoint_path = "src/cgflow/result/opt/unidock_qed/NS5/250812_160000/model_state.pt"
         if "cgflow_config_path" not in st.session_state:
             st.session_state.cgflow_config_path = "src/cgflow/configs/opt/NS5.yaml"
-    st.session_state.model_update_requested = False
-    st.rerun()
+    # Update previous model selection
+    st.session_state.previous_model_selection = selected_model
 
-# ============================================================================
-# SECTION 1: MODEL SELECTION
-# ============================================================================
-st.markdown("---")
-st.header("🤖 Step 1: Select AI Model")
-st.selectbox(
-    "AI Model for Molecule Generation *",
-    options=["diffsbdd", "pocket2mol", "cgflow"],
-    format_func=lambda x: {"diffsbdd": "DiffSBDD", "pocket2mol": "Pocket2Mol", "cgflow": "CGFlow (finetuned)"}[x],
-    key="model_selection",
-    help="Select the AI model for generating molecules. Changing this will update available parameters below.",
-    on_change=update_model_choice
-)
+# Get current model from session state (using the selectbox key)
+current_model = st.session_state.model_selection
 
 # ============================================================================
 # SECTION 2: PDB FILE INPUT

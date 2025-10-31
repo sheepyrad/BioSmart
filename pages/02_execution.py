@@ -212,6 +212,12 @@ if not st.session_state.get("pipeline_config"):
     st.error("Please configure the pipeline parameters first!")
     st.stop()
 
+# Check if out_dir is configured and valid
+if not st.session_state.pipeline_config.get("out_dir"):
+    st.error("⚠️ No active pipeline configuration found. Please configure the pipeline parameters first!")
+    st.info("Go to the **Configure & Run** page to set up your pipeline.")
+    st.stop()
+
 def run_pipeline(config, status_dict, stop_event):
     """Function to run the pipeline"""
     try:
@@ -352,12 +358,16 @@ if st.session_state.pipeline_status["running"]:
 st.header("Execution Log")
 
 # Read log content (last 200 lines)
-log_content = read_log_file(Path(st.session_state.pipeline_config["out_dir"]) / "logs" / "quick_pipeline.log")
-if log_content:
-    # Update log container with the last 200 lines
-    st.session_state.log_container = log_content
-    # Update progress based on log content
-    update_progress_from_log(log_content)
+out_dir = st.session_state.pipeline_config.get("out_dir")
+if out_dir:
+    log_content = read_log_file(Path(out_dir) / "logs" / "quick_pipeline.log")
+    if log_content:
+        # Update log container with the last 200 lines
+        st.session_state.log_container = log_content
+        # Update progress based on log content
+        update_progress_from_log(log_content)
+else:
+    st.info("No pipeline output directory configured. Please configure and run a pipeline first.")
 
 # Display log with auto-scroll and syntax highlighting
 create_auto_scrolling_text_area(st.session_state.log_container)

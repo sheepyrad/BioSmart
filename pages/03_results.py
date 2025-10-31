@@ -413,9 +413,20 @@ if not st.session_state.pipeline_config:
     """, unsafe_allow_html=True)
     st.stop()
 
+# Check if out_dir is configured and valid
+out_dir_value = st.session_state.pipeline_config.get("out_dir")
+if not out_dir_value:
+    st.markdown("""
+        <div style="text-align: center; padding: 2rem; background: #2d3748; border-radius: 10px; margin: 2rem 0; color: #ed8936;">
+            <h3>⚠️ No Active Pipeline Configuration</h3>
+            <p>Please configure the pipeline parameters first to start monitoring.</p>
+            <p><strong>Next Steps:</strong> Go to the <strong>Configure & Run</strong> page to set up and launch a pipeline.</p>
+        </div>
+    """, unsafe_allow_html=True)
+    st.stop()
+
 # Get the output directory path
-output_dir = Path(st.session_state.pipeline_config.get("out_dir", ""))
-output_dir_path = Path(output_dir) if output_dir else None
+output_dir_path = Path(out_dir_value) if out_dir_value else None
 
 # Validate output directory
 if not output_dir_path or not output_dir_path.exists():
