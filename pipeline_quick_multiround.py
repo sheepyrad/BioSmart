@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 # Import functions from the utils modules
 from utils.ligand_generation import run_ligand_generation, combine_pocket2mol_outputs
-from utils.redocking import redock_compound, run_batch_compound_redocking
+from utils.redocking import run_batch_compound_redocking
 from utils.retrosynformer import run_retrosynthesis
 from utils.medchem_filter import filter_by_generative_design, generate_filter_plots
 from utils.boltz_filter import boltz_predict_variants

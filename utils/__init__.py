@@ -16,7 +16,6 @@ This package contains various utilities for different stages of the drug discove
 
 # Import main utilities
 from utils.ligand_generation import run_ligand_generation, combine_pocket2mol_outputs
-from utils.redocking import redock_compound
 from utils.retrosynformer import run_retrosynthesis
 from utils.medchem_filter import filter_by_pass_count, generate_filter_plots
 from utils.energy_minimization import optimize_ligand_in_pocket
@@ -35,7 +34,7 @@ __all__ = [
     'run_ligand_generation', 'combine_pocket2mol_outputs',
     
     # Redocking (now Unidock-based)
-    'redock_compound',
+    # Note: redock_compound removed - use run_batch_compound_redocking instead
     
     # Retrosynthesis
     'run_retrosynthesis',

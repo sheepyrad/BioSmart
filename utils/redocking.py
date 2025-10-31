@@ -185,15 +185,23 @@ def run_unidock_docking(receptor_pdbqt: Path, ligand_sdfs: List[Path], output_di
         center_x, center_y, center_z = center
         size_x, size_y, size_z = box_size
         
-        # Create space-separated list of ligand SDF files
-        ligands_str = " ".join(str(ligand_sdf) for ligand_sdf in ligand_sdfs)
+        # Create ligand index file to avoid command-line argument length limits
+        # This follows the official Uni-Dock example pattern (see run_dock.py)
+        # The file is retained for reference and debugging purposes
+        ligand_index_file = output_dir / "ligand_index.txt"
+        with open(ligand_index_file, 'w') as f:
+            # Write space-separated ligand file paths
+            ligand_paths = [str(ligand_sdf) for ligand_sdf in ligand_sdfs]
+            f.write(" ".join(ligand_paths))
         
-        # Run unidock command
+        log_callback(f"Created ligand index file with {len(ligand_sdfs)} ligands: {ligand_index_file}")
+        
+        # Run unidock command using --ligand_index (not --gpu_batch) to avoid command-line argument length limits
+        # This approach is safer and more reliable for large batches, preventing potential errors
         command = [
             "unidock",
             "--receptor", str(receptor_pdbqt),
-            "--gpu_batch"
-        ] + [str(ligand_sdf) for ligand_sdf in ligand_sdfs] + [
+            "--ligand_index", str(ligand_index_file),
             "--search_mode", search_mode,
             "--scoring", "vina",
             "--center_x", str(center_x),
@@ -205,7 +213,8 @@ def run_unidock_docking(receptor_pdbqt: Path, ligand_sdfs: List[Path], output_di
             "--dir", str(output_dir)
         ]
         
-        log_callback(f"Running Unidock docking: {' '.join(command)}")
+        log_callback(f"Running Unidock docking with {len(ligand_sdfs)} ligands using ligand_index file")
+        log_callback(f"Command: {' '.join(command)}")
         
         result = env_manager.run_tool(
             tool_name="unidock",
@@ -219,6 +228,7 @@ def run_unidock_docking(receptor_pdbqt: Path, ligand_sdfs: List[Path], output_di
         
         if result.returncode == 0:
             log_callback(f"Unidock docking completed successfully: {output_dir}")
+            log_callback(f"Ligand index file retained at: {ligand_index_file}")
             # Check for output files
             output_files = list(output_dir.glob("*.sdf")) + list(output_dir.glob("*.pdbqt"))
             log_callback(f"Generated {len(output_files)} docking result files")
@@ -240,130 +250,13 @@ def run_unidock_docking(receptor_pdbqt: Path, ligand_sdfs: List[Path], output_di
         logger.error(f"Error in Unidock docking: {e}", exc_info=True)
         return False
 
-def run_complete_docking_workflow(receptor_pdb: Path, sdf_files: List[Path], output_dir: Path, 
-                                 center: Tuple[float, float, float], box_size: Tuple[float, float, float],
-                                 search_mode: str = "detail", batch_size: int = 1200, log_callback=None, 
-                                 prepared_receptor: Optional[Path] = None, save_temp_files: bool = True) -> bool:
-    """
-    Run complete docking workflow: proteinprep -> ligandprep -> unidock.
-    
-    Args:
-        receptor_pdb: Path to receptor PDB file
-        sdf_files: List of SDF ligand files
-        output_dir: Directory to save docking results
-        center: Center coordinates (x, y, z)
-        box_size: Box dimensions (x, y, z)
-        search_mode: Search mode ("fast", "balance", or "detail")
-        batch_size: Batch size for ligand preparation
-        log_callback: Function to call for logging
-        prepared_receptor: Path to already prepared receptor PDBQT file (optional)
-        save_temp_files: Whether to save temporary files for future testing
-        
-    Returns:
-        True if successful, False otherwise
-    """
-    if log_callback is None:
-        log_callback = print
-        
-    try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Step 1: Protein preparation (only if not already provided)
-        if prepared_receptor and prepared_receptor.exists():
-            log_callback("=" * 50)
-            log_callback("Step 1/3: Using pre-prepared receptor...")
-            log_callback(f"Using existing PDBQT: {prepared_receptor}")
-            receptor_pdbqt = prepared_receptor
-        else:
-            log_callback("=" * 50)
-            log_callback("Step 1/3: Running protein preparation...")
-            log_callback(f"Input PDB: {receptor_pdb}")
-            receptor_pdbqt = output_dir / "receptor_prepared.pdbqt"
-            log_callback(f"Output PDBQT: {receptor_pdbqt}")
-            
-            if not run_protein_prep(receptor_pdb, receptor_pdbqt, log_callback):
-                log_callback("ERROR: Protein preparation failed")
-                return False
-        
-        # Step 2: Ligand preparation (batch processing)
-        log_callback("=" * 50)
-        log_callback("Step 2/3: Running batch ligand preparation...")
-        log_callback(f"Input SDF files: {len(sdf_files)} files")
-        ligand_prep_dir = output_dir / "ligand_prep"
-        log_callback(f"Output directory: {ligand_prep_dir}")
-        log_callback(f"Batch size: {batch_size}")
-        
-        if not run_ligand_prep(sdf_files, ligand_prep_dir, batch_size, log_callback):
-            log_callback("ERROR: Ligand preparation failed")
-            return False
-        
-        # Find prepared ligand files (SDF files from ligandprep)
-        ligand_sdfs = list(ligand_prep_dir.glob("*.sdf"))
-        if not ligand_sdfs:
-            log_callback("ERROR: No prepared ligand SDF files found")
-            return False
-        
-        log_callback(f"Successfully prepared {len(ligand_sdfs)} ligand files")
-        
-        # Step 3: Unidock docking
-        log_callback("=" * 50)
-        log_callback("Step 3/3: Running Unidock docking...")
-        log_callback(f"Receptor: {receptor_pdbqt}")
-        log_callback(f"Ligands: {len(ligand_sdfs)} prepared SDF files")
-        log_callback(f"Center: {center}")
-        log_callback(f"Box size: {box_size}")
-        log_callback(f"Search mode: {search_mode}")
-        docking_output_dir = output_dir / "docking_results"
-        log_callback(f"Output directory: {docking_output_dir}")
-        
-        if not run_unidock_docking(receptor_pdbqt, ligand_sdfs, docking_output_dir, 
-                                  center, box_size, search_mode, log_callback):
-            log_callback("ERROR: Unidock docking failed")
-            return False
-        
-        # Save temp files if requested
-        if save_temp_files:
-            log_callback("=" * 50)
-            log_callback("Saving temporary files for future testing...")
-            temp_save_dir = output_dir / "temp_files_for_testing"
-            temp_save_dir.mkdir(exist_ok=True)
-            
-            # Copy receptor PDBQT
-            if receptor_pdbqt.exists():
-                shutil.copy2(receptor_pdbqt, temp_save_dir / "receptor_prepared.pdbqt")
-                log_callback(f"Saved receptor PDBQT to: {temp_save_dir / 'receptor_prepared.pdbqt'}")
-            
-            # Copy ligand prep directory
-            ligand_temp_dir = temp_save_dir / "prepared_ligands"
-            if ligand_prep_dir.exists():
-                shutil.copytree(ligand_prep_dir, ligand_temp_dir, dirs_exist_ok=True)
-                log_callback(f"Saved prepared ligands to: {ligand_temp_dir}")
-            
-            # Save docking parameters for reference
-            params_file = temp_save_dir / "docking_parameters.json"
-            with open(params_file, 'w') as f:
-                import json
-                params = {
-                    "center": center,
-                    "box_size": box_size,
-                    "search_mode": search_mode,
-                    "batch_size": batch_size,
-                    "num_ligands": len(ligand_sdfs),
-                    "receptor_pdb": str(receptor_pdb),
-                    "prepared_receptor": str(receptor_pdbqt)
-                }
-                json.dump(params, f, indent=2)
-            log_callback(f"Saved docking parameters to: {params_file}")
-        
-        log_callback("=" * 50)
-        log_callback("SUCCESS: Complete docking workflow finished successfully")
-        log_callback("=" * 50)
-        return True
-        
-    except Exception as e:
-        log_callback(f"Error in complete docking workflow: {e}")
-        logger.error(f"Error in complete docking workflow: {e}", exc_info=True)
-        return False
+# DEPRECATED: The following function was removed because it was unused and redundant:
+# - run_complete_docking_workflow() - unused function that provided proteinprep -> ligandprep -> unidock
+#   workflow but without result parsing. This functionality is fully covered by run_batch_compound_redocking()
+#   which additionally handles SMILES-to-SDF conversion and result parsing.
+# 
+# Use run_batch_compound_redocking() instead for complete docking workflows with result parsing.
+# Date removed: 20251031
 
 def run_batch_compound_redocking(compounds_data: List[Dict[str, Any]], receptor_pdb: Path, 
                                 redock_params: Tuple, output_base_dir: Path, 
@@ -559,100 +452,13 @@ def run_batch_compound_redocking(compounds_data: List[Dict[str, Any]], receptor_
         logger.error(f"Error in batch redocking workflow: {e}", exc_info=True)
         return {"error": str(e)}
 
-def redock_compound(compound_id, smiles, redock_params, receptor=None, log_callback=print):
-    """
-    Redock a single compound using the optimized workflow.
-    This function now serves as a wrapper for batch processing with a single compound.
-
-    Args:
-        compound_id: ID of the compound
-        smiles: SMILES string of the compound
-        redock_params: Tuple of redocking parameters (center_x, center_y, center_z, size_x, size_y, size_z, search_mode)
-        receptor: Path to the receptor PDB file
-        log_callback: Function to call for logging
-
-    Returns:
-        Tuple of (threading.Thread, dict): The thread running the docking workflow
-                                           and a dictionary to store results asynchronously.
-    """
-    if log_callback is None:
-        log_callback = print
-
-    log_callback(f"Preparing optimized docking workflow for compound {compound_id}.")
-
-    # Create a dictionary to store results asynchronously
-    result_storage = {"status": "pending", "data": None}
-
-    # Check if receptor file exists
-    if not receptor or not Path(receptor).exists():
-        error_msg = f"Receptor file not found: {receptor}"
-        log_callback(error_msg)
-        result_storage["status"] = "error"
-        result_storage["data"] = {"error": error_msg}
-        return None, result_storage
-
-    # Create output directory
-    output_dir = Path("outputs") / "temp_docking" / f"compound_{compound_id}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Create compound data for batch processing
-    compounds_data = [{
-        "compound_id": compound_id,
-        "smiles": smiles
-    }]
-
-    # Start thread
-    log_callback(f"Starting optimized docking workflow thread for {compound_id}...")
-    thread = threading.Thread(
-        target=_run_optimized_single_compound_workflow,
-        args=(compounds_data, receptor, redock_params, output_dir, log_callback, result_storage)
-    )
-    thread.daemon = True
-    thread.start()
-
-    log_callback(f"Optimized docking workflow thread for {compound_id} started.")
-
-    return thread, result_storage
-
-def _run_optimized_single_compound_workflow(compounds_data: List[Dict[str, Any]], receptor_pdb: str, 
-                                          redock_params: Tuple, output_dir: Path, 
-                                          log_callback, result_storage: Dict[str, Any]):
-    """Internal function to run the optimized workflow for a single compound."""
-    start_time = time.time()
-    
-    # Initialize result storage
-    result_storage["data"] = {}
-    result_storage["status"] = "starting"
-    
-    try:
-        # Run batch workflow for single compound
-        results = run_batch_compound_redocking(
-            compounds_data=compounds_data,
-            receptor_pdb=Path(receptor_pdb),
-            redock_params=redock_params,
-            output_base_dir=output_dir,
-            batch_size=1200,
-            save_temp_files=True,
-            log_callback=log_callback
-        )
-        
-        if "error" in results:
-            raise Exception(results["error"])
-        
-        result_storage["data"] = results
-        result_storage["status"] = "success"
-        log_callback("Optimized docking workflow completed successfully")
-        
-    except Exception as e:
-        error_msg = f"Optimized docking workflow failed: {e}"
-        log_callback(error_msg)
-        result_storage["data"] = {"error": error_msg}
-        result_storage["status"] = "error"
-        logger.error(f"Optimized docking workflow error: {e}", exc_info=True)
-    
-    finally:
-        elapsed_time = time.time() - start_time
-        log_callback(f"Optimized docking workflow finished in {elapsed_time:.2f} seconds. Status: {result_storage['status']}")
+# DEPRECATED: The following functions were removed because they were unused:
+# - redock_compound() - unused wrapper function for single compound processing
+# - _run_optimized_single_compound_workflow() - internal helper only used by redock_compound
+# - _run_unidock_workflow() - legacy function that was also unused
+# 
+# Use run_batch_compound_redocking() instead for batch processing of compounds.
+# Date removed: 20251031
 
 def create_sdf_from_smiles(smiles: str, output_file: Path, mol_name: str = "molecule") -> bool:
     """
@@ -817,11 +623,3 @@ def parse_sdf_results(result_file: Path, variant_id: str, log_callback) -> Optio
     except Exception as e:
         log_callback(f"Error parsing SDF results for {variant_id}: {e}")
         return None
-
-# Legacy function - keeping for backward compatibility but using optimized approach
-def _run_unidock_workflow(variants: List[Dict[str, Any]], receptor_pdb: str, redock_params: Tuple,
-                         output_dir: Path, log_callback, result_storage: Dict[str, Any]):
-    """Legacy internal function - now redirects to optimized workflow."""
-    log_callback("Using optimized workflow approach...")
-    _run_optimized_single_compound_workflow(variants, receptor_pdb, redock_params, output_dir, log_callback, result_storage)
-
