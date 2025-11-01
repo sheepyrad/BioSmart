@@ -133,6 +133,7 @@ receptor_grids/
 receptor_reader/
 
 # Source code
+src/*
 src/cgflow/
 src/ChemAP
 src/DiffSBDD
