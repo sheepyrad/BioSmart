@@ -148,16 +148,20 @@ def _extract_protein_sequence_from_pdb(pdb_file: Path, log_cb: Callable[[str], N
         return ""
 
 
-def _create_boltz_yaml(yaml_path: Path, protein_sequence: str, smiles: str, msa_path: str, pocket_residues: Union[List[int], None] = None, log_cb: Union[Callable[[str], None], None] = None) -> None:
+def _create_boltz_yaml(yaml_path: Path, protein_sequence: str, smiles: str, msa_path: Union[str, None] = None, 
+                      pocket_residues: Union[List[int], None] = None, log_cb: Union[Callable[[str], None], None] = None,
+                      template_cif_path: Union[str, Path, None] = None, use_msa_server: bool = False) -> None:
     """Create YAML file for Boltz-2 prediction in the required format.
     
     Args:
         yaml_path: Path where the YAML file should be created.
         protein_sequence: Protein sequence string.
         smiles: SMILES string of the ligand.
-        msa_path: Path to the precomputed MSA file (.a3m format).
+        msa_path: Path to the precomputed MSA file (.a3m format). Required if use_msa_server is False.
         pocket_residues: List of residue indices (1-indexed) for pocket constraints.
         log_cb: Optional logging callback.
+        template_cif_path: Path to CIF template file for structure-guided prediction.
+        use_msa_server: Whether to use MSA server (if True, msa_path can be None).
     """
     if not protein_sequence or not protein_sequence.strip():
         raise ValueError("Empty or invalid protein sequence provided")
@@ -165,20 +169,28 @@ def _create_boltz_yaml(yaml_path: Path, protein_sequence: str, smiles: str, msa_
     if not smiles or not smiles.strip():
         raise ValueError("Empty or invalid SMILES string provided")
     
+    if not use_msa_server and not msa_path:
+        raise ValueError("msa_path is required when use_msa_server is False")
+    
     # Clean inputs
     protein_sequence = protein_sequence.strip()
     smiles = smiles.strip()
     
     # Create YAML structure
+    protein_seq_dict = {
+        'id': 'A',
+        'sequence': protein_sequence
+    }
+    
+    # Add MSA only if not using server
+    if not use_msa_server and msa_path:
+        protein_seq_dict['msa'] = str(msa_path)
+    
     yaml_data = {
         'version': 1,
         'sequences': [
             {
-                'protein': {
-                    'id': 'A',
-                    'sequence': protein_sequence,
-                    'msa': msa_path
-                }
+                'protein': protein_seq_dict
             },
             {
                 'ligand': {
@@ -195,6 +207,20 @@ def _create_boltz_yaml(yaml_path: Path, protein_sequence: str, smiles: str, msa_
             }
         ]
     }
+    
+    # Add templates section if template CIF is provided
+    if template_cif_path:
+        template_cif_path = Path(template_cif_path)
+        if template_cif_path.exists():
+            yaml_data['templates'] = [
+                {
+                    'cif': str(template_cif_path),
+                    'force': True,
+                    'threshold': 1
+                }
+            ]
+            if log_cb:
+                log_cb(f"[Boltz-2] Added template CIF: {template_cif_path}")
     
     # Write YAML file
     try:
@@ -437,7 +463,11 @@ def boltz_filter_variants(
             input_yaml = var_root / "input.yaml"
 
             # Step 1 – Create YAML file --------------------------------------------
-            _create_boltz_yaml(input_yaml, protein_sequence, smiles, str(msa_path), pocket_residues, log_callback)
+            _create_boltz_yaml(input_yaml, protein_sequence, smiles, 
+                              str(msa_path) if msa_path else None, 
+                              pocket_residues, log_callback,
+                              template_cif_path=None, 
+                              use_msa_server=False) 
 
             # Step 2 – Run Boltz-2 prediction with --use_potentials -----------
             boltz_output_dir = var_root
@@ -563,6 +593,8 @@ def boltz_predict_variants(
     log_callback: Union[Callable[[str], None], None] = None,
     round_report: Union[str, Path, None] = None,
     master_report: Union[str, Path, None] = None,
+    use_msa_server: bool = False,
+    template_cif_path: Union[str, Path, None] = None,
 ) -> List[dict]:
     """Run Boltz-2 predictions to annotate variants without filtering.
 
@@ -612,19 +644,28 @@ def boltz_predict_variants(
             input_yaml = var_root / "input.yaml"
 
             # Create YAML
-            _create_boltz_yaml(input_yaml, protein_sequence, smiles, str(msa_path), pocket_residues, log_callback)
+            _create_boltz_yaml(input_yaml, protein_sequence, smiles, 
+                              str(msa_path) if msa_path else None, 
+                              pocket_residues, log_callback,
+                              template_cif_path=template_cif_path,
+                              use_msa_server=use_msa_server)
 
             # Run prediction
+            boltz_cmd = [
+                "boltz",
+                "predict",
+                str(input_yaml),
+                "--use_potentials",
+                "--affinity_mw_correction",
+                "--out_dir",
+                str(var_root),
+            ]
+            
+            if use_msa_server:
+                boltz_cmd.append("--use_msa_server")
+            
             if not _run_cmd(
-                [
-                    "boltz",
-                    "predict",
-                    str(input_yaml),
-                    "--use_potentials",
-                    "--affinity_mw_correction",
-                    "--out_dir",
-                    str(var_root),
-                ],
+                boltz_cmd,
                 log_callback,
                 timeout=600,
             ):

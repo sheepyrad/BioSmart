@@ -238,17 +238,20 @@ def run_pipeline(config, status_dict, stop_event):
         pipeline_params = {
             "out_dir": config["out_dir"],
             "model_choice": model_choice,
-            "pdbfile": config["pdbfile"],
-            "n_samples": config["n_samples"],
+            "pdbfile": config.get("pdbfile"),  # Should be prepared structure path from config
+            "n_samples": config.get("n_samples"),
             "center": config["center"],
             "exhaustiveness": config["exhaustiveness_level"],
             "top_n": config["top_n"],
             "num_rounds": config["num_rounds"],
-            "score_threshold": config.get("score_threshold", 0.7),  # Add score threshold with default
-            "boltz_pocket_residues": config.get("boltz_pocket_residues", ""),  # Add Boltz-2 pocket residues
+            "score_threshold": config.get("score_threshold", 0.7),
+            "boltz_pocket_residues": config.get("boltz_pocket_residues", ""),
             "msa_path": config.get("msa_path", "/home/conrad_hku/Drug_pipeline/msa/uniref_cleaned.a3m"),
-            "job_name": config.get("job_name", ""),  # Add job name
-            
+            "job_name": config.get("job_name", ""),
+            "protein_input_mode": config.get("protein_input_mode", "pdb_file"),
+            "protein_sequence": config.get("protein_sequence"),
+            "use_msa_server": config.get("use_msa_server", False),
+            "prepared_cif_path": config.get("prepared_cif_path"),  # Pass prepared CIF path
             "stop_flag": status_dict  # Pass the status dict for stop checking
         }
         
