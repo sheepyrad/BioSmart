@@ -248,10 +248,6 @@ def run_pipeline(config, status_dict, stop_event):
             "boltz_pocket_residues": config.get("boltz_pocket_residues", ""),
             "msa_path": config.get("msa_path", "/home/conrad_hku/Drug_pipeline/msa/uniref_cleaned.a3m"),
             "job_name": config.get("job_name", ""),
-            "protein_input_mode": config.get("protein_input_mode", "pdb_file"),
-            "protein_sequence": config.get("protein_sequence"),
-            "use_msa_server": config.get("use_msa_server", False),
-            "prepared_cif_path": config.get("prepared_cif_path"),  # Pass prepared CIF path
             "stop_flag": status_dict  # Pass the status dict for stop checking
         }
         

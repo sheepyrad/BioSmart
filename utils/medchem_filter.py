@@ -26,6 +26,29 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 logger = logging.getLogger("MedChemFilter")
 logger.propagate = True
 
+# Helper functions for DataFrame pipe operations
+def _add_molecule_objects(df: pd.DataFrame, smiles_key: str) -> pd.DataFrame:
+    """Add molecule objects column to DataFrame."""
+    df['mol'] = dm.parallelized(dm.to_mol, df[smiles_key].tolist(), n_jobs=-1, progress=True)
+    return df
+
+def _drop_invalid_molecules(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop rows with invalid molecules."""
+    return df.dropna(subset=['mol'])
+
+def _calculate_pass_counts(df: pd.DataFrame, rule_cols: List[str], structural_cols: List[str]) -> pd.DataFrame:
+    """Calculate pass counts for rules and structural filters."""
+    df['n_rules_pass'] = df[rule_cols].astype(bool).sum(axis=1) if rule_cols else 0
+    df['n_structural_pass'] = df[structural_cols].astype(bool).sum(axis=1) if structural_cols else 0
+    return df
+
+def _filter_by_thresholds(df: pd.DataFrame, rule_threshold: int, structural_threshold: int) -> pd.DataFrame:
+    """Filter DataFrame by rule and structural thresholds."""
+    return df[
+        (df['n_rules_pass'] >= rule_threshold) &
+        (df['n_structural_pass'] >= structural_threshold)
+    ].copy()
+
 def _yield_batches(items, batch_size: int):
     """
     Yield successive batches of size `batch_size` from `items` while preserving order.
@@ -50,12 +73,13 @@ def _run_pass_count_on_batch(
     if not all(smiles_list):
         return [], None
 
-    temp_df = pd.DataFrame({smiles_key: smiles_list})
-
-    # --- Generate Molecule Objects ---
-    temp_df['mol'] = dm.parallelized(dm.to_mol, temp_df[smiles_key].tolist(), n_jobs=-1, progress=True)
-    original_len = len(temp_df)
-    temp_df = temp_df.dropna(subset=['mol'])
+    # Create DataFrame and process using pipe
+    temp_df = (
+        pd.DataFrame({smiles_key: smiles_list})
+        .pipe(_add_molecule_objects, smiles_key=smiles_key)
+        .pipe(_drop_invalid_molecules)
+    )
+    
     if temp_df.empty:
         return [], pd.DataFrame(columns=[smiles_key, 'mol', 'n_rules_pass', 'n_structural_pass'])
 
@@ -131,15 +155,9 @@ def _run_pass_count_on_batch(
     rule_cols = [col for col in rules_to_apply if col in temp_df.columns]
     structural_cols = [col for col in filter_results.keys() if col not in rules_to_apply and col in temp_df.columns]
 
-    # Calculate pass counts
-    temp_df['n_rules_pass'] = temp_df[rule_cols].astype(bool).sum(axis=1) if rule_cols else 0
-    temp_df['n_structural_pass'] = temp_df[structural_cols].astype(bool).sum(axis=1) if structural_cols else 0
-
-    # --- Apply Thresholds ---
-    passing_df = temp_df[
-        (temp_df['n_rules_pass'] >= rule_threshold) &
-        (temp_df['n_structural_pass'] >= structural_threshold)
-    ].copy()
+    # Calculate pass counts and filter using pipe
+    temp_df = temp_df.pipe(_calculate_pass_counts, rule_cols=rule_cols, structural_cols=structural_cols)
+    passing_df = temp_df.pipe(_filter_by_thresholds, rule_threshold=rule_threshold, structural_threshold=structural_threshold)
 
     passing_smiles_set = set(passing_df[smiles_key].tolist())
     filtered_variants_output = [
@@ -209,9 +227,13 @@ def _run_generative_design_on_batch(
     if not all(smiles_list):
         return [], None
 
-    temp_df = pd.DataFrame({smiles_key: smiles_list})
-    temp_df['mol'] = dm.parallelized(dm.to_mol, temp_df[smiles_key].tolist(), n_jobs=-1, progress=True)
-    temp_df = temp_df.dropna(subset=['mol'])
+    # Create DataFrame and process using pipe
+    temp_df = (
+        pd.DataFrame({smiles_key: smiles_list})
+        .pipe(_add_molecule_objects, smiles_key=smiles_key)
+        .pipe(_drop_invalid_molecules)
+    )
+    
     if temp_df.empty:
         return [], pd.DataFrame(columns=[smiles_key, 'mol', 'rule_of_generative_design', 'rule_of_generative_design_strict', 'n_rules_pass', 'n_structural_pass'])
 
@@ -227,9 +249,10 @@ def _run_generative_design_on_batch(
         else:
             temp_df[rule_name] = [False] * len(mols_list)
 
-    temp_df['n_rules_pass'] = temp_df[rules_to_apply].astype(bool).sum(axis=1)
+    # Calculate pass counts and filter using pipe
+    temp_df = temp_df.pipe(_calculate_pass_counts, rule_cols=rules_to_apply, structural_cols=[])
     temp_df['n_structural_pass'] = 0
-
+    
     passing_df = temp_df[
         temp_df['rule_of_generative_design'].astype(bool) &
         temp_df['rule_of_generative_design_strict'].astype(bool)

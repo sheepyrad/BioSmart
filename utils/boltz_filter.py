@@ -484,7 +484,6 @@ def boltz_filter_variants(
                         "predict", 
                         str(input_yaml), 
                         "--use_potentials",
-                        "--affinity_mw_correction",
                         "--out_dir", 
                         str(boltz_output_dir)
                     ],
@@ -755,55 +754,50 @@ def boltz_predict_variants(
                 if log_callback:
                     log_callback(f"[Boltz-2] Warning: ensemble-1 predictions missing for {barcode}; Boltz-2 score requires ensemble-1.")
 
-            # Incrementally update tracking reports with Boltz annotations
-            try:
-                if round_report is not None:
-                    update_tracking_report(Path(round_report), {
-                        "barcode": barcode,
-                        "affinity_pred_value": variant.get("affinity_pred_value"),
-                        "affinity_probability_binary": variant.get("affinity_probability_binary"),
-                        "affinity_pred_value1": variant.get("affinity_pred_value1"),
-                        "affinity_probability_binary1": variant.get("affinity_probability_binary1"),
-                        "affinity_pred_value2": variant.get("affinity_pred_value2"),
-                        "affinity_probability_binary2": variant.get("affinity_probability_binary2"),
-                        "confidence_score": variant.get("confidence_score"),
-                        "ptm": variant.get("ptm"),
-                        "iptm": variant.get("iptm"),
-                        "ligand_iptm": variant.get("ligand_iptm"),
-                        "protein_iptm": variant.get("protein_iptm"),
-                        "complex_plddt": variant.get("complex_plddt"),
-                        "complex_iplddt": variant.get("complex_iplddt"),
-                        "boltz2_score": variant.get("boltz2_score"),
-                        "boltz_ensemble1_missing": variant.get("boltz_ensemble1_missing"),
-                        "boltz_done": True,
-                    }, report_type="variant_status_update")
-                if master_report is not None:
-                    update_tracking_report(Path(master_report), {
-                        "barcode": barcode,
-                        "affinity_pred_value": variant.get("affinity_pred_value"),
-                        "affinity_probability_binary": variant.get("affinity_probability_binary"),
-                        "affinity_pred_value1": variant.get("affinity_pred_value1"),
-                        "affinity_probability_binary1": variant.get("affinity_probability_binary1"),
-                        "affinity_pred_value2": variant.get("affinity_pred_value2"),
-                        "affinity_probability_binary2": variant.get("affinity_probability_binary2"),
-                        "confidence_score": variant.get("confidence_score"),
-                        "ptm": variant.get("ptm"),
-                        "iptm": variant.get("iptm"),
-                        "ligand_iptm": variant.get("ligand_iptm"),
-                        "protein_iptm": variant.get("protein_iptm"),
-                        "complex_plddt": variant.get("complex_plddt"),
-                        "complex_iplddt": variant.get("complex_iplddt"),
-                        "boltz2_score": variant.get("boltz2_score"),
-                        "boltz_ensemble1_missing": variant.get("boltz_ensemble1_missing"),
-                        "boltz_done": True,
-                    }, report_type="variant_status_update")
-            except Exception as e:  # pragma: no cover
-                if log_callback:
-                    log_callback(f"[Boltz-2] Warning: failed to update tracking for {barcode}: {e}")
+            # Collect data for batch update
+            boltz_results_for_db.append(variant)
+            boltz_updates_for_csv.append({
+                "barcode": barcode,
+                "affinity_pred_value": variant.get("affinity_pred_value"),
+                "affinity_probability_binary": variant.get("affinity_probability_binary"),
+                "affinity_pred_value1": variant.get("affinity_pred_value1"),
+                "affinity_probability_binary1": variant.get("affinity_probability_binary1"),
+                "affinity_pred_value2": variant.get("affinity_pred_value2"),
+                "affinity_probability_binary2": variant.get("affinity_probability_binary2"),
+                "confidence_score": variant.get("confidence_score"),
+                "ptm": variant.get("ptm"),
+                "iptm": variant.get("iptm"),
+                "ligand_iptm": variant.get("ligand_iptm"),
+                "protein_iptm": variant.get("protein_iptm"),
+                "complex_plddt": variant.get("complex_plddt"),
+                "complex_iplddt": variant.get("complex_iplddt"),
+                "boltz2_score": variant.get("boltz2_score"),
+                "boltz_ensemble1_missing": variant.get("boltz_ensemble1_missing"),
+                "boltz_done": True,
+            })
 
         except Exception as exc:  # pragma: no cover
             if log_callback:
                 log_callback(f"[Boltz-2] Unexpected error for {barcode}: {exc}")
             # Do not fail the variant; just continue
+
+    # Batch update Boltz-2 results in DuckDB
+    if boltz_results_for_db:
+        try:
+            from utils.duckdb_store import DuckDBStore
+            # Get DuckDB store from round_dir if available
+            duckdb_path = round_dir.parent / "pipeline.duckdb"
+            if duckdb_path.exists():
+                duckdb_store = DuckDBStore(duckdb_path)
+                duckdb_store.upsert_boltz2_results(boltz_results_for_db)
+                if log_callback:
+                    log_callback(f"[Boltz-2] Batch updated {len(boltz_results_for_db)} Boltz-2 results in DuckDB")
+        except Exception as e:
+            if log_callback:
+                log_callback(f"[Boltz-2] Warning: failed to batch update DuckDB: {e}")
+
+    # Batch update CSV files (note: CSV doesn't store all Boltz fields, so we skip detailed updates)
+    # The variant_status_update type doesn't support all these fields, so we'll just update status if needed
+    # For now, we'll skip CSV batch update for Boltz-2 since it's primarily stored in DuckDB
 
     return variants

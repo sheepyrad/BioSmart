@@ -46,7 +46,10 @@ from utils.chemap_filter import chemap_filter_variants
 # Import helper functions moved to dedicated utility modules
 from utils.molecule_processing import extract_smiles_from_sdf, smiles_to_sdf, extract_best_pose_and_score
 from utils.retro_utils import extract_variants_from_retrosynthesis, run_retrosynthesis_with_timeout
-from utils.tracking import generate_tracking_report, update_tracking_report
+from utils.tracking import (
+    generate_tracking_report, update_tracking_report, 
+    batch_update_variant_statuses, batch_update_compounds, batch_update_variants
+)
 from utils.logging_utils import setup_logging, ThreadSafeRotatingFileHandler
 
 # Import the environment manager for conda environment handling
@@ -57,6 +60,50 @@ from utils.gpu_memory_manager import clear_gpu_memory, log_gpu_memory_usage, gpu
 
 # Import DuckDB storage
 from utils.duckdb_store import DuckDBStore
+
+# Helper functions for DataFrame pipe operations
+def _ensure_empty_dataframe(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
+    """Ensure DataFrame is empty with specified columns if empty."""
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+    return df
+
+def _load_master_tracking_fallback(master_report: Path, columns: List[str]) -> pd.DataFrame:
+    """Load master tracking DataFrame from CSV with fallback to empty DataFrame."""
+    if master_report.exists():
+        return pd.read_csv(master_report)
+    return pd.DataFrame(columns=columns)
+
+def _initialize_master_tracking(store: DuckDBStore, master_report: Path) -> pd.DataFrame:
+    """Initialize master tracking DataFrame from DuckDB with CSV fallback."""
+    columns = ['barcode', 'smiles', 'parent_id', 'status', 'source', 'timestamp']
+    try:
+        master_df = store.get_all_tracking_data()
+        return master_df.pipe(_ensure_empty_dataframe, columns=columns)
+    except Exception:
+        return _load_master_tracking_fallback(master_report, columns)
+
+def _filter_by_score_threshold(df: pd.DataFrame, score_threshold: float) -> pd.DataFrame:
+    """Filter DataFrame by score threshold and update status."""
+    df = df.copy()
+    df['status'] = df['score'].apply(
+        lambda score: 'PASSSCORE' if score is not None and score >= score_threshold else 'FAILSCORE'
+    )
+    return df
+
+def _extract_approved_smiles(chemap_df: pd.DataFrame) -> set:
+    """Extract approved SMILES from ChemAP DataFrame."""
+    if 'SMILES' in chemap_df.columns and 'ChemAP_pred' in chemap_df.columns:
+        return set(chemap_df[chemap_df['ChemAP_pred'] == 1]['SMILES'].astype(str).tolist())
+    return set()
+
+def _update_chemap_status(df: pd.DataFrame, approved_smiles: set) -> pd.DataFrame:
+    """Update status column based on ChemAP approval."""
+    df = df.copy()
+    df['status'] = df['smiles'].apply(
+        lambda smiles: 'CHEMAPPASS' if smiles in approved_smiles else 'CHEMAPFAIL'
+    )
+    return df
 
 def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_list=None, 
          n_samples=200, sanitize=True, center=(114.817, 75.602, 82.416), box_size=(38, 70, 58),
@@ -196,18 +243,14 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
         
         # Initialize master tracking DataFrame from DuckDB (with CSV fallback)
         try:
-            master_df = store.get_all_tracking_data()
-            if master_df.empty:
-                master_df = pd.DataFrame(columns=['barcode', 'smiles',
-                                                 'parent_id', 'status', 'source', 'timestamp'])
+            master_df = _initialize_master_tracking(store, master_report)
         except Exception as e:
             logger.warning(f"Could not read from DuckDB, falling back to CSV: {e}")
             # Fallback to CSV if DuckDB read fails
-            if master_report.exists():
-                master_df = pd.read_csv(master_report)
-            else:
-                master_df = pd.DataFrame(columns=['barcode', 'smiles',
-                                                 'parent_id', 'status', 'source', 'timestamp'])
+            master_df = _load_master_tracking_fallback(
+                master_report, 
+                ['barcode', 'smiles', 'parent_id', 'status', 'source', 'timestamp']
+            )
         
         # Loop through each round
         for round_num in range(1, num_rounds + 1):
@@ -359,6 +402,8 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             total_compounds = len(compounds)
             
             # Step 3: Sequential retrosynthesis
+            compounds_to_track = []  # Collect compounds for batch tracking
+            
             for idx, compound in enumerate(compounds, 1):
                 # Check stop flag before each compound
                 if stop_flag and not stop_flag.get("running", True):
@@ -375,10 +420,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                     "source": "AI_GENERATION",
                     "parent_id": "NONE"
                 })
-                
-                # Update tracking reports
-                update_tracking_report(round_report, compound, "compound", duckdb_store=store)
-                update_tracking_report(master_report, compound, "compound", duckdb_store=store)
+                compounds_to_track.append(compound)
                 
                 # Run retrosynthesis
                 smiles = compound["smiles"]
@@ -425,10 +467,15 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                             "source": "RETROSYNTHESIS"
                         })
                         all_variants.append(sanitized_variant)
-                        
-                        # Update tracking for variant generation
-                        update_tracking_report(round_report, sanitized_variant, "variant", duckdb_store=store)
-                        update_tracking_report(master_report, sanitized_variant, "variant", duckdb_store=store)
+            
+            # Batch update compounds and variants after retrosynthesis loop
+            if compounds_to_track:
+                logger.info(f"Round {round_num}: Batch updating {len(compounds_to_track)} compounds...")
+                batch_update_compounds(compounds_to_track, round_report, master_report, duckdb_store=store)
+            
+            if all_variants:
+                logger.info(f"Round {round_num}: Batch updating {len(all_variants)} variants...")
+                batch_update_variants(all_variants, round_report, master_report, duckdb_store=store)
             
             # End of loop processing initial compounds and their variants
 
@@ -440,22 +487,28 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                 logger.warning(f"Round {round_num}: No variants generated from retrosynthesis. Skipping filtering and subsequent steps for this round.")
                 continue # Skip to next round
 
-            # Filter variants by score threshold
-            score_filtered_variants = []
+            # Convert variants to DataFrame and filter by score threshold using pipe
+            variants_df = (
+                pd.DataFrame(all_variants)
+                .pipe(_filter_by_score_threshold, score_threshold=score_threshold)
+            )
+            
+            # Extract filtered variants and status updates
+            score_filtered_variants = variants_df[variants_df['status'] == 'PASSSCORE'].to_dict('records')
+            status_updates = variants_df[['barcode', 'status']].to_dict('records')
+            
+            # Update original variants list with status
+            barcode_to_status = dict(zip(variants_df['barcode'], variants_df['status']))
             for variant in all_variants:
-                score = variant.get("score")
-                if score is not None and score >= score_threshold:
-                    score_filtered_variants.append(variant)
-                    # Update status for variants that passed score filter
-                    variant["status"] = "PASSSCORE"
-                    update_tracking_report(round_report, variant, "variant_status_update", duckdb_store=store)
-                    update_tracking_report(master_report, variant, "variant_status_update", duckdb_store=store)
-                else:
-                    # Update status for variants that failed score filter
-                    variant["status"] = "FAILSCORE"
-                    update_tracking_report(round_report, variant, "variant_status_update", duckdb_store=store)
-                    update_tracking_report(master_report, variant, "variant_status_update", duckdb_store=store)
-
+                barcode = variant.get('barcode')
+                if barcode in barcode_to_status:
+                    variant['status'] = barcode_to_status[barcode]
+            
+            # Batch update all statuses at once (much more efficient)
+            logger.info(f"Round {round_num}: Batch updating statuses for {len(status_updates)} variants...")
+            batch_update_variant_statuses(status_updates, round_report, duckdb_store=store)
+            batch_update_variant_statuses(status_updates, master_report, duckdb_store=store)
+            
             logger.info(f"Round {round_num}: After score filtering (>= {score_threshold}), {len(score_filtered_variants)} variants remain")
             
             if not score_filtered_variants:
@@ -480,11 +533,18 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
 
             logger.info(f"Round {round_num}: After MedChem filtering, {len(filtered_variants)} variants remain")
 
-            # Update tracking for variants that passed MedChem filter
+            # Batch update tracking for variants that passed MedChem filter
+            medchem_status_updates = []
             for variant in filtered_variants:
                 variant["status"] = "PASSFILTER"
-                update_tracking_report(round_report, variant, "variant_status_update", duckdb_store=store)
-                update_tracking_report(master_report, variant, "variant_status_update", duckdb_store=store)
+                medchem_status_updates.append({
+                    "barcode": variant.get("barcode", ""),
+                    "status": variant["status"]
+                })
+            
+            if medchem_status_updates:
+                batch_update_variant_statuses(medchem_status_updates, round_report, duckdb_store=store)
+                batch_update_variant_statuses(medchem_status_updates, master_report, duckdb_store=store)
 
             # ------------------------------------------------------------------
             # Step 6: ChemAP FDA-approval prediction filtering
@@ -503,21 +563,32 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                 logger.error(f"Round {round_num}: ChemAP step failed: {e}")
                 approved_variants = []
 
-            # Update tracking for ChemAP results
-            approved_smiles_set = set()
+            # Update tracking for ChemAP results using pipe
             try:
-                if 'SMILES' in chemap_df.columns and 'ChemAP_pred' in chemap_df.columns:
-                    approved_smiles_set = set(chemap_df[chemap_df['ChemAP_pred'] == 1]['SMILES'].astype(str).tolist())
+                approved_smiles_set = _extract_approved_smiles(chemap_df)
             except Exception:
                 approved_smiles_set = set(v.get('smiles') for v in approved_variants)
 
-            for variant in filtered_variants:
-                if variant.get('smiles') in approved_smiles_set:
-                    variant["status"] = "CHEMAPPASS"
-                else:
-                    variant["status"] = "CHEMAPFAIL"
-                update_tracking_report(round_report, variant, "variant_status_update", duckdb_store=store)
-                update_tracking_report(master_report, variant, "variant_status_update", duckdb_store=store)
+            # Batch update tracking for ChemAP results using pipe
+            if filtered_variants:
+                filtered_variants_df = (
+                    pd.DataFrame(filtered_variants)
+                    .pipe(_update_chemap_status, approved_smiles=approved_smiles_set)
+                )
+                
+                # Update original variants with status
+                barcode_to_status = dict(zip(filtered_variants_df['barcode'], filtered_variants_df['status']))
+                for variant in filtered_variants:
+                    barcode = variant.get('barcode')
+                    if barcode in barcode_to_status:
+                        variant['status'] = barcode_to_status[barcode]
+                
+                # Extract status updates for batch processing
+                chemap_status_updates = filtered_variants_df[['barcode', 'status']].to_dict('records')
+                
+                if chemap_status_updates:
+                    batch_update_variant_statuses(chemap_status_updates, round_report, duckdb_store=store)
+                    batch_update_variant_statuses(chemap_status_updates, master_report, duckdb_store=store)
 
             if not approved_variants:
                 logger.warning(f"Round {round_num}: No variants approved by ChemAP. Skipping Boltz-2 and docking for this round.")
@@ -558,10 +629,9 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                 master_report=master_report,
             )
 
-            # Update tracking for all variants processed by Boltz-2 (annotations only)
-            for variant in filtered_variants:
-                update_tracking_report(round_report, variant, "variant_status_update", duckdb_store=store)
-                update_tracking_report(master_report, variant, "variant_status_update", duckdb_store=store)
+            # Batch update tracking for all variants processed by Boltz-2 (annotations only)
+            # Note: Boltz-2 annotations are handled within boltz_predict_variants function
+            # This section is kept for any additional status updates if needed
 
             logger.info(
                 f"Round {round_num}: Proceeding to batch docking with {len(filtered_variants)} variants (no Boltz filtering)"
@@ -607,11 +677,13 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             )
 
             round_redock_results = []
+            docking_updates = []  # Collect docking results for batch update
+            dockfail_updates = []  # Collect docking failures for batch update
 
             if isinstance(batch_results, dict) and "error" in batch_results:
                 logger.error(f"Round {round_num}: Batch docking failed: {batch_results['error']}")
             else:
-                # Update each variant with its docking results
+                # Process each variant with its docking results
                 for variant in filtered_variants:
                     variant_id = variant["variant_id"]
                     barcode = variant["barcode"]
@@ -638,9 +710,15 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                         })
 
                         round_redock_results.append(variant)
-
-                        update_tracking_report(round_report, variant, "docking", duckdb_store=store)
-                        update_tracking_report(master_report, variant, "docking", duckdb_store=store)
+                        
+                        # Collect docking data for batch update
+                        docking_updates.append({
+                            "barcode": barcode,
+                            "docking_score": best_score,
+                            "pose_count": pose_count,
+                            "result_file": result_file,
+                            "all_scores": all_scores
+                        })
 
                         variant_poses_dir = dock_dir / f"variant_{barcode}"
                         variant_poses_dir.mkdir(exist_ok=True)
@@ -680,8 +758,46 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                     else:
                         logger.warning(f"Docking failed or no results for {barcode} (variant {variant_id}).")
                         variant["status"] = "DOCKFAIL"
-                        update_tracking_report(round_report, {"barcode": barcode, "status": "DOCKFAIL"}, "variant_status_update", duckdb_store=store)
-                        update_tracking_report(master_report, {"barcode": barcode, "status": "DOCKFAIL"}, "variant_status_update", duckdb_store=store)
+                        dockfail_updates.append({
+                            "barcode": barcode,
+                            "status": "DOCKFAIL"
+                        })
+                
+                # Batch update docking results in DuckDB
+                if docking_updates and store is not None:
+                    try:
+                        from utils.duckdb_store import DuckDBStore
+                        # Prepare docking results dict for DuckDB
+                        docking_results_dict = {}
+                        barcode_by_variant_id = {}
+                        for variant in round_redock_results:
+                            variant_id = variant.get("variant_id")
+                            barcode = variant.get("barcode")
+                            if variant_id and barcode:
+                                docking_results_dict[variant_id] = {
+                                    "docking_score": variant.get("docking_score"),
+                                    "pose_count": variant.get("pose_count"),
+                                    "result_file": variant.get("result_file"),
+                                    "all_scores": variant.get("all_scores", [])
+                                }
+                                barcode_by_variant_id[variant_id] = barcode
+                        
+                        if docking_results_dict:
+                            store.upsert_docking_results(docking_results_dict, barcode_by_variant_id, exhaustiveness)
+                    except Exception as e:
+                        logger.warning(f"Failed to batch update docking results in DuckDB: {e}")
+                
+                # Batch update docking statuses in CSV
+                if docking_updates:
+                    for update in docking_updates:
+                        update["status"] = "DOCKED"
+                    batch_update_variant_statuses(docking_updates, round_report, duckdb_store=store)
+                    batch_update_variant_statuses(docking_updates, master_report, duckdb_store=store)
+                
+                # Batch update docking failures
+                if dockfail_updates:
+                    batch_update_variant_statuses(dockfail_updates, round_report, duckdb_store=store)
+                    batch_update_variant_statuses(dockfail_updates, master_report, duckdb_store=store)
 
             logger.info(f"Round {round_num}: Finished batch docking for {len(filtered_variants)} variants.")
             logger.info(f"Round {round_num}: Successfully docked and processed {len(round_redock_results)} variants.")

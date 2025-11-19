@@ -6,13 +6,58 @@ import logging
 from pathlib import Path
 import pandas as pd
 from datetime import datetime
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, List
 
 if TYPE_CHECKING:
     from utils.duckdb_store import DuckDBStore
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
+
+# Helper functions for DataFrame pipe operations
+def _ensure_columns(df: pd.DataFrame, required_columns: List[str]) -> pd.DataFrame:
+    """Ensure DataFrame has all required columns, adding None if missing."""
+    for col in required_columns:
+        if col not in df.columns:
+            df[col] = None
+    return df
+
+def _load_or_create_dataframe(report_file: Path, base_columns: List[str]) -> pd.DataFrame:
+    """Load DataFrame from CSV or create empty one with base columns."""
+    if report_file.exists():
+        return pd.read_csv(report_file)
+    return pd.DataFrame(columns=base_columns)
+
+def _update_status_by_barcode(df: pd.DataFrame, barcode: str, updates: dict) -> pd.DataFrame:
+    """Update DataFrame rows matching barcode with new values."""
+    if df.empty or not barcode:
+        return df
+    mask = df['barcode'] == barcode
+    if mask.any():
+        for key, value in updates.items():
+            if key not in df.columns:
+                df[key] = None
+            df.loc[mask, key] = value
+    return df
+
+def _append_new_row(df: pd.DataFrame, new_data: dict) -> pd.DataFrame:
+    """Append new row to DataFrame."""
+    new_row = pd.DataFrame([new_data])
+    return pd.concat([df, new_row], ignore_index=True)
+
+def _append_new_rows(df: pd.DataFrame, new_rows_df: pd.DataFrame) -> pd.DataFrame:
+    """Append multiple new rows to DataFrame."""
+    return pd.concat([df, new_rows_df], ignore_index=True)
+
+def _update_statuses_batch(df: pd.DataFrame, status_map: dict, timestamp: str) -> pd.DataFrame:
+    """Batch update statuses for multiple barcodes."""
+    if df.empty:
+        return df
+    mask = df['barcode'].isin(status_map.keys())
+    if mask.any():
+        df.loc[mask, 'status'] = df.loc[mask, 'barcode'].map(status_map)
+        df.loc[mask, 'timestamp'] = timestamp
+    return df
 
 def generate_tracking_report(compounds, variants, redock_results, out_dir):
     """
@@ -267,42 +312,257 @@ def update_tracking_report(report_file, new_data, report_type="compound", duckdb
         # Add timestamp to the new data
         new_data['timestamp'] = datetime.now().isoformat()
         
-        # Create or load existing report
-        if report_file.exists():
-            df = pd.read_csv(report_file)
-            # Add any new columns that might be in the new data
-            for col in new_data.keys():
-                if col not in df.columns:
-                    df[col] = None
-        else:
-            df = pd.DataFrame(columns=base_columns)
+        # Create or load existing report using pipe
+        df = (
+            _load_or_create_dataframe(report_file, base_columns)
+            .pipe(_ensure_columns, required_columns=list(new_data.keys()))
+        )
         
-        # Handle different update types
+        # Handle different update types using pipe
         if report_type == "variant_status_update":
             # Update existing row based on barcode
             barcode = new_data.get('barcode')
-            if barcode and not df.empty:
-                mask = df['barcode'] == barcode
-                if mask.any():
-                    # Update existing row
-                    for key, value in new_data.items():
-                        if key in df.columns:
-                            df.loc[mask, key] = value
-                        else:
-                            df[key] = None
-                            df.loc[mask, key] = value
-                else:
-                    logger.warning(f"No existing row found for barcode {barcode} in status update")
+            if barcode:
+                df = df.pipe(_update_status_by_barcode, barcode=barcode, updates=new_data)
             else:
                 logger.warning(f"Invalid barcode for status update: {barcode}")
         else:
-            # Convert new data to DataFrame row and append
-            new_row = pd.DataFrame([new_data])
-            df = pd.concat([df, new_row], ignore_index=True)
+            # Append new row using pipe
+            df = df.pipe(_append_new_row, new_data=new_data)
         
         # Save updated report
         df.to_csv(report_file, index=False)
         logger.debug(f"Updated tracking report with new {report_type} data")
         
     except Exception as e:
-        logger.error(f"Error updating tracking report: {e}") 
+        logger.error(f"Error updating tracking report: {e}")
+
+def batch_update_variant_statuses(
+    variants_data: list,
+    report_file: Path,
+    duckdb_store: Optional["DuckDBStore"] = None
+):
+    """
+    Batch update variant statuses in both DuckDB and CSV.
+    Much more efficient than calling update_tracking_report individually.
+    
+    Args:
+        variants_data: List of dicts with at least 'barcode' and 'status' keys
+        report_file: Path to the CSV report file
+        duckdb_store: Optional DuckDBStore instance
+    """
+    if not variants_data:
+        return
+    
+    try:
+        # Batch update DuckDB if provided
+        if duckdb_store is not None:
+            try:
+                # Get all barcodes
+                barcodes = [_ensure_scalar(v.get("barcode", ""), "") for v in variants_data if v.get("barcode")]
+                
+                if barcodes:
+                    # Fetch all existing variants in one query
+                    existing_variants = duckdb_store.get_variants_by_barcodes(barcodes)
+                    
+                    # Prepare variant data for DuckDB update
+                    variant_updates = []
+                    for variant in variants_data:
+                        barcode = _ensure_scalar(variant.get("barcode", ""), "")
+                        if barcode:
+                            existing_variant = existing_variants.get(barcode)
+                            if existing_variant:
+                                variant_updates.append({
+                                    "barcode": barcode,
+                                    "smiles": _ensure_scalar(existing_variant.get("smiles", variant.get("smiles", "")), ""),
+                                    "score": _ensure_scalar(existing_variant.get("score", variant.get("score")), None),
+                                    "status": _ensure_scalar(variant.get("status", existing_variant.get("status", "")), ""),
+                                    "parent_id": _ensure_scalar(existing_variant.get("parent_id", variant.get("parent_id", "")), "")
+                                })
+                            else:
+                                # Fallback: use what we have
+                                variant_updates.append({
+                                    "barcode": barcode,
+                                    "smiles": _ensure_scalar(variant.get("smiles", ""), ""),
+                                    "score": _ensure_scalar(variant.get("score"), None),
+                                    "status": _ensure_scalar(variant.get("status", ""), ""),
+                                    "parent_id": _ensure_scalar(variant.get("parent_id", ""), "")
+                                })
+                    
+                    if variant_updates:
+                        duckdb_store.upsert_variants(variant_updates)
+            except Exception as e:
+                logger.warning(f"Failed to batch update DuckDB: {e}")
+        
+        # Batch update CSV using pipe
+        report_file = Path(report_file)
+        now = datetime.now().isoformat()
+        
+        # Create a mapping of barcode to status
+        status_map = {_ensure_scalar(v.get("barcode", ""), ""): _ensure_scalar(v.get("status", ""), "") 
+                     for v in variants_data if v.get("barcode")}
+        
+        # Load existing report and update statuses using pipe
+        base_columns = ['barcode', 'smiles', 'parent_id', 'status', 'source', 'timestamp']
+        df = (
+            _load_or_create_dataframe(report_file, base_columns)
+            .pipe(_update_statuses_batch, status_map=status_map, timestamp=now)
+        )
+        
+        # Save updated report
+        df.to_csv(report_file, index=False)
+        logger.debug(f"Batch updated {len(variants_data)} variant statuses in CSV")
+        
+    except Exception as e:
+        logger.error(f"Error batch updating variant statuses: {e}")
+
+def batch_update_compounds(
+    compounds_data: list,
+    round_report: Path,
+    master_report: Path,
+    duckdb_store: Optional["DuckDBStore"] = None
+):
+    """
+    Batch update compounds in both DuckDB and CSV.
+    More efficient than calling update_tracking_report individually for each compound.
+    
+    Args:
+        compounds_data: List of dicts with compound data
+        round_report: Path to the round CSV report file
+        master_report: Path to the master CSV report file
+        duckdb_store: Optional DuckDBStore instance
+    """
+    if not compounds_data:
+        return
+    
+    try:
+        # Batch update DuckDB if provided
+        if duckdb_store is not None:
+            try:
+                molecules_data = []
+                for compound in compounds_data:
+                    molecules_data.append({
+                        "barcode": _ensure_scalar(compound.get("barcode", ""), ""),
+                        "smiles": _ensure_scalar(compound.get("smiles", ""), ""),
+                        "generation": None,  # Not stored in molecules table anymore
+                        "status": _ensure_scalar(compound.get("status", ""), ""),
+                        "source": _ensure_scalar(compound.get("source", ""), "")
+                    })
+                
+                if molecules_data:
+                    duckdb_store.upsert_molecules(molecules_data)
+            except Exception as e:
+                logger.warning(f"Failed to batch update DuckDB for compounds: {e}")
+        
+        # Batch update CSV files using pipe
+        now = datetime.now().isoformat()
+        base_columns = ['barcode', 'smiles', 'parent_id', 'status', 'source', 'timestamp']
+        
+        # Prepare new rows
+        new_rows = []
+        for compound in compounds_data:
+            new_row = {
+                'barcode': _ensure_scalar(compound.get("barcode", ""), ""),
+                'smiles': _ensure_scalar(compound.get("smiles", ""), ""),
+                'parent_id': _ensure_scalar(compound.get("parent_id", "NONE"), "NONE"),
+                'status': _ensure_scalar(compound.get("status", ""), ""),
+                'source': _ensure_scalar(compound.get("source", ""), ""),
+                'timestamp': now
+            }
+            new_rows.append(new_row)
+        
+        if new_rows:
+            new_df = pd.DataFrame(new_rows)
+            
+            for report_file in [round_report, master_report]:
+                report_file = Path(report_file)
+                
+                # Load existing report and append new rows using pipe
+                df = (
+                    _load_or_create_dataframe(report_file, base_columns)
+                    .pipe(_append_new_rows, new_rows_df=new_df)
+                )
+                df.to_csv(report_file, index=False)
+        
+        logger.debug(f"Batch updated {len(compounds_data)} compounds in CSV")
+        
+    except Exception as e:
+        logger.error(f"Error batch updating compounds: {e}")
+
+def batch_update_variants(
+    variants_data: list,
+    round_report: Path,
+    master_report: Path,
+    duckdb_store: Optional["DuckDBStore"] = None
+):
+    """
+    Batch update variants in both DuckDB and CSV.
+    More efficient than calling update_tracking_report individually for each variant.
+    
+    Args:
+        variants_data: List of dicts with variant data
+        round_report: Path to the round CSV report file
+        master_report: Path to the master CSV report file
+        duckdb_store: Optional DuckDBStore instance
+    """
+    if not variants_data:
+        return
+    
+    try:
+        # Batch update DuckDB if provided
+        if duckdb_store is not None:
+            try:
+                variant_updates = []
+                for variant in variants_data:
+                    variant_updates.append({
+                        "barcode": _ensure_scalar(variant.get("barcode", ""), ""),
+                        "smiles": _ensure_scalar(variant.get("smiles", ""), ""),
+                        "score": _ensure_scalar(variant.get("score"), None),
+                        "status": _ensure_scalar(variant.get("status", ""), ""),
+                        "parent_id": _ensure_scalar(variant.get("source_compound", variant.get("parent_id", "")), "")
+                    })
+                
+                if variant_updates:
+                    duckdb_store.upsert_variants(variant_updates)
+            except Exception as e:
+                logger.warning(f"Failed to batch update DuckDB for variants: {e}")
+        
+        # Batch update CSV files using pipe
+        now = datetime.now().isoformat()
+        base_columns = ['barcode', 'smiles', 'parent_id', 'status', 'source', 'timestamp', 
+                       'source_compound', 'parent_barcode', 'score']
+        
+        # Prepare new rows
+        new_rows = []
+        for variant in variants_data:
+            new_row = {
+                'barcode': _ensure_scalar(variant.get("barcode", ""), ""),
+                'smiles': _ensure_scalar(variant.get("smiles", ""), ""),
+                'parent_id': _ensure_scalar(variant.get("source_compound", variant.get("parent_id", "")), ""),
+                'status': _ensure_scalar(variant.get("status", ""), ""),
+                'source': _ensure_scalar(variant.get("source", "RETROSYNTHESIS"), "RETROSYNTHESIS"),
+                'timestamp': now,
+                'source_compound': _ensure_scalar(variant.get("source_compound", ""), ""),
+                'parent_barcode': _ensure_scalar(variant.get("parent_barcode", ""), ""),
+                'score': _ensure_scalar(variant.get("score"), None)
+            }
+            new_rows.append(new_row)
+        
+        if new_rows:
+            new_df = pd.DataFrame(new_rows)
+            
+            for report_file in [round_report, master_report]:
+                report_file = Path(report_file)
+                
+                # Load existing report, ensure columns, and append new rows using pipe
+                df = (
+                    _load_or_create_dataframe(report_file, base_columns)
+                    .pipe(_ensure_columns, required_columns=base_columns)
+                    .pipe(_append_new_rows, new_rows_df=new_df)
+                )
+                df.to_csv(report_file, index=False)
+        
+        logger.debug(f"Batch updated {len(variants_data)} variants in CSV")
+        
+    except Exception as e:
+        logger.error(f"Error batch updating variants: {e}") 

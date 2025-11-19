@@ -15,6 +15,15 @@ import pandas as pd
 
 from utils.environment_manager import env_manager
 
+# Helper functions for DataFrame pipe operations
+def _filter_approved_smiles(df: pd.DataFrame) -> pd.DataFrame:
+    """Filter DataFrame to only approved SMILES (ChemAP_pred == 1)."""
+    return df[df.get("ChemAP_pred", 0) == 1]
+
+def _extract_smiles_set(df: pd.DataFrame) -> set:
+    """Extract SMILES set from DataFrame."""
+    return set(df["SMILES"].astype(str).tolist())
+
 
 def _ensure_directory(path: Path) -> None:
     """Create a directory if it does not exist."""
@@ -146,9 +155,12 @@ def chemap_filter_variants(
         log_callback=log_callback,
     )
 
-    # Determine approved SMILES
-    approved_df = pred_df[pred_df.get("ChemAP_pred", 0) == 1]
-    approved_smiles = set(approved_df["SMILES"].astype(str).tolist())
+    # Determine approved SMILES using pipe
+    approved_smiles = (
+        pred_df
+        .pipe(_filter_approved_smiles)
+        .pipe(_extract_smiles_set)
+    )
 
     approved_variants = [v for v in variants if v.get("smiles") in approved_smiles]
 

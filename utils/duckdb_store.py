@@ -20,6 +20,59 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Helper functions for DataFrame pipe operations
+def _sanitize_dataframe_cells(df: pd.DataFrame, string_cols: List[str] = None) -> pd.DataFrame:
+    """Sanitize DataFrame cells to remove nested DataFrames/Series."""
+    if string_cols is None:
+        string_cols = []
+    df = df.copy()
+    for col in df.columns:
+        for idx in df.index:
+            val = df.at[idx, col]
+            if isinstance(val, (pd.DataFrame, pd.Series)):
+                logger.error(f"CRITICAL: DataFrame/Series found in DataFrame at row {idx}, col '{col}'! Type: {type(val)}")
+                df.at[idx, col] = "" if col in string_cols else None
+    return df
+
+def _sanitize_object_columns(df: pd.DataFrame, string_cols: List[str] = None) -> pd.DataFrame:
+    """Sanitize object dtype columns that might contain DataFrames/Series."""
+    if string_cols is None:
+        string_cols = []
+    df = df.copy()
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            for idx in df.index:
+                val = df.at[idx, col]
+                if isinstance(val, (pd.DataFrame, pd.Series)):
+                    logger.error(f"CRITICAL: DataFrame/Series in object column '{col}' at row {idx}")
+                    df.at[idx, col] = "" if col in string_cols else None
+    return df
+
+def _convert_to_native_types(df: pd.DataFrame, string_cols: List[str] = None) -> pd.DataFrame:
+    """Convert DataFrame values to native Python types."""
+    if string_cols is None:
+        string_cols = []
+    df = df.copy()
+    for col in df.columns:
+        for idx in df.index:
+            val = df.at[idx, col]
+            if isinstance(val, pd.DataFrame):
+                logger.error(f"CRITICAL: DataFrame still present in '{col}' at row {idx} after all checks!")
+                df.at[idx, col] = "" if col in string_cols else None
+            elif isinstance(val, pd.Series):
+                logger.error(f"CRITICAL: Series still present in '{col}' at row {idx} after all checks!")
+                df.at[idx, col] = val.iloc[0] if len(val) > 0 else ("" if col in string_cols else None)
+            elif pd.isna(val):
+                df.at[idx, col] = None
+            else:
+                # Convert to native Python type
+                if isinstance(val, (pd.Timestamp, pd.Timedelta)):
+                    df.at[idx, col] = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else str(val)
+                elif isinstance(val, (pd.Interval, pd.Period)):
+                    df.at[idx, col] = str(val)
+                # Already a native type
+    return df
+
 
 class DuckDBStore:
     """Simple DAO for DuckDB-backed storage.
@@ -200,59 +253,24 @@ class DuckDBStore:
             cleaned_rows.append(tuple(cleaned_row))
         rows = cleaned_rows
         
-        df = pd.DataFrame(
-            rows,
-            columns=[
-                "barcode",
-                "smiles",
-                "generation",
-                "status",
-                "source",
-                "created_at",
-            ],
+        # Create DataFrame and sanitize using pipe
+        string_cols = ["barcode", "smiles", "status", "source"]
+        df_converted = (
+            pd.DataFrame(
+                rows,
+                columns=[
+                    "barcode",
+                    "smiles",
+                    "generation",
+                    "status",
+                    "source",
+                    "created_at",
+                ],
+            )
+            .pipe(_sanitize_dataframe_cells, string_cols=string_cols)
+            .pipe(_sanitize_object_columns, string_cols=string_cols)
+            .pipe(_convert_to_native_types, string_cols=string_cols)
         )
-        
-        # Final check on the DataFrame itself - scan all cells
-        for col in df.columns:
-            for idx in df.index:
-                val = df.at[idx, col]
-                if isinstance(val, (pd.DataFrame, pd.Series)):
-                    logger.error(f"CRITICAL: DataFrame/Series found in molecules DataFrame at row {idx}, col '{col}'! Type: {type(val)}")
-                    df.at[idx, col] = "" if col != "generation" else None
-        
-        # Also check dtypes - if any column has object dtype with DataFrame/Series, convert
-        for col in df.columns:
-            if df[col].dtype == 'object':
-                for idx in df.index:
-                    val = df.at[idx, col]
-                    if isinstance(val, (pd.DataFrame, pd.Series)):
-                        logger.error(f"CRITICAL: DataFrame/Series in object column '{col}' at row {idx}")
-                        df.at[idx, col] = "" if col != "generation" else None
-        
-        # Convert DataFrame to native Python types before passing to DuckDB
-        # This ensures no pandas objects remain - extract scalar from each cell
-        df_converted = df.copy()
-        for col in df_converted.columns:
-            for idx in df_converted.index:
-                val = df_converted.at[idx, col]
-                # If it's a DataFrame/Series, convert to string representation
-                if isinstance(val, pd.DataFrame):
-                    logger.error(f"CRITICAL: DataFrame still present in '{col}' at row {idx} after all checks!")
-                    df_converted.at[idx, col] = "" if col != "generation" else None
-                elif isinstance(val, pd.Series):
-                    logger.error(f"CRITICAL: Series still present in '{col}' at row {idx} after all checks!")
-                    df_converted.at[idx, col] = val.iloc[0] if len(val) > 0 else ("" if col != "generation" else None)
-                elif pd.isna(val):
-                    df_converted.at[idx, col] = None
-                else:
-                    # Convert to native Python type
-                    if isinstance(val, (pd.Timestamp, pd.Timedelta)):
-                        df_converted.at[idx, col] = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else str(val)
-                    elif isinstance(val, (pd.Interval, pd.Period)):
-                        df_converted.at[idx, col] = str(val)
-                    else:
-                        # Already a native type
-                        df_converted.at[idx, col] = val
         
         with self._connect() as con:
             temp_view = "_molecules_tmp_view"
@@ -335,59 +353,24 @@ class DuckDBStore:
             cleaned_rows.append(tuple(cleaned_row))
         rows = cleaned_rows
         
-        df = pd.DataFrame(
-            rows,
-            columns=[
-                "barcode",
-                "smiles",
-                "score",
-                "status",
-                "parent_id",
-                "created_at",
-            ],
+        # Create DataFrame and sanitize using pipe
+        string_cols = ["barcode", "smiles", "status", "parent_id"]
+        df_converted = (
+            pd.DataFrame(
+                rows,
+                columns=[
+                    "barcode",
+                    "smiles",
+                    "score",
+                    "status",
+                    "parent_id",
+                    "created_at",
+                ],
+            )
+            .pipe(_sanitize_dataframe_cells, string_cols=string_cols)
+            .pipe(_sanitize_object_columns, string_cols=string_cols)
+            .pipe(_convert_to_native_types, string_cols=string_cols)
         )
-        
-        # Final check on the DataFrame itself - scan all cells
-        for col in df.columns:
-            for idx in df.index:
-                val = df.at[idx, col]
-                if isinstance(val, (pd.DataFrame, pd.Series)):
-                    logger.error(f"CRITICAL: DataFrame/Series found in variants DataFrame at row {idx}, col '{col}'! Type: {type(val)}")
-                    df.at[idx, col] = "" if col != "score" else None
-        
-        # Also check dtypes - if any column has object dtype with DataFrame/Series, convert
-        for col in df.columns:
-            if df[col].dtype == 'object':
-                for idx in df.index:
-                    val = df.at[idx, col]
-                    if isinstance(val, (pd.DataFrame, pd.Series)):
-                        logger.error(f"CRITICAL: DataFrame/Series in object column '{col}' at row {idx}")
-                        df.at[idx, col] = "" if col != "score" else None
-        
-        # Convert DataFrame to native Python types before passing to DuckDB
-        # This ensures no pandas objects remain - extract scalar from each cell
-        df_converted = df.copy()
-        for col in df_converted.columns:
-            for idx in df_converted.index:
-                val = df_converted.at[idx, col]
-                # If it's a DataFrame/Series, convert to string representation
-                if isinstance(val, pd.DataFrame):
-                    logger.error(f"CRITICAL: DataFrame still present in '{col}' at row {idx} after all checks!")
-                    df_converted.at[idx, col] = "" if col != "score" else None
-                elif isinstance(val, pd.Series):
-                    logger.error(f"CRITICAL: Series still present in '{col}' at row {idx} after all checks!")
-                    df_converted.at[idx, col] = val.iloc[0] if len(val) > 0 else ("" if col != "score" else None)
-                elif pd.isna(val):
-                    df_converted.at[idx, col] = None
-                else:
-                    # Convert to native Python type
-                    if isinstance(val, (pd.Timestamp, pd.Timedelta)):
-                        df_converted.at[idx, col] = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else str(val)
-                    elif isinstance(val, (pd.Interval, pd.Period)):
-                        df_converted.at[idx, col] = str(val)
-                    else:
-                        # Already a native type
-                        df_converted.at[idx, col] = val
         
         with self._connect() as con:
             temp_view = "_variants_tmp_view"
@@ -811,6 +794,43 @@ class DuckDBStore:
                 else:
                     cleaned_row[key] = value
             return cleaned_row
+
+    def get_variants_by_barcodes(self, barcodes: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Get multiple variants by barcodes in a single query. Returns dict mapping barcode to variant data."""
+        if not barcodes:
+            return {}
+        
+        with self._connect() as con:
+            # Use parameterized query with IN clause
+            placeholders = ','.join(['?' for _ in barcodes])
+            query = f"""
+                SELECT 
+                    v.barcode,
+                    v.smiles,
+                    v.score,
+                    v.status,
+                    v.parent_id
+                FROM variants v
+                WHERE v.barcode IN ({placeholders})
+            """
+            df = con.execute(query, barcodes).df()
+            
+            if df.empty:
+                return {}
+            
+            # Convert to dict mapping barcode to variant data
+            result = {}
+            for _, row in df.iterrows():
+                barcode = str(row['barcode'])
+                result[barcode] = {
+                    "barcode": barcode,
+                    "smiles": str(row['smiles']) if pd.notna(row['smiles']) else "",
+                    "score": float(row['score']) if pd.notna(row['score']) else None,
+                    "status": str(row['status']) if pd.notna(row['status']) else "",
+                    "parent_id": str(row['parent_id']) if pd.notna(row['parent_id']) else ""
+                }
+            
+            return result
 
     def get_all_tracking_data(self, round_num: Optional[int] = None) -> pd.DataFrame:
         """Combined view joining all tables to mimic CSV tracking report structure.

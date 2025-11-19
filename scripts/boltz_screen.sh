@@ -11,7 +11,7 @@ set -euo pipefail
 : "${OUT_DIR:=/media/data/conrad_hku/boltz_frag_valid}"
 
 # Hotspot residues (1-indexed) used as pocket contacts for binder B
-: "${HOTSPOTS:=17,57,138,153,184,185}"
+: "${HOTSPOTS:=16,67,138,153,184,185}"
 
 echo "Using:"
 echo "  PDB      : $PDB"
