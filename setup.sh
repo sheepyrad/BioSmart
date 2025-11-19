@@ -134,7 +134,7 @@ conda run -n cgflow-env pip install torch==2.6.0 \
     torch-scatter>=2.1.2 \
     torch-sparse>=0.6.18 \
     torch-cluster>=1.6.3 \
-    -f https://data.pyg.org/whl/torch-2.6.0+cu124.html
+    -f https://data.pyg.org/whl/torch-2.6.0+cu121.html
 
 echo "Installing cgflow package in editable mode"
 conda run -n cgflow-env pip install -e src/cgflow
@@ -222,6 +222,10 @@ create_env_if_not_exists "unidock-env" "$ENV_DIR/unidock.yml"
 echo_step "Setting up Uni-GBSA environment"
 create_env_if_not_exists "unigbsa-env" "$ENV_DIR/unigbsa.yml"
 
+# 8. Create Frontend environment
+echo_step "Setting up Frontend environment"
+create_env_if_not_exists "frontend" "$ENV_DIR/frontend.yml"
+
 echo "=========================================="
 echo "Setup script finished."
 echo "=========================================="
@@ -233,6 +237,7 @@ echo "  - synformer-env    (for Synformer)"
 echo "  - boltz-env        (for Boltz)"
 echo "  - unidock-env      (for Uni-dock)"
 echo "  - unigbsa-env      (for Uni-GBSA)"
+echo "  - frontend         (for Frontend)"
 echo ""
 echo "To activate an environment, use:"
 echo "  conda activate <environment-name>"

@@ -30,7 +30,6 @@ TOOL_ENVIRONMENTS = {
     "unidock": "unidock-env",  # unidock command is in unidock-env
     "unidocktools": "unidock-env",  # unidocktools is in unidock-env
     "unigbsa": "unigbsa-env",
-    "chemap": "chemap-env"
 }
 
 class EnvironmentManager:

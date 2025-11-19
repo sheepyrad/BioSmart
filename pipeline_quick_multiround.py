@@ -8,10 +8,9 @@ Streamlined workflow with the ability to run multiple rounds:
   3. Run retrosynthesis (Synformer) on each compound
   4. Extract top N variants from retrosynthesis results
   5. Apply medchem filtering (generative design rules) to the variants
-  6. Run ChemAP FDA-approval prediction filtering to the filtered variants
-  7. Run Boltz-2 structure prediction to the filtered variants
-  8. Redock filtered variants to the receptor
-  9. Optionally iterate for multiple rounds.
+  6. Run Boltz-2 structure prediction to the filtered variants
+  7. Redock filtered variants to the receptor
+  8. Optionally iterate for multiple rounds.
 """
 
 import os
@@ -41,7 +40,6 @@ from utils.redocking import run_batch_compound_redocking
 from utils.retrosynformer import run_retrosynthesis
 from utils.medchem_filter import filter_by_generative_design, generate_filter_plots
 from utils.boltz_filter import boltz_predict_variants
-from utils.chemap_filter import chemap_filter_variants
 
 # Import helper functions moved to dedicated utility modules
 from utils.molecule_processing import extract_smiles_from_sdf, smiles_to_sdf, extract_best_pose_and_score
@@ -91,20 +89,6 @@ def _filter_by_score_threshold(df: pd.DataFrame, score_threshold: float) -> pd.D
     )
     return df
 
-def _extract_approved_smiles(chemap_df: pd.DataFrame) -> set:
-    """Extract approved SMILES from ChemAP DataFrame."""
-    if 'SMILES' in chemap_df.columns and 'ChemAP_pred' in chemap_df.columns:
-        return set(chemap_df[chemap_df['ChemAP_pred'] == 1]['SMILES'].astype(str).tolist())
-    return set()
-
-def _update_chemap_status(df: pd.DataFrame, approved_smiles: set) -> pd.DataFrame:
-    """Update status column based on ChemAP approval."""
-    df = df.copy()
-    df['status'] = df['smiles'].apply(
-        lambda smiles: 'CHEMAPPASS' if smiles in approved_smiles else 'CHEMAPFAIL'
-    )
-    return df
-
 def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_list=None, 
          n_samples=200, sanitize=True, center=(114.817, 75.602, 82.416), box_size=(38, 70, 58),
          bbox_size=23.0, exhaustiveness="balance", top_n=5, num_rounds=1, 
@@ -147,7 +131,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
     env_status = env_manager.check_all_environments()
     
     # Check if required environments are available based on model choice
-    required_envs = ["synformer", "boltz", "unidock", "unidocktools", "chemap"]  # Always needed for docking and ChemAP
+    required_envs = ["synformer", "boltz", "unidock", "unidocktools"]  # Always needed for docking
     if model_choice.lower() == "diffsbdd":
         required_envs.append("diffsbdd")
     elif model_choice.lower() == "pocket2mol":
@@ -528,7 +512,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
             
             # Now, continue using the filtered_variants list for subsequent steps
             if not filtered_variants:
-                logger.warning(f"Round {round_num}: No variants passed MedChem filtering. Skipping docking for this round.")
+                logger.warning(f"Round {round_num}: No variants passed MedChem filtering. Skipping Boltz-2 and docking for this round.")
                 continue # Skip to next round
 
             logger.info(f"Round {round_num}: After MedChem filtering, {len(filtered_variants)} variants remain")
@@ -547,57 +531,7 @@ def main(out_dir, model_choice="diffsbdd", checkpoint=None, pdbfile=None, resi_l
                 batch_update_variant_statuses(medchem_status_updates, master_report, duckdb_store=store)
 
             # ------------------------------------------------------------------
-            # Step 6: ChemAP FDA-approval prediction filtering
-            # ------------------------------------------------------------------
-            logger.info(
-                f"Round {round_num}: Running ChemAP FDA-approval predictions on {len(filtered_variants)} variants"
-            )
-
-            try:
-                approved_variants, chemap_df = chemap_filter_variants(
-                    variants=filtered_variants,
-                    round_dir=round_dir,
-                    log_callback=logger.info,
-                )
-            except Exception as e:
-                logger.error(f"Round {round_num}: ChemAP step failed: {e}")
-                approved_variants = []
-
-            # Update tracking for ChemAP results using pipe
-            try:
-                approved_smiles_set = _extract_approved_smiles(chemap_df)
-            except Exception:
-                approved_smiles_set = set(v.get('smiles') for v in approved_variants)
-
-            # Batch update tracking for ChemAP results using pipe
-            if filtered_variants:
-                filtered_variants_df = (
-                    pd.DataFrame(filtered_variants)
-                    .pipe(_update_chemap_status, approved_smiles=approved_smiles_set)
-                )
-                
-                # Update original variants with status
-                barcode_to_status = dict(zip(filtered_variants_df['barcode'], filtered_variants_df['status']))
-                for variant in filtered_variants:
-                    barcode = variant.get('barcode')
-                    if barcode in barcode_to_status:
-                        variant['status'] = barcode_to_status[barcode]
-                
-                # Extract status updates for batch processing
-                chemap_status_updates = filtered_variants_df[['barcode', 'status']].to_dict('records')
-                
-                if chemap_status_updates:
-                    batch_update_variant_statuses(chemap_status_updates, round_report, duckdb_store=store)
-                    batch_update_variant_statuses(chemap_status_updates, master_report, duckdb_store=store)
-
-            if not approved_variants:
-                logger.warning(f"Round {round_num}: No variants approved by ChemAP. Skipping Boltz-2 and docking for this round.")
-                continue
-
-            filtered_variants = approved_variants
-
-            # ------------------------------------------------------------------
-            # Step 7: Boltz-2 predictions (no filtering)
+            # Step 6: Boltz-2 predictions (no filtering)
             # ------------------------------------------------------------------
             logger.info(
                 f"Round {round_num}: Running Boltz-2 predictions (no filtering) on {len(filtered_variants)} variants"

@@ -131,6 +131,8 @@ class DuckDBStore:
                     created_at TIMESTAMP
                 );
 
+                -- DEPRECATED: ChemAP filtering feature has been removed from the pipeline.
+                -- This table is kept for historical data access only.
                 CREATE TABLE IF NOT EXISTS chemap_results (
                     barcode TEXT,
                     smiles TEXT,
@@ -500,6 +502,8 @@ class DuckDBStore:
                 if callable(unregister):
                     unregister(temp_view)
 
+    # DEPRECATED: ChemAP filtering feature has been removed from the pipeline.
+    # This method is kept for historical data access only.
     def write_chemap_results(self, chemap_df: pd.DataFrame, smiles_to_barcode: Dict[str, str]) -> None:
         if chemap_df is None or chemap_df.empty:
             return
