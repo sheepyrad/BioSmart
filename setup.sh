@@ -134,7 +134,7 @@ conda run -n cgflow-env pip install torch==2.6.0 \
     torch-scatter>=2.1.2 \
     torch-sparse>=0.6.18 \
     torch-cluster>=1.6.3 \
-    -f https://data.pyg.org/whl/torch-2.6.0+cu121.html
+    -f https://data.pyg.org/whl/torch-2.6.0+cu124.html
 
 echo "Installing cgflow package in editable mode"
 conda run -n cgflow-env pip install -e src/cgflow
