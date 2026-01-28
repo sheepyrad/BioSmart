@@ -1,0 +1,175 @@
+import { v } from 'convex/values';
+import { mutation, query } from './_generated/server';
+
+export const upsert = mutation({
+  args: {
+    runId: v.id('runs'),
+    smiles: v.string(),
+    reward: v.number(),
+    trajectory: v.string(),
+    affinityEnsemble: v.union(v.number(), v.null()),
+    probabilityEnsemble: v.union(v.number(), v.null()),
+    affinityModel1: v.union(v.number(), v.null()),
+    probabilityModel1: v.union(v.number(), v.null()),
+    affinityModel2: v.union(v.number(), v.null()),
+    probabilityModel2: v.union(v.number(), v.null()),
+    complexFileId: v.union(v.id('files'), v.null()),
+    iteration: v.number(),
+  },
+  handler: async (ctx, args) => {
+    // Check if molecule already exists for this run
+    const existing = await ctx.db
+      .query('molecules')
+      .withIndex('by_smiles', (q) => q.eq('smiles', args.smiles))
+      .filter((q) => q.eq(q.field('runId'), args.runId))
+      .first();
+
+    if (existing) {
+      // Update existing
+      await ctx.db.patch(existing._id, {
+        reward: args.reward,
+        trajectory: args.trajectory,
+        affinityEnsemble: args.affinityEnsemble,
+        probabilityEnsemble: args.probabilityEnsemble,
+        affinityModel1: args.affinityModel1,
+        probabilityModel1: args.probabilityModel1,
+        affinityModel2: args.affinityModel2,
+        probabilityModel2: args.probabilityModel2,
+        complexFileId: args.complexFileId,
+        iteration: args.iteration,
+      });
+      return existing._id;
+    }
+
+    // Create new
+    return await ctx.db.insert('molecules', {
+      ...args,
+      createdAt: Date.now(),
+    });
+  },
+});
+
+export const batchUpsert = mutation({
+  args: {
+    molecules: v.array(
+      v.object({
+        runId: v.id('runs'),
+        smiles: v.string(),
+        reward: v.number(),
+        trajectory: v.string(),
+        affinityEnsemble: v.union(v.number(), v.null()),
+        probabilityEnsemble: v.union(v.number(), v.null()),
+        affinityModel1: v.union(v.number(), v.null()),
+        probabilityModel1: v.union(v.number(), v.null()),
+        affinityModel2: v.union(v.number(), v.null()),
+        probabilityModel2: v.union(v.number(), v.null()),
+        complexFileId: v.union(v.id('files'), v.null()),
+        iteration: v.number(),
+      })
+    ),
+  },
+  handler: async (ctx, args) => {
+    const results: string[] = [];
+    
+    for (const mol of args.molecules) {
+      const existing = await ctx.db
+        .query('molecules')
+        .withIndex('by_smiles', (q) => q.eq('smiles', mol.smiles))
+        .filter((q) => q.eq(q.field('runId'), mol.runId))
+        .first();
+
+      if (existing) {
+        await ctx.db.patch(existing._id, {
+          reward: mol.reward,
+          trajectory: mol.trajectory,
+          affinityEnsemble: mol.affinityEnsemble,
+          probabilityEnsemble: mol.probabilityEnsemble,
+          affinityModel1: mol.affinityModel1,
+          probabilityModel1: mol.probabilityModel1,
+          affinityModel2: mol.affinityModel2,
+          probabilityModel2: mol.probabilityModel2,
+          complexFileId: mol.complexFileId,
+          iteration: mol.iteration,
+        });
+        results.push(existing._id);
+      } else {
+        const id = await ctx.db.insert('molecules', {
+          ...mol,
+          createdAt: Date.now(),
+        });
+        results.push(id);
+      }
+    }
+
+    return results;
+  },
+});
+
+export const getByRun = query({
+  args: {
+    runId: v.id('runs'),
+    limit: v.optional(v.number()),
+    orderBy: v.optional(v.union(v.literal('reward'), v.literal('iteration'))),
+  },
+  handler: async (ctx, args) => {
+    let query = ctx.db
+      .query('molecules')
+      .withIndex('by_run', (q) => q.eq('runId', args.runId));
+
+    const molecules = await query.collect();
+
+    // Sort by reward (descending) or iteration
+    if (args.orderBy === 'iteration') {
+      molecules.sort((a, b) => b.iteration - a.iteration);
+    } else {
+      molecules.sort((a, b) => b.reward - a.reward);
+    }
+
+    // Apply limit
+    if (args.limit) {
+      return molecules.slice(0, args.limit);
+    }
+
+    return molecules;
+  },
+});
+
+export const getTopByRun = query({
+  args: {
+    runId: v.id('runs'),
+    limit: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const molecules = await ctx.db
+      .query('molecules')
+      .withIndex('by_run_reward', (q) => q.eq('runId', args.runId))
+      .order('desc')
+      .take(args.limit);
+
+    return molecules;
+  },
+});
+
+export const get = query({
+  args: { id: v.id('molecules') },
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.id);
+  },
+});
+
+export const remove = mutation({
+  args: { id: v.id('molecules') },
+  handler: async (ctx, args) => {
+    // Delete associated annotations
+    const annotations = await ctx.db
+      .query('annotations')
+      .withIndex('by_molecule', (q) => q.eq('moleculeId', args.id))
+      .collect();
+
+    for (const ann of annotations) {
+      await ctx.db.delete(ann._id);
+    }
+
+    await ctx.db.delete(args.id);
+  },
+});
