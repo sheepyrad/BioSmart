@@ -62,13 +62,21 @@ export default defineSchema({
   files: defineTable({
     name: v.string(),
     type: v.union(v.literal('pdb'), v.literal('yaml'), v.literal('msa'), v.literal('db'), v.literal('other')),
+    // Field type identifies which config field this file is used for
+    fieldType: v.union(
+      v.literal('protein_pdb'),
+      v.literal('boltz_yaml'),
+      v.literal('msa'),
+      v.literal('other')
+    ),
     storageId: v.id('_storage'),
     size: v.number(),
     runId: v.union(v.id('runs'), v.null()),
     createdAt: v.number(),
   })
     .index('by_run', ['runId'])
-    .index('by_type', ['type']),
+    .index('by_type', ['type'])
+    .index('by_field_type', ['fieldType']),
 
   // Generated molecules (synced from SQLite)
   molecules: defineTable({

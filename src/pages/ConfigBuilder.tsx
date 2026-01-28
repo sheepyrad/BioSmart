@@ -4,11 +4,11 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { useIpcInvoke } from '@/hooks/useIpc';
 import MolstarViewer from '@/components/MolstarViewer';
+import FileSelector from '@/components/FileSelector';
 import type { OptConfig, RunInfo, BoltzConfig } from '@shared/types';
 import {
   FolderOpen,
@@ -125,38 +125,28 @@ export default function ConfigBuilder({
     }
   }, [invoke]);
 
-  const handleSelectPdb = useCallback(async () => {
+  // File selection handlers - return path for FileSelector
+  const handleSelectPdb = useCallback(async (): Promise<string | null> => {
     setIsLoading(true);
     try {
       const path = await invoke('file:select-pdb');
       if (path) {
+        // Also load the PDB content for the viewer
         const content = await invoke('file:read-pdb', path);
         setPdbContent(content);
-        setConfig((prev) => ({ ...prev, protein_path: path }));
       }
+      return path;
     } finally {
       setIsLoading(false);
     }
   }, [invoke]);
 
-  const handleSelectBoltzYaml = useCallback(async () => {
-    const path = await invoke('file:select-yaml');
-    if (path) {
-      setConfig((prev) => ({
-        ...prev,
-        boltz: { ...prev.boltz, base_yaml: path },
-      }));
-    }
+  const handleSelectBoltzYaml = useCallback(async (): Promise<string | null> => {
+    return await invoke('file:select-yaml');
   }, [invoke]);
 
-  const handleSelectMsa = useCallback(async () => {
-    const path = await invoke('file:select-yaml');
-    if (path) {
-      setConfig((prev) => ({
-        ...prev,
-        boltz: { ...prev.boltz, msa_path: path },
-      }));
-    }
+  const handleSelectMsa = useCallback(async (): Promise<string | null> => {
+    return await invoke('file:select-yaml');
   }, [invoke]);
 
   const handleSelectResultDir = useCallback(async () => {
@@ -301,62 +291,51 @@ export default function ConfigBuilder({
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="space-y-2">
-                    <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Protein PDB</Label>
-                    <div className="flex gap-2">
-                      <Input
-                        value={config.protein_path}
-                        onChange={(e) =>
-                          setConfig((prev) => ({ ...prev, protein_path: e.target.value }))
-                        }
-                        placeholder="Path to protein .pdb file"
-                        className="bg-white"
-                      />
-                      <Button variant="outline" size="icon" onClick={handleSelectPdb} className="shrink-0 hover-lift">
-                        <FileUp className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </div>
+                  <FileSelector
+                    label="Protein PDB"
+                    value={config.protein_path}
+                    onChange={(path) => setConfig((prev) => ({ ...prev, protein_path: path }))}
+                    onContentLoaded={(content) => setPdbContent(content)}
+                    fieldType="protein_pdb"
+                    fileType="pdb"
+                    accept=".pdb"
+                    placeholder="Select protein .pdb file"
+                    onSelectLocal={handleSelectPdb}
+                    onReadLocalContent={(path) => invoke('file:read-pdb', path)}
+                  />
 
-                  <div className="space-y-2">
-                    <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Boltz Base YAML</Label>
-                    <div className="flex gap-2">
-                      <Input
-                        value={config.boltz.base_yaml}
-                        onChange={(e) =>
-                          setConfig((prev) => ({
-                            ...prev,
-                            boltz: { ...prev.boltz, base_yaml: e.target.value },
-                          }))
-                        }
-                        placeholder="Path to Boltz base.yaml"
-                        className="bg-white"
-                      />
-                      <Button variant="outline" size="icon" onClick={handleSelectBoltzYaml} className="shrink-0 hover-lift">
-                        <FileUp className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </div>
+                  <FileSelector
+                    label="Boltz Base YAML"
+                    value={config.boltz.base_yaml}
+                    onChange={(path) =>
+                      setConfig((prev) => ({
+                        ...prev,
+                        boltz: { ...prev.boltz, base_yaml: path },
+                      }))
+                    }
+                    fieldType="boltz_yaml"
+                    fileType="yaml"
+                    accept=".yaml,.yml"
+                    placeholder="Select Boltz base.yaml"
+                    onSelectLocal={handleSelectBoltzYaml}
+                  />
 
-                  <div className="space-y-2">
-                    <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">MSA Path (optional)</Label>
-                    <div className="flex gap-2">
-                      <Input
-                        value={config.boltz.msa_path ?? ''}
-                        onChange={(e) =>
-                          setConfig((prev) => ({
-                            ...prev,
-                            boltz: { ...prev.boltz, msa_path: e.target.value || null },
-                          }))
-                        }
-                        placeholder="Path to MSA file"
-                        className="bg-white"
-                      />
-                      <Button variant="outline" size="icon" onClick={handleSelectMsa} className="shrink-0 hover-lift">
-                        <FileUp className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </div>
+                  <FileSelector
+                    label="MSA Path"
+                    value={config.boltz.msa_path ?? ''}
+                    onChange={(path) =>
+                      setConfig((prev) => ({
+                        ...prev,
+                        boltz: { ...prev.boltz, msa_path: path || null },
+                      }))
+                    }
+                    fieldType="msa"
+                    fileType="msa"
+                    accept=".a3m,.sto,.fasta"
+                    placeholder="Select MSA file"
+                    optional
+                    onSelectLocal={handleSelectMsa}
+                  />
                 </CardContent>
               </Card>
             </motion.div>
@@ -581,38 +560,6 @@ export default function ConfigBuilder({
                     </div>
                   </div>
 
-                  <Separator className="bg-border/50" />
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Temp Min</Label>
-                      <Input
-                        type="number"
-                        value={config.temperature[0]}
-                        onChange={(e) =>
-                          setConfig((prev) => ({
-                            ...prev,
-                            temperature: [parseInt(e.target.value) || 1, prev.temperature[1]],
-                          }))
-                        }
-                        className="bg-background/50 tabular-nums"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Temp Max</Label>
-                      <Input
-                        type="number"
-                        value={config.temperature[1]}
-                        onChange={(e) =>
-                          setConfig((prev) => ({
-                            ...prev,
-                            temperature: [prev.temperature[0], parseInt(e.target.value) || 64],
-                          }))
-                        }
-                        className="bg-background/50 tabular-nums"
-                      />
-                    </div>
-                  </div>
                 </CardContent>
               </Card>
             </motion.div>

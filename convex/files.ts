@@ -1,6 +1,23 @@
 import { v } from 'convex/values';
 import { mutation, query } from './_generated/server';
 
+// Field type validator - matches schema
+const fieldTypeValidator = v.union(
+  v.literal('protein_pdb'),
+  v.literal('boltz_yaml'),
+  v.literal('msa'),
+  v.literal('other')
+);
+
+// File type validator
+const fileTypeValidator = v.union(
+  v.literal('pdb'),
+  v.literal('yaml'),
+  v.literal('msa'),
+  v.literal('db'),
+  v.literal('other')
+);
+
 export const generateUploadUrl = mutation({
   args: {},
   handler: async (ctx) => {
@@ -11,7 +28,8 @@ export const generateUploadUrl = mutation({
 export const create = mutation({
   args: {
     name: v.string(),
-    type: v.union(v.literal('pdb'), v.literal('yaml'), v.literal('msa'), v.literal('db'), v.literal('other')),
+    type: fileTypeValidator,
+    fieldType: fieldTypeValidator,
     storageId: v.id('_storage'),
     size: v.number(),
     runId: v.union(v.id('runs'), v.null()),
@@ -40,6 +58,14 @@ export const getUrl = query({
   },
 });
 
+// Get file URL by storage ID directly
+export const getUrlByStorageId = query({
+  args: { storageId: v.id('_storage') },
+  handler: async (ctx, args) => {
+    return await ctx.storage.getUrl(args.storageId);
+  },
+});
+
 export const listByRun = query({
   args: { runId: v.id('runs') },
   handler: async (ctx, args) => {
@@ -52,13 +78,54 @@ export const listByRun = query({
 
 export const listByType = query({
   args: {
-    type: v.union(v.literal('pdb'), v.literal('yaml'), v.literal('msa'), v.literal('db'), v.literal('other')),
+    type: fileTypeValidator,
   },
   handler: async (ctx, args) => {
     return await ctx.db
       .query('files')
       .withIndex('by_type', (q) => q.eq('type', args.type))
       .collect();
+  },
+});
+
+// List files by field type (e.g., protein_pdb, boltz_yaml, msa) with URLs
+export const listByFieldType = query({
+  args: {
+    fieldType: fieldTypeValidator,
+  },
+  handler: async (ctx, args) => {
+    const files = await ctx.db
+      .query('files')
+      .withIndex('by_field_type', (q) => q.eq('fieldType', args.fieldType))
+      .order('desc')
+      .collect();
+    
+    // Include download URLs for each file
+    return Promise.all(
+      files.map(async (file) => ({
+        ...file,
+        url: await ctx.storage.getUrl(file.storageId),
+      }))
+    );
+  },
+});
+
+// List all uploaded files (for browsing) with URLs
+export const listAll = query({
+  args: {},
+  handler: async (ctx) => {
+    const files = await ctx.db
+      .query('files')
+      .order('desc')
+      .collect();
+    
+    // Include download URLs for each file
+    return Promise.all(
+      files.map(async (file) => ({
+        ...file,
+        url: await ctx.storage.getUrl(file.storageId),
+      }))
+    );
   },
 });
 
