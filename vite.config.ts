@@ -38,6 +38,18 @@ export default defineConfig({
           },
         },
       },
+      {
+        entry: 'electron/runner.ts',
+        vite: {
+          build: {
+            outDir: 'dist-electron',
+            rollupOptions: {
+              external: ['sql.js'],
+            },
+            watch: watchConfig,
+          },
+        },
+      },
     ]),
     renderer(),
   ],

@@ -33,7 +33,10 @@ export default defineSchema({
     // Metadata
     createdAt: v.number(),
     updatedAt: v.number(),
-  }).index('by_name', ['name']),
+    lastUsedAt: v.union(v.number(), v.null()),
+  })
+    .index('by_name', ['name'])
+    .index('by_last_used', ['lastUsedAt']),
 
   // Training runs
   runs: defineTable({
@@ -91,6 +94,8 @@ export default defineSchema({
     probabilityModel1: v.union(v.number(), v.null()),
     affinityModel2: v.union(v.number(), v.null()),
     probabilityModel2: v.union(v.number(), v.null()),
+    oracleIdx: v.union(v.number(), v.null()),
+    molIdx: v.union(v.number(), v.null()),
     // Complex file reference
     complexFileId: v.union(v.id('files'), v.null()),
     iteration: v.number(),

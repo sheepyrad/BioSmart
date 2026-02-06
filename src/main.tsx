@@ -8,9 +8,15 @@ import { ConvexAvailableContext } from './hooks/useConvex';
 // Initialize Convex client
 // In production, this URL comes from environment variables
 const convexUrl = import.meta.env.VITE_CONVEX_URL || '';
+const convexEnabledEnv = (import.meta.env.VITE_CONVEX_ENABLED || 'true').toLowerCase();
+const convexUrlIsAbsolute = /^https?:\/\//i.test(convexUrl);
+const convexEnabled = convexEnabledEnv !== 'false' && convexEnabledEnv !== '0';
 
 // Only create client if URL is provided
-const convex = convexUrl ? new ConvexReactClient(convexUrl) : null;
+const convex =
+  convexUrl && convexUrlIsAbsolute && convexEnabled
+    ? new ConvexReactClient(convexUrl)
+    : null;
 
 function Root() {
   if (!convex) {

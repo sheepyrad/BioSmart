@@ -7,9 +7,11 @@ import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { useIpcInvoke } from '@/hooks/useIpc';
+import { useConvexConfigs } from '@/hooks/useConvexConfigs';
 import MolstarViewer from '@/components/MolstarViewer';
 import FileSelector from '@/components/FileSelector';
 import type { OptConfig, RunInfo, BoltzConfig } from '@shared/types';
+import { convexConfigToOpt, optConfigToConvex } from '@/lib/configMapping';
 import {
   FolderOpen,
   FileUp,
@@ -26,6 +28,8 @@ import {
   Loader2,
   CheckCircle2,
   XCircle,
+  Cloud,
+  Clock,
 } from 'lucide-react';
 
 interface ConfigBuilderProps {
@@ -89,8 +93,11 @@ export default function ConfigBuilder({
   activeRun,
 }: ConfigBuilderProps) {
   const invoke = useIpcInvoke();
+  const { configs, createConfig, updateConfig, isAvailable: isConvexAvailable } = useConvexConfigs(10);
   const [config, setConfig] = useState<OptConfig>(defaultConfig);
   const [configPath, setConfigPath] = useState<string | null>(null);
+  const [configName, setConfigName] = useState<string>('New Config');
+  const [savedConfigId, setSavedConfigId] = useState<string | null>(null);
   const [pdbContent, setPdbContent] = useState<string | null>(null);
   const [selectedResidues, setSelectedResidues] = useState<string[]>([]);
   const [newResidue, setNewResidue] = useState('');
@@ -119,6 +126,7 @@ export default function ConfigBuilder({
         setConfig(loadedConfig);
         setConfigPath(path);
         setSelectedResidues(loadedConfig.boltz.target_residues);
+        setSavedConfigId(null);
       }
     } finally {
       setIsLoading(false);
@@ -186,20 +194,58 @@ export default function ConfigBuilder({
     }
   }, [invoke, config]);
 
+  const handleSaveToConvex = useCallback(async () => {
+    if (!isConvexAvailable) return;
+    setIsLoading(true);
+    try {
+      const payload = optConfigToConvex(configName.trim() || 'Untitled Config', config);
+      if (savedConfigId) {
+        await updateConfig(savedConfigId as any, payload);
+      } else {
+        const id = await createConfig(payload);
+        if (id) setSavedConfigId(id);
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }, [isConvexAvailable, config, configName, savedConfigId, createConfig, updateConfig]);
+
+  const handleLoadConvexConfig = useCallback(
+    (convexConfig: any) => {
+      const loaded = convexConfigToOpt(convexConfig);
+      setConfig(loaded);
+      setConfigName(convexConfig.name);
+      setSavedConfigId(convexConfig._id);
+      setConfigPath(null);
+      setSelectedResidues(loaded.boltz.target_residues);
+    },
+    []
+  );
+
+  const handleLoadLastUsed = useCallback(() => {
+    if (!configs || configs.length === 0) return;
+    const latest = configs[0];
+    if (!latest) return;
+    handleLoadConvexConfig(latest);
+  }, [configs, handleLoadConvexConfig]);
+
   const handleStartRun = useCallback(async () => {
     setIsLoading(true);
     try {
-      if (!configPath) {
-        const path = `./configs/opt/generated_${Date.now()}.yaml`;
-        await invoke('file:write-yaml', path, config);
-        setConfigPath(path);
+      if (savedConfigId && isConvexAvailable) {
+        await updateConfig(savedConfigId as any, { lastUsedAt: Date.now() });
       }
-      const runInfo = await invoke('run:start', config, configPath!);
+      const runInfo = await invoke('run:start', {
+        config,
+        configPath,
+        configId: savedConfigId,
+        name: configName.trim() || undefined,
+      });
       onRunStarted(runInfo);
     } finally {
       setIsLoading(false);
     }
-  }, [invoke, config, configPath, onRunStarted]);
+  }, [invoke, config, configPath, onRunStarted, savedConfigId, isConvexAvailable, updateConfig, configName]);
 
   const handleStopRun = useCallback(async () => {
     if (activeRun) {
@@ -258,6 +304,64 @@ export default function ConfigBuilder({
                       Save Config
                     </Button>
                   </div>
+                  <div className="space-y-2">
+                    <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                      Config Name
+                    </Label>
+                    <Input
+                      value={configName}
+                      onChange={(e) => setConfigName(e.target.value)}
+                      placeholder="Name this configuration"
+                      className="bg-white"
+                    />
+                  </div>
+                  {isConvexAvailable && (
+                    <div className="space-y-2">
+                      <div className="flex gap-2">
+                        <Button
+                          variant="default"
+                          onClick={handleSaveToConvex}
+                          disabled={isLoading}
+                          className="flex-1 hover-lift"
+                        >
+                          <Cloud className="mr-2 h-4 w-4" />
+                          Save to Cloud
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={handleLoadLastUsed}
+                          className="flex-1 hover-lift"
+                          disabled={!configs || configs.length === 0}
+                        >
+                          <Clock className="mr-2 h-4 w-4" />
+                          Load Last Used
+                        </Button>
+                      </div>
+                      {configs && configs.length > 0 && (
+                        <div className="rounded-lg border border-border bg-muted/30 p-2 space-y-2">
+                          <p className="text-xs text-muted-foreground">Recent configs</p>
+                          <div className="space-y-1 max-h-32 overflow-auto">
+                            {configs.map((cfg) => (
+                              <button
+                                key={cfg._id}
+                                onClick={() => handleLoadConvexConfig(cfg)}
+                                className={`w-full text-left text-xs px-2 py-1 rounded hover:bg-white transition-colors ${
+                                  savedConfigId === cfg._id ? 'bg-white border border-primary/30' : ''
+                                }`}
+                              >
+                                <span className="font-medium">{cfg.name}</span>
+                                {cfg.lastUsedAt && (
+                                  <span className="text-muted-foreground ml-2">
+                                    {new Date(cfg.lastUsedAt).toLocaleDateString()}
+                                  </span>
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <AnimatePresence>
                     {configPath && (
                       <motion.p 

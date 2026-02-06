@@ -6,6 +6,7 @@ import type {
   BoltzScore,
   RewardCacheEntry,
 } from '../shared/types';
+import { api } from '../convex/_generated/api';
 
 // Initialize SQL.js
 let SQL: Awaited<ReturnType<typeof initSqlJs>> | null = null;
@@ -33,6 +34,57 @@ function queryAll<T>(db: SqlJsDatabase, sql: string, params: unknown[] = []): T[
   return results;
 }
 
+async function loadTrajectoryMap(trainDir: string, smiles: string[]): Promise<Map<string, string>> {
+  const trajMap = new Map<string, string>();
+  if (smiles.length === 0) return trajMap;
+
+  let files: string[] = [];
+  try {
+    files = await fs.readdir(trainDir);
+  } catch {
+    return trajMap;
+  }
+
+  const dbFiles = files.filter((f) => f.startsWith('generated_objs_') && f.endsWith('.db'));
+  if (dbFiles.length === 0) return trajMap;
+
+  const placeholders = smiles.map(() => '?').join(',');
+
+  for (const dbFile of dbFiles) {
+    const dbPath = path.join(trainDir, dbFile);
+    try {
+      const genDb = await openDatabase(dbPath);
+      const trajRows = queryAll<{ smi: string; traj: string }>(
+        genDb,
+        `SELECT smi, traj FROM results WHERE smi IN (${placeholders})`,
+        smiles
+      );
+      genDb.close();
+      for (const row of trajRows) {
+        if (!row.traj) continue;
+        const existing = trajMap.get(row.smi);
+        if (!existing) {
+          trajMap.set(row.smi, row.traj);
+          continue;
+        }
+        try {
+          const currentLen = JSON.parse(existing).length ?? 0;
+          const nextLen = JSON.parse(row.traj).length ?? 0;
+          if (nextLen > currentLen) {
+            trajMap.set(row.smi, row.traj);
+          }
+        } catch {
+          // Keep existing on parse error
+        }
+      }
+    } catch {
+      // Ignore missing/corrupt DB files
+    }
+  }
+
+  return trajMap;
+}
+
 /**
  * Service to sync local SQLite data to Convex for cross-machine access.
  * 
@@ -41,7 +93,7 @@ function queryAll<T>(db: SqlJsDatabase, sql: string, params: unknown[] = []): T[
  */
 export class ConvexSyncService {
   private client: ConvexHttpClient | null = null;
-  private syncInterval: NodeJS.Timeout | null = null;
+  private syncIntervals = new Map<string, NodeJS.Timeout>();
   private lastSyncTimestamp = new Map<string, number>();
 
   constructor(convexUrl?: string) {
@@ -66,18 +118,20 @@ export class ConvexSyncService {
     this.syncRun(runId, convexRunId, resultDir);
 
     // Set up periodic sync
-    this.syncInterval = setInterval(() => {
+    const interval = setInterval(() => {
       this.syncRun(runId, convexRunId, resultDir);
     }, intervalMs);
+    this.syncIntervals.set(runId, interval);
   }
 
   /**
    * Stop sync for a run
    */
   stopSync(runId: string) {
-    if (this.syncInterval) {
-      clearInterval(this.syncInterval);
-      this.syncInterval = null;
+    const interval = this.syncIntervals.get(runId);
+    if (interval) {
+      clearInterval(interval);
+      this.syncIntervals.delete(runId);
     }
   }
 
@@ -101,9 +155,57 @@ export class ConvexSyncService {
   }
 
   /**
+   * Create a run record in Convex and return its id.
+   */
+  async createRun(configId: string, name: string, resultDir: string, totalSteps: number): Promise<string | null> {
+    if (!this.client) return null;
+    try {
+      const runId = await this.client.mutation(api.runs.create, {
+        configId: configId as any,
+        name,
+        resultDir,
+        totalSteps,
+      });
+      // Mark as running immediately
+      await this.client.mutation(api.runs.updateStatus, {
+        id: runId as any,
+        status: 'running',
+      });
+      return runId as any;
+    } catch (err) {
+      console.error('Failed to create Convex run:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Update run status in Convex
+   */
+  async updateRunStatus(
+    convexRunId: string,
+    status: 'idle' | 'running' | 'paused' | 'completed' | 'error',
+    currentStep?: number,
+    checkpointPath?: string | null,
+    error?: string | null
+  ): Promise<void> {
+    if (!this.client) return;
+    try {
+      await this.client.mutation(api.runs.updateStatus, {
+        id: convexRunId as any,
+        status,
+        currentStep,
+        checkpointPath: checkpointPath ?? undefined,
+        error: error ?? undefined,
+      });
+    } catch (err) {
+      console.error('Failed to update Convex run status:', err);
+    }
+  }
+
+  /**
    * Sync molecules from local SQLite to Convex
    */
-  private async syncMolecules(convexRunId: string, resultDir: string) {
+  private async syncMolecules(convexRunId: string, resultDir: string, limit = 1000) {
     if (!this.client) return;
 
     const rewardCachePath = path.join(resultDir, 'boltz_reward_cache.db');
@@ -120,30 +222,18 @@ export class ConvexSyncService {
     const rewardDb = await openDatabase(rewardCachePath);
     const entries = queryAll<RewardCacheEntry>(
       rewardDb,
-      `SELECT smiles, reward, info FROM entries ORDER BY reward DESC LIMIT 100`,
-      []
+      `SELECT smiles, reward, info FROM entries ORDER BY reward DESC LIMIT ?`,
+      [limit]
     );
     rewardDb.close();
 
     if (entries.length === 0) return;
 
-    // Get trajectory info
-    let trajMap = new Map<string, string>();
-    const generatedDbPath = path.join(trainDir, 'generated_objs_0.db');
-    
-    try {
-      const genDb = await openDatabase(generatedDbPath);
-      const placeholders = entries.map(() => '?').join(',');
-      const trajRows = queryAll<{ smi: string; traj: string }>(
-        genDb,
-        `SELECT smi, traj FROM results WHERE smi IN (${placeholders})`,
-        entries.map((e) => e.smiles)
-      );
-      genDb.close();
-      trajMap = new Map(trajRows.map((r) => [r.smi, r.traj]));
-    } catch {
-      // DB may not exist yet
-    }
+    // Get trajectory info (scan all generated_objs_*.db)
+    const trajMap = await loadTrajectoryMap(
+      trainDir,
+      entries.map((e) => e.smiles)
+    );
 
     // Get boltz scores
     let boltzMap = new Map<string, BoltzScore>();
@@ -163,9 +253,25 @@ export class ConvexSyncService {
       // DB may not exist yet
     }
 
+    // Extract oracle and molecule indices from reward cache info
+    const indexMap = new Map<string, { oracleIdx: number | null; molIdx: number | null }>();
+    for (const entry of entries) {
+      if (!entry.info) continue;
+      try {
+        const parsed = JSON.parse(entry.info) as { oracle_idx?: number; mol_idx?: number };
+        indexMap.set(entry.smiles, {
+          oracleIdx: typeof parsed.oracle_idx === 'number' ? parsed.oracle_idx : null,
+          molIdx: typeof parsed.mol_idx === 'number' ? parsed.mol_idx : null,
+        });
+      } catch {
+        // Ignore malformed JSON
+      }
+    }
+
     // Prepare molecules for batch upsert
     const molecules = entries.map((entry) => {
       const boltz = boltzMap.get(entry.smiles);
+      const idx = indexMap.get(entry.smiles);
       return {
         runId: convexRunId as any, // Type assertion needed for Convex ID
         smiles: entry.smiles,
@@ -177,15 +283,17 @@ export class ConvexSyncService {
         probabilityModel1: boltz?.probability_model1 ?? null,
         affinityModel2: boltz?.affinity_model2 ?? null,
         probabilityModel2: boltz?.probability_model2 ?? null,
+        oracleIdx: idx?.oracleIdx ?? null,
+        molIdx: idx?.molIdx ?? null,
         complexFileId: null,
         iteration: boltz?.iteration ?? 0,
       };
     });
 
+    if (molecules.length === 0) return;
+
     // Batch upsert to Convex
-    // Note: In production, you'd import the api from convex/_generated/api
-    // await this.client.mutation('molecules:batchUpsert', { molecules });
-    console.log(`Would sync ${molecules.length} molecules to Convex`);
+    await this.client.mutation(api.molecules.batchUpsert, { molecules: molecules as any });
   }
 
   /**
@@ -211,11 +319,11 @@ export class ConvexSyncService {
       }
 
       // Update run status in Convex
-      // await this.client.mutation('runs:updateStatus', {
-      //   id: convexRunId,
-      //   currentStep: lastIteration,
-      // });
-      console.log(`Would update run step to ${lastIteration}`);
+      await this.client.mutation(api.runs.updateStatus, {
+        id: convexRunId as any,
+        status: 'running',
+        currentStep: lastIteration,
+      });
     } catch {
       // Log file may not exist yet
     }
@@ -236,28 +344,27 @@ export class ConvexSyncService {
       const fileName = path.basename(filePath);
 
       // Get upload URL
-      // const uploadUrl = await this.client.mutation('files:generateUploadUrl', {});
+      const uploadUrl = await this.client.mutation(api.files.generateUploadUrl, {});
 
       // Upload file
-      // const response = await fetch(uploadUrl, {
-      //   method: 'POST',
-      //   headers: { 'Content-Type': 'application/octet-stream' },
-      //   body: content,
-      // });
-      // const { storageId } = await response.json();
+      const response = await fetch(uploadUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: content,
+      });
+      const { storageId } = await response.json();
 
       // Create file record
-      // const fileId = await this.client.mutation('files:create', {
-      //   name: fileName,
-      //   type: fileType,
-      //   storageId,
-      //   size: content.length,
-      //   runId: runId || null,
-      // });
+      const fileId = await this.client.mutation(api.files.create, {
+        name: fileName,
+        type: fileType,
+        fieldType: 'other',
+        storageId,
+        size: content.length,
+        runId: runId || null,
+      });
 
-      // return fileId;
-      console.log(`Would upload file ${fileName} to Convex`);
-      return null;
+      return fileId as any;
     } catch (err) {
       console.error('Failed to upload file:', err);
       return null;

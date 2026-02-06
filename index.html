@@ -3,12 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://unpkg.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com blob:; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; connect-src 'self' https://*.convex.cloud wss://*.convex.cloud;" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self' https://unpkg.com https://*.convex.cloud wss://*.convex.cloud http://127.0.0.1:45731 http://localhost:45731 https://webchem.ncbr.muni.cz;" />
     <title>CGFlow GUI</title>
+    <link rel="icon" href="/favicon.ico" />
     <!-- RDKit.js for molecule rendering -->
     <script src="https://unpkg.com/@rdkit/rdkit/dist/RDKit_minimal.js"></script>
     <script>
-      window.initRDKitModule().then(function(RDKit) {
+      window.initRDKitModule({
+        locateFile: function(file) {
+          return "https://unpkg.com/@rdkit/rdkit/dist/" + file;
+        }
+      }).then(function(RDKit) {
         window.RDKit = RDKit;
         console.log('RDKit.js loaded:', RDKit.version());
       });

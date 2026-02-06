@@ -1,10 +1,11 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage } from 'electron';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs/promises';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess, type SpawnOptions } from 'child_process';
 import YAML from 'yaml';
 import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
+import { startRunnerServer } from './runner';
 import type {
   OptConfig,
   RunInfo,
@@ -24,10 +25,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let mainWindow: BrowserWindow | null = null;
 let SQL: Awaited<ReturnType<typeof initSqlJs>> | null = null;
 const activeRuns = new Map<string, { process: ChildProcess; info: RunInfo }>();
+let tray: Tray | null = null;
+let isQuitting = false;
 
 // Path to cgflow scripts
 const CGFLOW_ROOT = path.resolve(__dirname, '../../cgflow');
 const OPT_SCRIPT = path.join(CGFLOW_ROOT, 'scripts/opt/opt_unidock_boltz.py');
+const CONDA_ENV_NAME = process.env.CGFLOW_CONDA_ENV?.trim() || 'cgflow';
+
+function spawnCgflowPython(args: string[], options: SpawnOptions): ChildProcess {
+  return spawn(
+    'conda',
+    ['run', '--no-capture-output', '-n', CONDA_ENV_NAME, 'python', ...args],
+    options
+  );
+}
 
 // Initialize SQL.js
 async function initSQL() {
@@ -77,15 +89,62 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
+
+  mainWindow.on('close', (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    mainWindow?.hide();
+  });
 }
 
 app.whenReady().then(async () => {
   await initSQL();
+  await startRunnerServer({
+    dataDir: path.join(app.getPath('userData'), 'runner'),
+    convexUrl: process.env.VITE_CONVEX_URL ?? process.env.CONVEX_URL,
+  });
   createWindow();
+
+  // Create tray icon
+  const trayIconPath = path.join(app.getPath('userData'), 'tray.png');
+  try {
+    await fs.access(trayIconPath);
+  } catch {
+    // Simple 16x16 PNG (blue dot) base64
+    const base64 =
+      'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAPklEQVR4nGNgGAWMeGWr/v+Hs9sYsarFbgCyRnSAZhATXhcQATANwGc7FnkauIBiA3CENi55il1AcToYBgAArsYPEGSEkhYAAAAASUVORK5CYII=';
+    const buffer = Buffer.from(base64, 'base64');
+    await fs.writeFile(trayIconPath, buffer);
+  }
+  const trayImage = nativeImage.createFromPath(trayIconPath);
+  tray = new Tray(trayImage);
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Show CGFlow',
+      click: () => {
+        mainWindow?.show();
+      },
+    },
+    {
+      label: 'Hide CGFlow',
+      click: () => {
+        mainWindow?.hide();
+      },
+    },
+    {
+      label: 'Quit',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  ]);
+  tray.setToolTip('CGFlow GUI');
+  tray.setContextMenu(contextMenu);
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  if (isQuitting) {
     app.quit();
   }
 });
@@ -158,14 +217,22 @@ function emitToRenderer(channel: string, ...args: unknown[]) {
   mainWindow?.webContents.send(channel, ...args);
 }
 
-ipcMain.handle('run:start', async (_event, config: OptConfig, configPath: string) => {
+ipcMain.handle('run:start', async (_event, payload: { config: OptConfig; configPath?: string | null; name?: string | null }) => {
+  const config = payload.config;
+  let configPath = payload.configPath ?? null;
+  if (!configPath) {
+    const path = `./configs/opt/generated_${Date.now()}.yaml`;
+    const content = YAML.stringify(config);
+    await fs.writeFile(path, content, 'utf-8');
+    configPath = path;
+  }
   const runId = generateRunId();
   const timestamp = new Date().toISOString().replace(/[:.]/g, '').substring(0, 15);
   const resultDir = path.join(config.result_dir, timestamp);
 
   const runInfo: RunInfo = {
     id: runId,
-    name: `Run ${timestamp}`,
+    name: payload.name || `Run ${timestamp}`,
     configPath,
     resultDir,
     status: 'running',
@@ -184,7 +251,7 @@ ipcMain.handle('run:start', async (_event, config: OptConfig, configPath: string
     '--env_dir', config.env_dir,
   ];
 
-  const proc = spawn('python', args, {
+  const proc = spawnCgflowPython(args, {
     cwd: CGFLOW_ROOT,
     env: { ...process.env },
   });
@@ -263,7 +330,7 @@ ipcMain.handle('run:resume', async (_event, runId: string, checkpointPath: strin
     args.push('--resume_oracle_idx', oracleIdx.toString());
   }
 
-  const proc = spawn('python', args, {
+  const proc = spawnCgflowPython(args, {
     cwd: CGFLOW_ROOT,
     env: { ...process.env },
   });
@@ -308,7 +375,9 @@ ipcMain.handle('run:list', async () => {
   return Array.from(activeRuns.values()).map((r) => r.info);
 });
 
-ipcMain.handle('run:get-checkpoints', async (_event, resultDir: string) => {
+ipcMain.handle('run:get-checkpoints', async (_event, runIdOrDir: string) => {
+  const run = activeRuns.get(runIdOrDir);
+  const resultDir = run?.info.resultDir ?? runIdOrDir;
   try {
     const files = await fs.readdir(resultDir);
     return files
@@ -368,7 +437,9 @@ ipcMain.handle('db:get-reward-cache', async (_event, dbPath: string, limit = 100
   }
 });
 
-ipcMain.handle('db:get-top-molecules', async (_event, resultDir: string, limit = 50) => {
+ipcMain.handle('db:get-top-molecules', async (_event, runIdOrDir: string, limit = 50) => {
+  const run = activeRuns.get(runIdOrDir);
+  const resultDir = run?.info.resultDir ?? runIdOrDir;
   const rewardCachePath = path.join(resultDir, 'boltz_reward_cache.db');
   const trainDir = path.join(resultDir, 'train');
 
@@ -470,4 +541,23 @@ ipcMain.handle('boltz:get-complex-path', async (_event, resultDir: string, oracl
 
 ipcMain.handle('boltz:read-complex', async (_event, complexPath: string) => {
   return fs.readFile(complexPath, 'utf-8');
+});
+
+// Convenience: get complex content directly by runId or resultDir
+ipcMain.handle('boltz:get-complex', async (_event, runIdOrDir: string, oracleIdx: number, molIdx: number) => {
+  const run = activeRuns.get(runIdOrDir);
+  const resultDir = run?.info.resultDir ?? runIdOrDir;
+  const basePath = path.join(resultDir, 'boltz_cofold', `oracle${oracleIdx}`, `mol_${molIdx}`, 'boltz_output');
+
+  try {
+    const files = await fs.readdir(basePath);
+    const structureFile = files.find((f) => f.endsWith('.cif') || f.endsWith('.pdb'));
+    if (structureFile) {
+      return fs.readFile(path.join(basePath, structureFile), 'utf-8');
+    }
+  } catch {
+    // Directory may not exist
+  }
+
+  return null;
 });

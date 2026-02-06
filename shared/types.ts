@@ -63,6 +63,9 @@ export const RunInfoSchema = z.object({
   lastUpdatedAt: z.string().nullable(),
   checkpointPath: z.string().nullable(),
   error: z.string().nullable(),
+  configId: z.string().nullable().optional(),
+  convexRunId: z.string().nullable().optional(),
+  source: z.enum(['local', 'convex']).optional(),
 });
 
 export type RunInfo = z.infer<typeof RunInfoSchema>;
@@ -123,6 +126,8 @@ export const MoleculeResultSchema = z.object({
   trajectory: z.array(TrajectoryStepSchema),
   boltzScores: BoltzScoreSchema.nullable(),
   complexPath: z.string().nullable(), // Path to Boltz-2 predicted complex
+  oracleIdx: z.number().nullable().optional(),
+  molIdx: z.number().nullable().optional(),
 });
 
 export type MoleculeResult = z.infer<typeof MoleculeResultSchema>;
@@ -142,22 +147,26 @@ export interface IpcChannels {
   'file:exists': (path: string) => Promise<boolean>;
 
   // Run management
-  'run:start': (config: OptConfig, configPath: string) => Promise<RunInfo>;
+  'run:start': (payload: {
+    config: OptConfig;
+    configPath?: string | null;
+    configId?: string | null;
+    name?: string | null;
+  }) => Promise<RunInfo>;
   'run:stop': (runId: string) => Promise<void>;
   'run:resume': (runId: string, checkpointPath: string, oracleIdx?: number) => Promise<RunInfo>;
   'run:get-status': (runId: string) => Promise<RunInfo | null>;
   'run:list': () => Promise<RunInfo[]>;
-  'run:get-checkpoints': (resultDir: string) => Promise<string[]>;
+  'run:get-checkpoints': (runId: string) => Promise<string[]>;
 
   // Database queries
   'db:get-generated-objects': (dbPath: string, limit?: number, offset?: number) => Promise<GeneratedObject[]>;
   'db:get-boltz-scores': (dbPath: string, limit?: number, offset?: number) => Promise<BoltzScore[]>;
   'db:get-reward-cache': (dbPath: string, limit?: number) => Promise<RewardCacheEntry[]>;
-  'db:get-top-molecules': (resultDir: string, limit?: number) => Promise<MoleculeResult[]>;
+  'db:get-top-molecules': (runId: string, limit?: number) => Promise<MoleculeResult[]>;
 
   // Boltz complex files
-  'boltz:get-complex-path': (resultDir: string, oracleIdx: number, molIdx: number) => Promise<string | null>;
-  'boltz:read-complex': (complexPath: string) => Promise<string>;
+  'boltz:get-complex': (runId: string, oracleIdx: number, molIdx: number) => Promise<string | null>;
 }
 
 // Type-safe IPC invoke helper type

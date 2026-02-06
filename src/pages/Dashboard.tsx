@@ -1,6 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useQuery } from 'convex/react';
+import { api } from '../../convex/_generated/api';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useConvexRuns } from '@/hooks/useConvex';
+import { useConvexRuns, useConvexAvailable } from '@/hooks/useConvex';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -154,6 +156,8 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
   
   // Fetch runs from Convex (returns null if Convex is not configured)
   const convexRuns = useConvexRuns();
+  const isConvexAvailable = useConvexAvailable();
+  const [runnerRuns, setRunnerRuns] = useState<RunInfo[]>([]);
   
   const [selectedRun, setSelectedRun] = useState<RunInfo | null>(activeRun);
   const [molecules, setMolecules] = useState<MoleculeResult[]>([]);
@@ -161,12 +165,84 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
   const [complexContent, setComplexContent] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
+  const convexMoleculeRows = useQuery(
+    api.molecules.getTopByRun,
+    isConvexAvailable && selectedRun?.source === 'convex'
+      ? { runId: selectedRun.id, limit: 50 }
+      : 'skip'
+  );
+
+  const mappedConvexMolecules = useMemo<MoleculeResult[]>(() => {
+    if (!convexMoleculeRows) return [];
+    return convexMoleculeRows.map((row: any) => {
+      let trajectory: any[] = [];
+      try {
+        trajectory = row.trajectory ? JSON.parse(row.trajectory) : [];
+      } catch {
+        trajectory = [];
+      }
+      const hasScores =
+        row.affinityEnsemble !== null ||
+        row.probabilityEnsemble !== null ||
+        row.affinityModel1 !== null ||
+        row.probabilityModel1 !== null ||
+        row.affinityModel2 !== null ||
+        row.probabilityModel2 !== null;
+
+      return {
+        smiles: row.smiles,
+        reward: row.reward,
+        trajectory,
+        boltzScores: hasScores
+          ? {
+              iteration: row.iteration ?? 0,
+              smiles: row.smiles,
+              docking_score: 0,
+              affinity_ensemble: row.affinityEnsemble ?? 0,
+              probability_ensemble: row.probabilityEnsemble ?? 0,
+              affinity_model1: row.affinityModel1 ?? 0,
+              probability_model1: row.probabilityModel1 ?? 0,
+              affinity_model2: row.affinityModel2 ?? 0,
+              probability_model2: row.probabilityModel2 ?? 0,
+            }
+          : null,
+        complexPath: null,
+        oracleIdx: row.oracleIdx ?? null,
+        molIdx: row.molIdx ?? null,
+      } as MoleculeResult;
+    });
+  }, [convexMoleculeRows]);
+
   // Update selected run when activeRun changes
   useEffect(() => {
     if (activeRun) {
       setSelectedRun(activeRun);
     }
   }, [activeRun]);
+
+  // Fetch local runner runs
+  useEffect(() => {
+    let mounted = true;
+
+    const fetchRuns = async () => {
+      try {
+        const runs = await invoke('run:list');
+        if (!mounted) return;
+        setRunnerRuns((runs ?? []).map((run) => ({ ...run, source: 'local' })));
+      } catch {
+        if (!mounted) return;
+        setRunnerRuns([]);
+      }
+    };
+
+    fetchRuns();
+    const interval = setInterval(fetchRuns, 5000);
+
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [invoke]);
 
   // Convert Convex run to RunInfo format
   const convertConvexRun = (run: ConvexRun): RunInfo => ({
@@ -181,20 +257,39 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     lastUpdatedAt: run.lastUpdatedAt ? new Date(run.lastUpdatedAt).toISOString() : null,
     checkpointPath: run.checkpointPath,
     error: run.error,
+    source: 'convex',
   });
 
-  // Combine local activeRun with Convex runs
+  // Combine local runner runs with Convex runs (dedupe by convexRunId)
+  const localRuns = [
+    ...runnerRuns,
+    ...(activeRun && !runnerRuns.find((r) => r.id === activeRun.id) ? [activeRun] : []),
+  ].map((run) => ({ ...run, source: 'local' as const }));
+
+  const convexRunList = convexRuns?.map(convertConvexRun) ?? [];
+  const localConvexIds = new Set(
+    localRuns.map((r) => r.convexRunId).filter((id): id is string => Boolean(id))
+  );
+
   const allRuns: RunInfo[] = [
-    ...(activeRun && !convexRuns?.find(r => r._id === activeRun.id) ? [activeRun] : []),
-    ...(convexRuns?.map(convertConvexRun) ?? []),
+    ...localRuns,
+    ...convexRunList.filter((run) => !localConvexIds.has(run.id)),
   ];
 
   useEffect(() => {
-    if (!selectedRun?.resultDir) return;
+    if (!selectedRun) return;
+
+    if (selectedRun.source === 'convex') {
+      setMolecules(mappedConvexMolecules);
+      if (mappedConvexMolecules.length > 0 && !selectedMolecule) {
+        setSelectedMolecule(mappedConvexMolecules[0] ?? null);
+      }
+      return;
+    }
 
     const fetchMolecules = async () => {
       try {
-        const results = await invoke('db:get-top-molecules', selectedRun.resultDir, 50);
+        const results = await invoke('db:get-top-molecules', selectedRun.id, 50);
         setMolecules(results);
         if (results.length > 0 && !selectedMolecule) {
           setSelectedMolecule(results[0] ?? null);
@@ -208,35 +303,52 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     const interval = setInterval(fetchMolecules, 5000);
 
     return () => clearInterval(interval);
-  }, [selectedRun?.resultDir, invoke, selectedMolecule]);
+  }, [selectedRun, invoke, selectedMolecule, mappedConvexMolecules]);
 
   useEffect(() => {
-    if (!selectedMolecule || !selectedRun?.resultDir) {
+    if (!selectedMolecule || !selectedRun) {
+      setComplexContent(null);
+      return;
+    }
+
+    if (selectedRun.source === 'convex') {
+      setComplexContent(null);
+      return;
+    }
+
+    const oracleIdx = selectedMolecule.oracleIdx;
+    const molIdx = selectedMolecule.molIdx;
+    if (oracleIdx == null || molIdx == null) {
       setComplexContent(null);
       return;
     }
 
     const loadComplex = async () => {
-      const complexPath = await invoke('boltz:get-complex-path', selectedRun.resultDir, 0, 0);
-      if (complexPath) {
-        const content = await invoke('boltz:read-complex', complexPath);
+      try {
+        const content = await invoke('boltz:get-complex', selectedRun.id, oracleIdx, molIdx);
         setComplexContent(content);
+      } catch {
+        setComplexContent(null);
       }
     };
 
     loadComplex();
-  }, [selectedMolecule, selectedRun?.resultDir, invoke]);
+  }, [selectedMolecule, selectedRun, invoke]);
 
   const handleRefresh = useCallback(async () => {
-    if (!selectedRun?.resultDir) return;
+    if (!selectedRun) return;
     setIsLoading(true);
     try {
-      const results = await invoke('db:get-top-molecules', selectedRun.resultDir, 50);
+      if (selectedRun.source === 'convex') {
+        setMolecules(mappedConvexMolecules);
+        return;
+      }
+      const results = await invoke('db:get-top-molecules', selectedRun.id, 50);
       setMolecules(results);
     } finally {
       setIsLoading(false);
     }
-  }, [selectedRun?.resultDir, invoke]);
+  }, [selectedRun, invoke, mappedConvexMolecules]);
 
   const handleSelectRun = (run: RunInfo) => {
     setSelectedRun(run);
@@ -244,46 +356,41 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     setMolecules([]);
   };
 
-  const bestAffinity = molecules.length > 0
-    ? Math.min(...molecules.filter(m => m.boltzScores).map(m => m.boltzScores!.affinity_ensemble))
-    : null;
+  const affinityValues = molecules
+    .filter((m) => m.boltzScores)
+    .map((m) => m.boltzScores!.affinity_ensemble);
+  const probabilityValues = molecules
+    .filter((m) => m.boltzScores)
+    .map((m) => m.boltzScores!.probability_ensemble);
 
-  const bestProbability = molecules.length > 0
-    ? Math.max(...molecules.filter(m => m.boltzScores).map(m => m.boltzScores!.probability_ensemble))
-    : null;
+  const bestAffinity = affinityValues.length > 0 ? Math.min(...affinityValues) : null;
+  const bestProbability = probabilityValues.length > 0 ? Math.max(...probabilityValues) : null;
 
   // No runs at all - show empty state
   if (allRuns.length === 0) {
     return (
-      <motion.div 
-        className="h-full flex items-center justify-center"
-        initial={{ opacity: 0, scale: 0.95 }}
+      <motion.div
+        className="h-full flex items-center justify-center p-6"
+        initial={{ opacity: 0, scale: 0.97 }}
         animate={{ opacity: 1, scale: 1 }}
       >
-        <div className="text-center space-y-6 max-w-md">
-          <motion.div
-            animate={{
-              y: [0, -10, 0],
-            }}
-            transition={{
-              duration: 2,
-              repeat: Infinity,
-              ease: 'easeInOut',
-            }}
-          >
-            <Beaker className="h-20 w-20 mx-auto text-muted-foreground/40" />
-          </motion.div>
-          <div className="space-y-2">
-            <h2 className="text-2xl font-semibold">No Runs Yet</h2>
-            <p className="text-muted-foreground">
-              Start your first training run from the Configuration tab to see results here.
+        <Card className="glass-card card-glow w-full max-w-lg">
+          <CardHeader className="pb-2">
+            <div className="flex items-center gap-2">
+              <Beaker className="h-5 w-5 text-primary" />
+              <CardTitle className="text-base">No runs found</CardTitle>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-2 space-y-3">
+            <p className="text-sm text-muted-foreground">
+              There are no previous runs yet. Start your first training run from the Configuration tab.
             </p>
-          </div>
-          <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-            <FolderOpen className="h-4 w-4" />
-            <span>Your previous runs will appear in this dashboard</span>
-          </div>
-        </div>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <FolderOpen className="h-4 w-4" />
+              <span>Completed runs will appear here automatically.</span>
+            </div>
+          </CardContent>
+        </Card>
       </motion.div>
     );
   }

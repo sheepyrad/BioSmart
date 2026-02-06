@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, createRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPluginUI } from 'molstar/lib/mol-plugin-ui';
 import { renderReact18 } from 'molstar/lib/mol-plugin-ui/react18';
 import { PluginUIContext } from 'molstar/lib/mol-plugin-ui/context';
@@ -25,7 +25,7 @@ export default function MolstarViewer({
   onResidueSelect,
   multiSelectMode = true, // Default to always toggle (multi-select)
 }: MolstarViewerProps) {
-  const containerRef = createRef<HTMLDivElement>();
+  const containerRef = useRef<HTMLDivElement>(null);
   const pluginRef = useRef<PluginUIContext | null>(null);
   const selectedResiduesRef = useRef<string[]>(selectedResidues);
   const onResidueSelectRef = useRef(onResidueSelect);
@@ -151,7 +151,9 @@ export default function MolstarViewer({
           label: 'structure',
         });
 
-        const trajectory = await plugin.builders.structure.parseTrajectory(data, 'pdb');
+        const trimmed = pdbContent.trim();
+        const format = trimmed.startsWith('data_') || trimmed.includes('loop_') ? 'mmcif' : 'pdb';
+        const trajectory = await plugin.builders.structure.parseTrajectory(data, format as any);
         await plugin.builders.structure.hierarchy.applyPreset(trajectory, 'default');
 
         // Reset camera to fit structure
@@ -225,13 +227,19 @@ export default function MolstarViewer({
     highlightResidues();
   }, [selectedResidues, isInitialized]);
 
+  if (!pdbContent) {
+    return (
+      <div className="h-full w-full relative">
+        <div className="absolute inset-0 flex items-center justify-center bg-white/80 z-10">
+          <p className="text-muted-foreground">Load a complex to view structure</p>
+        </div>
+        <div className="h-full w-full" />
+      </div>
+    );
+  }
+
   return (
     <div className="h-full w-full relative">
-      {!pdbContent && (
-        <div className="absolute inset-0 flex items-center justify-center bg-white/80 z-10">
-          <p className="text-muted-foreground">Load a PDB file to view structure</p>
-        </div>
-      )}
       <div 
         ref={containerRef} 
         className="h-full w-full"

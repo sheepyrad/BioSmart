@@ -105,7 +105,7 @@ export const webFallback: {
   },
 
   // Run management (mock implementations for web)
-  'run:start': async (_config: OptConfig, _configPath: string) => {
+  'run:start': async (_payload: { config: OptConfig; configPath?: string | null; configId?: string | null; name?: string | null }) => {
     alert('Training runs can only be started in the Electron app.');
     throw new Error('Not available in web mode');
   },
@@ -126,7 +126,7 @@ export const webFallback: {
     return [];
   },
 
-  'run:get-checkpoints': async (_resultDir: string) => {
+  'run:get-checkpoints': async (_runId: string) => {
     return [];
   },
 
@@ -143,17 +143,13 @@ export const webFallback: {
     return getMockRewardCache();
   },
 
-  'db:get-top-molecules': async (_resultDir: string, _limit?: number) => {
+  'db:get-top-molecules': async (_runId: string, _limit?: number) => {
     return getMockMolecules();
   },
 
   // Boltz complex files
-  'boltz:get-complex-path': async (_resultDir: string, _oracleIdx: number, _molIdx: number) => {
+  'boltz:get-complex': async (_runId: string, _oracleIdx: number, _molIdx: number) => {
     return null;
-  },
-
-  'boltz:read-complex': async (_complexPath: string) => {
-    throw new Error('Not available in web mode');
   },
 };
 
@@ -239,6 +235,8 @@ function getMockMolecules(): MoleculeResult[] {
         probability_model2: 0.88,
       },
       complexPath: null,
+      oracleIdx: 0,
+      molIdx: 0,
     },
     {
       smiles: 'CN1C=NC2=C1C(=O)N(C(=O)N2C)C',
@@ -258,6 +256,8 @@ function getMockMolecules(): MoleculeResult[] {
         probability_model2: 0.71,
       },
       complexPath: null,
+      oracleIdx: 0,
+      molIdx: 1,
     },
   ];
 }

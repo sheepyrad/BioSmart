@@ -1,5 +1,26 @@
 import { v } from 'convex/values';
+import type { Id } from './_generated/dataModel';
 import { mutation, query } from './_generated/server';
+
+const moleculeValidator = v.object({
+  _id: v.id('molecules'),
+  _creationTime: v.number(),
+  runId: v.id('runs'),
+  smiles: v.string(),
+  reward: v.number(),
+  trajectory: v.string(),
+  affinityEnsemble: v.union(v.number(), v.null()),
+  probabilityEnsemble: v.union(v.number(), v.null()),
+  affinityModel1: v.union(v.number(), v.null()),
+  probabilityModel1: v.union(v.number(), v.null()),
+  affinityModel2: v.union(v.number(), v.null()),
+  probabilityModel2: v.union(v.number(), v.null()),
+  oracleIdx: v.union(v.number(), v.null()),
+  molIdx: v.union(v.number(), v.null()),
+  complexFileId: v.union(v.id('files'), v.null()),
+  iteration: v.number(),
+  createdAt: v.number(),
+});
 
 export const upsert = mutation({
   args: {
@@ -13,9 +34,12 @@ export const upsert = mutation({
     probabilityModel1: v.union(v.number(), v.null()),
     affinityModel2: v.union(v.number(), v.null()),
     probabilityModel2: v.union(v.number(), v.null()),
+    oracleIdx: v.union(v.number(), v.null()),
+    molIdx: v.union(v.number(), v.null()),
     complexFileId: v.union(v.id('files'), v.null()),
     iteration: v.number(),
   },
+  returns: v.id('molecules'),
   handler: async (ctx, args) => {
     // Check if molecule already exists for this run
     const existing = await ctx.db
@@ -35,6 +59,8 @@ export const upsert = mutation({
         probabilityModel1: args.probabilityModel1,
         affinityModel2: args.affinityModel2,
         probabilityModel2: args.probabilityModel2,
+        oracleIdx: args.oracleIdx,
+        molIdx: args.molIdx,
         complexFileId: args.complexFileId,
         iteration: args.iteration,
       });
@@ -63,13 +89,16 @@ export const batchUpsert = mutation({
         probabilityModel1: v.union(v.number(), v.null()),
         affinityModel2: v.union(v.number(), v.null()),
         probabilityModel2: v.union(v.number(), v.null()),
+        oracleIdx: v.union(v.number(), v.null()),
+        molIdx: v.union(v.number(), v.null()),
         complexFileId: v.union(v.id('files'), v.null()),
         iteration: v.number(),
       })
     ),
   },
+  returns: v.array(v.id('molecules')),
   handler: async (ctx, args) => {
-    const results: string[] = [];
+    const results: Id<'molecules'>[] = [];
     
     for (const mol of args.molecules) {
       const existing = await ctx.db
@@ -88,6 +117,8 @@ export const batchUpsert = mutation({
           probabilityModel1: mol.probabilityModel1,
           affinityModel2: mol.affinityModel2,
           probabilityModel2: mol.probabilityModel2,
+          oracleIdx: mol.oracleIdx,
+          molIdx: mol.molIdx,
           complexFileId: mol.complexFileId,
           iteration: mol.iteration,
         });
@@ -111,6 +142,7 @@ export const getByRun = query({
     limit: v.optional(v.number()),
     orderBy: v.optional(v.union(v.literal('reward'), v.literal('iteration'))),
   },
+  returns: v.array(moleculeValidator),
   handler: async (ctx, args) => {
     let query = ctx.db
       .query('molecules')
@@ -139,6 +171,7 @@ export const getTopByRun = query({
     runId: v.id('runs'),
     limit: v.number(),
   },
+  returns: v.array(moleculeValidator),
   handler: async (ctx, args) => {
     const molecules = await ctx.db
       .query('molecules')
@@ -152,6 +185,7 @@ export const getTopByRun = query({
 
 export const get = query({
   args: { id: v.id('molecules') },
+  returns: v.union(moleculeValidator, v.null()),
   handler: async (ctx, args) => {
     return await ctx.db.get(args.id);
   },
@@ -159,6 +193,7 @@ export const get = query({
 
 export const remove = mutation({
   args: { id: v.id('molecules') },
+  returns: v.null(),
   handler: async (ctx, args) => {
     // Delete associated annotations
     const annotations = await ctx.db
@@ -171,5 +206,6 @@ export const remove = mutation({
     }
 
     await ctx.db.delete(args.id);
+    return null;
   },
 });
