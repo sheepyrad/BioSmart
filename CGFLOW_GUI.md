@@ -229,7 +229,7 @@ server.listen(45731, '127.0.0.1')
 **What it spawns:**
 
 ```
-python  cgflow/scripts/opt/opt_unidock_boltz.py  \
+python  cgflow/scripts/opt/opt_boltz.py  \
   --config  <resolved_config.yaml>               \
   --result_dir  <result_dir>                      \
   --env_dir  <env_dir>
@@ -239,13 +239,13 @@ The script path is resolved relative to the runner:
 
 ```typescript
 const CGFLOW_ROOT = path.resolve(__dirname, '../../cgflow');
-const OPT_SCRIPT  = path.join(CGFLOW_ROOT, 'scripts/opt/opt_unidock_boltz.py');
+const OPT_SCRIPT  = path.join(CGFLOW_ROOT, 'scripts/opt/opt_boltz.py');
 ```
 
 **Resume runs** pass additional flags:
 
 ```
-python  opt_unidock_boltz.py  --config <yaml>  --resume_from <checkpoint>  [--resume_oracle_idx N]
+python  opt_boltz.py  --config <yaml>  --resume_from <checkpoint>  [--resume_oracle_idx N]
 ```
 
 **Key REST endpoints:**
@@ -421,7 +421,7 @@ POST /runs → Runner Server
         │
         ├──▶ Write config to temp YAML file
         ├──▶ Create Convex run (ConvexSyncService.createRun) [optional]
-        ├──▶ spawn('python', ['opt_unidock_boltz.py', ...])
+        ├──▶ spawn('python', ['opt_boltz.py', ...])
         │
         ▼
 Python process starts, writing to result_dir/

@@ -21,7 +21,7 @@ import { api } from '../convex/_generated/api';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CGFLOW_ROOT = path.resolve(__dirname, '../../cgflow');
-const OPT_SCRIPT = path.join(CGFLOW_ROOT, 'scripts/opt/opt_unidock_boltz.py');
+const OPT_SCRIPT = path.join(CGFLOW_ROOT, 'scripts/opt/opt_boltz.py');
 const CONDA_ENV_NAME = process.env.CGFLOW_CONDA_ENV?.trim() || 'cgflow';
 
 function spawnCgflowPython(args: string[], options: SpawnOptions): ChildProcess {
