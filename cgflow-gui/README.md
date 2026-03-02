@@ -1,130 +1,173 @@
 # CGFlow GUI
 
-A modern Electron + React desktop application for molecular optimization using CGFlow with Boltz-2 co-folding.
+Desktop-first GUI for running and analyzing CGFlow + Boltz-2 optimization jobs.
 
-## Features
+The app provides:
+- a visual config builder,
+- local run orchestration,
+- live monitoring and molecule analysis,
+- optional Convex cloud sync for cross-machine access.
 
-- **Configuration Builder**: Visual interface to create and edit optimization configs
-- **Mol* Protein Viewer**: Interactive 3D structure viewer with residue selection
-- **Run Management**: Start, stop, pause, and resume training runs
-- **Results Dashboard**: Real-time visualization of generated molecules and scores
-- **Reaction Pathway Viewer**: Visual synthesis pathway with step-by-step actions
-- **Cross-Machine Sync**: Convex backend for accessing runs from any device
+## What This App Does
+
+CGFlow GUI is split across four layers:
+
+1. **React Renderer (`src/`)** for config editing, dashboards, Mol* views, and molecule cards.
+2. **Runner Service (`electron/runner.ts`)** that starts/stops/resumes CGFlow Python jobs and serves run data over HTTP/SSE.
+3. **Electron Main (`electron/main.ts`)** for desktop shell, IPC, tray integration, and bootstrapping.
+4. **Convex Backend (`convex/`)** for optional cloud persistence of configs, runs, files, and molecules.
+
+## Key Features
+
+- **Configuration Builder**: Build/edit YAML-equivalent optimization configs.
+- **Mol* Residue Selection**: Click residues in 3D protein view to set target residues.
+- **Run Lifecycle Management**: Start, stop (pause), resume, and checkpoint-aware workflows.
+- **Results Dashboard**: Inspect run progress, top molecules, Boltz scores, and trajectory pathways.
+- **Protein-Ligand Complex Viewer**: Load predicted complex structures for selected molecules.
+- **Cloud Sync (Optional)**: Persist configs/files/runs/molecules with Convex.
 
 ## Prerequisites
 
 - Node.js 18+
-- Python 3.10+ with cgflow environment
-- Convex account (optional, for cloud sync)
+- Python 3.10+
+- Conda env with CGFlow dependencies (default env name: `cgflow`)
+- CGFlow repository available at `../cgflow` relative to this project
+- Convex account (optional)
 
 ## Installation
 
 ```bash
-# Install dependencies
 npm install
+```
 
-# Initialize Convex (optional)
+If using Convex:
+
+```bash
 npx convex dev
 ```
 
-## Development
+## Running the App
+
+### Desktop (recommended)
 
 ```bash
-# Start development server
 npm run electron:dev
-
-# Type checking
-npm run typecheck
 ```
 
-## Building
+This starts:
+- Vite renderer dev server
+- Electron main process
+- local runner service (started by Electron on app boot)
+
+### Web-only mode
 
 ```bash
-# Build for production
+npm run dev:web
+```
+
+This is useful for UI development, but training/run operations require the local runner service and local CGFlow setup.
+
+## Build
+
+```bash
 npm run build
 ```
 
-## Project Structure
+Artifacts are generated in:
+- `dist/` (renderer)
+- `dist-electron/` (main/preload/runner)
+- `release/` (packaged app)
 
-```
-cgflow-gui/
-├── electron/           # Electron main process
-│   ├── main.ts        # Main process entry
-│   ├── preload.ts     # Preload script with IPC bridge
-│   └── convex-sync.ts # Convex sync service
-├── src/               # React renderer
-│   ├── components/    # UI components
-│   │   └── ui/       # shadcn/ui components
-│   ├── hooks/        # Custom React hooks
-│   ├── lib/          # Utilities
-│   └── pages/        # Main app pages
-├── shared/           # Shared types (main + renderer)
-│   └── types.ts      # Zod schemas and TypeScript types
-└── convex/           # Convex backend
-    ├── schema.ts     # Database schema
-    ├── configs.ts    # Config mutations/queries
-    ├── runs.ts       # Run management
-    ├── molecules.ts  # Molecule storage
-    ├── files.ts      # File uploads
-    └── annotations.ts # User annotations
-```
+## Environment Variables
 
-## Configuration
-
-### Environment Variables
-
-Create a `.env` file:
+Create `.env` in `cgflow-gui/` as needed:
 
 ```env
+# Optional Convex deployment URL
 VITE_CONVEX_URL=https://your-deployment.convex.cloud
+
+# Optional toggle (default true)
+VITE_CONVEX_ENABLED=true
+
+# Optional runner URL override (default shown)
+VITE_RUNNER_URL=http://127.0.0.1:45731
+
+# Optional conda env override in main/runner process
+CGFLOW_CONDA_ENV=cgflow
 ```
 
-### CGFlow Setup
+## Typical Workflow
 
-Ensure the cgflow scripts are accessible at `../cgflow/` relative to this app.
+1. Open **Configuration** tab.
+2. Load/create config and select files:
+   - protein `.pdb`
+   - optional MSA file (if provided, injected into generated Boltz base YAML)
+3. Select target residues in Mol* (or enter manually as `CHAIN:RESID`, e.g. `A:123`).
+4. Set optimization parameters and directories.
+5. Start training.
+6. Open **Dashboard** to monitor KPIs and inspect molecules.
+7. Select a molecule to view:
+   - RDKit 2D structure,
+   - Boltz affinity/probability metrics,
+   - reaction pathway,
+   - predicted protein-ligand complex in Mol*.
 
-## Usage
+## Project Structure
 
-### 1. Configuration Tab
+```text
+cgflow-gui/
+├── electron/
+│   ├── main.ts          # Electron main process + IPC
+│   ├── preload.ts       # Context bridge for renderer
+│   ├── runner.ts        # Local HTTP/SSE runner service
+│   └── convex-sync.ts   # SQLite -> Convex sync service
+├── src/
+│   ├── pages/           # ConfigBuilder + Dashboard
+│   ├── components/      # MolstarViewer, FileSelector, MoleculeCard, etc.
+│   ├── hooks/           # IPC, Convex, uploads, run state helpers
+│   └── lib/             # Runner client, config mapping, utilities
+├── shared/
+│   └── types.ts         # Shared zod schemas/types for app layers
+└── convex/
+    ├── schema.ts        # Convex schema
+    ├── configs.ts       # Config CRUD
+    ├── runs.ts          # Run records/status
+    ├── molecules.ts     # Molecule upserts/queries
+    ├── files.ts         # File storage metadata + upload URLs
+    └── annotations.ts   # Molecule annotations
+```
 
-1. Load an existing config or create new
-2. Upload a PDB file for the protein structure
-3. Select target residues by clicking in the Mol* viewer
-4. Configure Boltz-2 settings (base YAML, MSA path)
-5. Set optimization parameters
+## Data and Output Expectations
 
-### 2. Start Training
+CGFlow writes run outputs into the configured `result_dir`, including:
+- checkpoint files (`model_state_*.pt`)
+- logs
+- SQLite databases used by the dashboard and sync (`boltz_reward_cache.db`, `boltz_scores_0.db`, `generated_objs_*.db`)
+- Boltz complex output files (CIF/PDB) used for 3D viewing
 
-1. Click "Start Training" to begin optimization
-2. Monitor progress in the Dashboard tab
+## Troubleshooting
 
-### 3. Dashboard Tab
-
-- View KPI metrics (status, progress, best scores)
-- Browse generated molecules in the table
-- Click a molecule to see details:
-  - RDKit structure visualization
-  - Boltz-2 scores (affinity, probability)
-  - Reaction pathway steps
-- View protein-ligand complex in Mol* viewer
-
-### 4. Resume Training
-
-If training was interrupted:
-1. Select a checkpoint from the result directory
-2. Click "Resume" to continue from that point
+- **Runner unavailable / cannot start runs**
+  - Ensure Electron app is running (desktop mode) or runner service is reachable at `VITE_RUNNER_URL`.
+- **Python process fails immediately**
+  - Verify `CGFLOW_CONDA_ENV` and that `opt_boltz.py` is available under `../cgflow/scripts/opt/`.
+- **No molecules in dashboard yet**
+  - Wait for CGFlow to emit SQLite outputs; early run stages may have no molecules.
+- **Convex actions disabled**
+  - Set a valid `VITE_CONVEX_URL` and run `npx convex dev` (or deploy and point to a production URL).
 
 ## Tech Stack
 
-- **Electron**: Desktop app framework
-- **React 18**: UI framework
-- **TypeScript**: Type safety
-- **Vite**: Build tool
-- **Tailwind CSS + shadcn/ui**: Styling
-- **Mol***: Molecular visualization
-- **Convex**: Real-time backend (optional)
-- **Zod**: Schema validation
-- **better-sqlite3**: SQLite database access
+- Electron
+- React 18 + TypeScript
+- Vite
+- Tailwind CSS + shadcn/ui
+- Framer Motion
+- Mol*
+- RDKit.js
+- sql.js
+- Convex (optional)
+- Zod + YAML
 
 ## License
 

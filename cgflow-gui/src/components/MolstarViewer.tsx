@@ -227,19 +227,13 @@ export default function MolstarViewer({
     highlightResidues();
   }, [selectedResidues, isInitialized]);
 
-  if (!pdbContent) {
-    return (
-      <div className="h-full w-full relative">
+  return (
+    <div className="h-full w-full relative">
+      {!pdbContent && (
         <div className="absolute inset-0 flex items-center justify-center bg-white/80 z-10">
           <p className="text-muted-foreground">Load a complex to view structure</p>
         </div>
-        <div className="h-full w-full" />
-      </div>
-    );
-  }
-
-  return (
-    <div className="h-full w-full relative">
+      )}
       <div 
         ref={containerRef} 
         className="h-full w-full"

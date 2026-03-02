@@ -140,6 +140,7 @@ export type MoleculeResult = z.infer<typeof MoleculeResultSchema>;
 export interface IpcChannels {
   // File operations
   'file:select-pdb': () => Promise<string | null>;
+  'file:select-msa': () => Promise<string | null>;
   'file:select-yaml': () => Promise<string | null>;
   'file:select-directory': () => Promise<string | null>;
   'file:read-pdb': (path: string) => Promise<string>;

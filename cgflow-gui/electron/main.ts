@@ -167,6 +167,14 @@ ipcMain.handle('file:select-pdb', async () => {
   return result.canceled ? null : result.filePaths[0] ?? null;
 });
 
+ipcMain.handle('file:select-msa', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [{ name: 'A3M Files', extensions: ['a3m'] }],
+  });
+  return result.canceled ? null : result.filePaths[0] ?? null;
+});
+
 ipcMain.handle('file:select-yaml', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openFile'],

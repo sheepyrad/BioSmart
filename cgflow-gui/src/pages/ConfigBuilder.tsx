@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -12,6 +12,7 @@ import MolstarViewer from '@/components/MolstarViewer';
 import FileSelector from '@/components/FileSelector';
 import type { OptConfig, RunInfo, BoltzConfig } from '@shared/types';
 import { convexConfigToOpt, optConfigToConvex } from '@/lib/configMapping';
+import YAML from 'yaml';
 import {
   FolderOpen,
   FileUp,
@@ -75,6 +76,75 @@ const normalizeBoltzWorker = (value: unknown): number => {
   return Math.max(1, Math.floor(parsed));
 };
 
+const AMINO_ACID_3_TO_1: Record<string, string> = {
+  ALA: 'A',
+  ARG: 'R',
+  ASN: 'N',
+  ASP: 'D',
+  CYS: 'C',
+  GLN: 'Q',
+  GLU: 'E',
+  GLY: 'G',
+  HIS: 'H',
+  ILE: 'I',
+  LEU: 'L',
+  LYS: 'K',
+  MET: 'M',
+  PHE: 'F',
+  PRO: 'P',
+  SER: 'S',
+  THR: 'T',
+  TRP: 'W',
+  TYR: 'Y',
+  VAL: 'V',
+  SEC: 'U',
+  PYL: 'O',
+  MSE: 'M',
+};
+
+interface ParsedProteinSequence {
+  chainId: string;
+  sequence: string;
+}
+
+function parseProteinSequencesFromPdb(pdbContent: string): ParsedProteinSequence[] {
+  const chainResidues = new Map<string, { order: string[]; residues: Map<string, string> }>();
+
+  for (const line of pdbContent.split(/\r?\n/)) {
+    if (!line.startsWith('ATOM')) continue;
+    if (line.length < 27) continue;
+
+    const residueName = line.slice(17, 20).trim().toUpperCase();
+    const chainRaw = line.slice(21, 22).trim();
+    const chainId = chainRaw || 'A';
+    const residueNumber = line.slice(22, 26).trim();
+    const insertionCode = line.slice(26, 27).trim();
+    const residueKey = `${residueNumber}:${insertionCode}`;
+
+    const oneLetter = AMINO_ACID_3_TO_1[residueName];
+    if (!oneLetter) continue;
+
+    let chain = chainResidues.get(chainId);
+    if (!chain) {
+      chain = { order: [], residues: new Map<string, string>() };
+      chainResidues.set(chainId, chain);
+    }
+    if (!chain.residues.has(residueKey)) {
+      chain.order.push(residueKey);
+      chain.residues.set(residueKey, oneLetter);
+    }
+  }
+
+  const sequences: ParsedProteinSequence[] = [];
+  for (const [chainId, chain] of chainResidues.entries()) {
+    const sequence = chain.order.map((key) => chain.residues.get(key) ?? '').join('');
+    if (sequence.length > 0) {
+      sequences.push({ chainId, sequence });
+    }
+  }
+  return sequences;
+}
+
 const cardVariants = {
   hidden: { opacity: 0, y: 20 },
   visible: (i: number) => ({
@@ -106,6 +176,7 @@ export default function ConfigBuilder({
   const [configName, setConfigName] = useState<string>('New Config');
   const [savedConfigId, setSavedConfigId] = useState<string | null>(null);
   const [pdbContent, setPdbContent] = useState<string | null>(null);
+  const [loadedPdbPath, setLoadedPdbPath] = useState<string | null>(null);
   const [selectedResidues, setSelectedResidues] = useState<string[]>([]);
   const [newResidue, setNewResidue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -123,6 +194,98 @@ export default function ConfigBuilder({
       },
     }));
   }, [selectedResidues]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const maybeLoadPdbContent = async () => {
+      if (!config.protein_path) {
+        if (!cancelled) {
+          setPdbContent(null);
+          setLoadedPdbPath(null);
+        }
+        return;
+      }
+      if (pdbContent && loadedPdbPath === config.protein_path) return;
+      try {
+        const content = await invoke('file:read-pdb', config.protein_path);
+        if (!cancelled) {
+          setPdbContent(content);
+          setLoadedPdbPath(config.protein_path);
+        }
+      } catch {
+        // Protein path may be unavailable in current environment (e.g. cloud path)
+      }
+    };
+
+    void maybeLoadPdbContent();
+    return () => {
+      cancelled = true;
+    };
+  }, [config.protein_path, pdbContent, loadedPdbPath, invoke]);
+
+  const generatedBoltzYamlResult = useMemo(() => {
+    if (!pdbContent) {
+      return { yaml: '', error: null as string | null };
+    }
+    const sequences = parseProteinSequencesFromPdb(pdbContent);
+    if (sequences.length === 0) {
+      return { yaml: '', error: 'Could not extract protein sequence from current PDB.' };
+    }
+    const yaml = YAML.stringify({
+      version: 1,
+      sequences: sequences.map((entry) => ({
+        protein: {
+          id: entry.chainId,
+          sequence: entry.sequence,
+          ...(config.boltz.msa_path ? { msa: config.boltz.msa_path } : {}),
+        },
+      })),
+    });
+    return { yaml, error: null as string | null };
+  }, [pdbContent, config.boltz.msa_path]);
+
+  const highlightedYamlLines = useMemo(() => {
+    if (!generatedBoltzYamlResult.yaml) return [];
+    return generatedBoltzYamlResult.yaml.split('\n').map((line, index) => {
+      const keyValueMatch = line.match(/^(\s*)(-\s*)?([A-Za-z_][A-Za-z0-9_-]*):(.*)$/);
+      if (keyValueMatch) {
+        const indent = keyValueMatch[1] ?? '';
+        const listPrefix = keyValueMatch[2] ?? '';
+        const prefix = `${indent}${listPrefix}`;
+        const key = keyValueMatch[3];
+        const rawValue = keyValueMatch[4] ?? '';
+        const hasValue = rawValue.trim().length > 0;
+        const keyClass =
+          key === 'id' || key === 'sequence' || key === 'msa'
+            ? 'text-violet-700 dark:text-violet-400'
+            : 'text-blue-700 dark:text-blue-400';
+        return (
+          <span key={`yaml-line-${index}`} className="block">
+            <span className="text-muted-foreground">{prefix}</span>
+            <span className={keyClass}>{key}</span>
+            <span className="text-muted-foreground">:</span>
+            {hasValue ? (
+              <>
+                <span> </span>
+                <span className="text-orange-700 dark:text-orange-400">{rawValue.trimStart()}</span>
+              </>
+            ) : null}
+          </span>
+        );
+      }
+
+      const looksLikeSequenceContinuation = /^\s*[A-Z]+\s*$/.test(line);
+      return (
+        <span
+          key={`yaml-line-${index}`} 
+          className={`block ${looksLikeSequenceContinuation ? 'text-orange-700 dark:text-orange-400' : ''}`}
+        >
+          {line.length > 0 ? line : ' '}
+        </span>
+      );
+    });
+  }, [generatedBoltzYamlResult.yaml]);
 
   const handleLoadConfig = useCallback(async () => {
     setIsLoading(true);
@@ -159,6 +322,7 @@ export default function ConfigBuilder({
         // Also load the PDB content for the viewer
         const content = await invoke('file:read-pdb', path);
         setPdbContent(content);
+        setLoadedPdbPath(path);
       }
       return path;
     } finally {
@@ -166,12 +330,8 @@ export default function ConfigBuilder({
     }
   }, [invoke]);
 
-  const handleSelectBoltzYaml = useCallback(async (): Promise<string | null> => {
-    return await invoke('file:select-yaml');
-  }, [invoke]);
-
   const handleSelectMsa = useCallback(async (): Promise<string | null> => {
-    return await invoke('file:select-yaml');
+    return await invoke('file:select-msa');
   }, [invoke]);
 
   const handleSelectResultDir = useCallback(async () => {
@@ -432,24 +592,31 @@ export default function ConfigBuilder({
                     accept=".pdb"
                     placeholder="Select protein .pdb file"
                     onSelectLocal={handleSelectPdb}
-                    onReadLocalContent={(path) => invoke('file:read-pdb', path)}
+                    onReadLocalContent={async (path) => await invoke('file:read-pdb', path)}
                   />
 
-                  <FileSelector
-                    label="Boltz Base YAML"
-                    value={config.boltz.base_yaml}
-                    onChange={(path) =>
-                      setConfig((prev) => ({
-                        ...prev,
-                        boltz: { ...prev.boltz, base_yaml: path },
-                      }))
-                    }
-                    fieldType="boltz_yaml"
-                    fileType="yaml"
-                    accept=".yaml,.yml"
-                    placeholder="Select Boltz base.yaml"
-                    onSelectLocal={handleSelectBoltzYaml}
-                  />
+                  <p className="text-xs text-muted-foreground">
+                    Boltz base YAML is auto-generated from the selected protein PDB at run start.
+                  </p>
+
+                  <div className="space-y-2">
+                    <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                      Generated Boltz YAML Preview
+                    </Label>
+                    <div className="rounded-md border bg-muted/20 p-3">
+                      {generatedBoltzYamlResult.error ? (
+                        <p className="text-xs text-destructive">{generatedBoltzYamlResult.error}</p>
+                      ) : generatedBoltzYamlResult.yaml ? (
+                        <pre className="max-h-48 overflow-auto rounded bg-background/50 p-2 text-xs leading-relaxed">
+                          <code className="block whitespace-pre-wrap break-all font-mono">{highlightedYamlLines}</code>
+                        </pre>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          Upload/select a protein PDB to preview the generated YAML.
+                        </p>
+                      )}
+                    </div>
+                  </div>
 
                   <FileSelector
                     label="MSA Path"
@@ -462,7 +629,7 @@ export default function ConfigBuilder({
                     }
                     fieldType="msa"
                     fileType="msa"
-                    accept=".a3m,.sto,.fasta"
+                    accept=".a3m"
                     placeholder="Select MSA file"
                     optional
                     onSelectLocal={handleSelectMsa}
@@ -736,7 +903,7 @@ export default function ConfigBuilder({
                   <div className="flex gap-2">
                     <Button
                       onClick={handleStartRun}
-                      disabled={isRunning || isLoading || !config.protein_path || !config.boltz.base_yaml}
+                      disabled={isRunning || isLoading || !config.protein_path}
                       className="flex-1 bg-gradient-to-r from-primary to-blue-600 hover:from-primary/90 hover:to-blue-600/90 shadow-lg shadow-primary/25 transition-all duration-300"
                     >
                       {isLoading ? (
