@@ -81,7 +81,7 @@ def run_retrosynthesis(smiles, output_path, model_path="./src/synformer/data/tra
         # Make all paths absolute
         output_path = Path(output_path).absolute()
         model_path = Path(model_path).absolute()
-        synformer_dir = Path("./src/synformer").absolute()
+        synformer_dir = Path("/home/conrad_hku/Drug_pipeline/src/synformer")
         
         # Create a temporary input CSV file with the SMILES string
         input_dir = output_path.parent
