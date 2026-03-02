@@ -10,6 +10,7 @@ export const BoltzConfigSchema = z.object({
   msa_path: z.string().nullable(),
   cache_dir: z.string().nullable(),
   use_msa_server: z.boolean(),
+  worker: z.number().int().min(1).optional().default(1),
 });
 
 export const OptConfigSchema = z.object({

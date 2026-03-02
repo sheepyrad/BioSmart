@@ -271,6 +271,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
         msa_path: config.boltzMsaPath ?? null,
         cache_dir: config.boltzCacheDir ?? null,
         use_msa_server: config.boltzUseMsaServer ?? false,
+        worker: Math.max(1, Math.floor(config.boltzWorker ?? 1)),
       },
     };
   }

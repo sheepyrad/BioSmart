@@ -29,6 +29,7 @@ const configValidator = v.object({
   boltzMsaPath: v.union(v.string(), v.null()),
   boltzCacheDir: v.union(v.string(), v.null()),
   boltzUseMsaServer: v.boolean(),
+  boltzWorker: v.number(),
   createdAt: v.number(),
   updatedAt: v.number(),
   lastUsedAt: v.union(v.number(), v.null()),
@@ -61,6 +62,7 @@ export const create = mutation({
     boltzMsaPath: v.union(v.string(), v.null()),
     boltzCacheDir: v.union(v.string(), v.null()),
     boltzUseMsaServer: v.boolean(),
+    boltzWorker: v.number(),
   },
   returns: v.id('configs'),
   handler: async (ctx, args) => {
@@ -102,6 +104,7 @@ export const update = mutation({
     boltzMsaPath: v.optional(v.union(v.string(), v.null())),
     boltzCacheDir: v.optional(v.union(v.string(), v.null())),
     boltzUseMsaServer: v.optional(v.boolean()),
+    boltzWorker: v.optional(v.number()),
     lastUsedAt: v.optional(v.union(v.number(), v.null())),
   },
   returns: v.id('configs'),

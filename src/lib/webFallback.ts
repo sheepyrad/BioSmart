@@ -180,6 +180,7 @@ function getMockConfig(): OptConfig {
       msa_path: null,
       cache_dir: null,
       use_msa_server: false,
+      worker: 1,
     },
   };
 }

@@ -30,6 +30,7 @@ export default defineSchema({
     boltzMsaPath: v.union(v.string(), v.null()),
     boltzCacheDir: v.union(v.string(), v.null()),
     boltzUseMsaServer: v.boolean(),
+    boltzWorker: v.number(),
     // Metadata
     createdAt: v.number(),
     updatedAt: v.number(),

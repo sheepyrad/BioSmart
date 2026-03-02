@@ -27,6 +27,7 @@ export interface ConvexConfig {
   boltzMsaPath: string | null;
   boltzCacheDir: string | null;
   boltzUseMsaServer: boolean;
+  boltzWorker: number;
   createdAt: number;
   updatedAt: number;
   lastUsedAt: number | null;
@@ -61,6 +62,7 @@ export function optConfigToConvex(name: string, config: OptConfig): ConvexConfig
     boltzMsaPath: config.boltz.msa_path,
     boltzCacheDir: config.boltz.cache_dir,
     boltzUseMsaServer: config.boltz.use_msa_server,
+    boltzWorker: Math.max(1, Math.floor(config.boltz.worker ?? 1)),
   };
 }
 
@@ -90,6 +92,7 @@ export function convexConfigToOpt(config: ConvexConfig): OptConfig {
       msa_path: config.boltzMsaPath,
       cache_dir: config.boltzCacheDir,
       use_msa_server: config.boltzUseMsaServer,
+      worker: Math.max(1, Math.floor(config.boltzWorker ?? 1)),
     },
   };
 }

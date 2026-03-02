@@ -44,6 +44,7 @@ const defaultBoltzConfig: BoltzConfig = {
   msa_path: null,
   cache_dir: null,
   use_msa_server: false,
+  worker: 1,
 };
 
 const defaultConfig: OptConfig = {
@@ -66,6 +67,12 @@ const defaultConfig: OptConfig = {
   replay_warmup_step: 10,
   replay_capacity: 6400,
   boltz: defaultBoltzConfig,
+};
+
+const normalizeBoltzWorker = (value: unknown): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.max(1, Math.floor(parsed));
 };
 
 const cardVariants = {
@@ -123,9 +130,19 @@ export default function ConfigBuilder({
       const path = await invoke('file:select-yaml');
       if (path) {
         const loadedConfig = await invoke('file:read-yaml', path);
-        setConfig(loadedConfig);
+        const normalizedConfig: OptConfig = {
+          ...loadedConfig,
+          boltz: {
+            ...loadedConfig.boltz,
+            worker: normalizeBoltzWorker(
+              (loadedConfig.boltz as unknown as { worker?: unknown; boltz_worker?: unknown })?.worker ??
+                (loadedConfig.boltz as unknown as { worker?: unknown; boltz_worker?: unknown })?.boltz_worker
+            ),
+          },
+        };
+        setConfig(normalizedConfig);
         setConfigPath(path);
-        setSelectedResidues(loadedConfig.boltz.target_residues);
+        setSelectedResidues(normalizedConfig.boltz.target_residues);
         setSavedConfigId(null);
       }
     } finally {
@@ -213,11 +230,21 @@ export default function ConfigBuilder({
   const handleLoadConvexConfig = useCallback(
     (convexConfig: any) => {
       const loaded = convexConfigToOpt(convexConfig);
-      setConfig(loaded);
+      const normalizedLoaded: OptConfig = {
+        ...loaded,
+        boltz: {
+          ...loaded.boltz,
+          worker: normalizeBoltzWorker(
+            (loaded.boltz as unknown as { worker?: unknown; boltz_worker?: unknown })?.worker ??
+              (loaded.boltz as unknown as { worker?: unknown; boltz_worker?: unknown })?.boltz_worker
+          ),
+        },
+      };
+      setConfig(normalizedLoaded);
       setConfigName(convexConfig.name);
       setSavedConfigId(convexConfig._id);
       setConfigPath(null);
-      setSelectedResidues(loaded.boltz.target_residues);
+      setSelectedResidues(normalizedLoaded.boltz.target_residues);
     },
     []
   );
@@ -440,6 +467,27 @@ export default function ConfigBuilder({
                     optional
                     onSelectLocal={handleSelectMsa}
                   />
+
+                  <div className="space-y-2">
+                    <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                      Boltz Workers
+                    </Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={config.boltz.worker}
+                      onChange={(e) =>
+                        setConfig((prev) => ({
+                          ...prev,
+                          boltz: {
+                            ...prev.boltz,
+                            worker: normalizeBoltzWorker(e.target.value),
+                          },
+                        }))
+                      }
+                      className="bg-background/50 tabular-nums"
+                    />
+                  </div>
                 </CardContent>
               </Card>
             </motion.div>
