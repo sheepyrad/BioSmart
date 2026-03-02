@@ -48,6 +48,17 @@ export const webFallback: {
     return null;
   },
 
+  'file:select-msa': async () => {
+    const file = await selectFile('.a3m');
+    if (file) {
+      const content = await readFileAsText(file);
+      const fakePath = `web://${file.name}`;
+      fileStore.set(fakePath, { file, content });
+      return fakePath;
+    }
+    return null;
+  },
+
   'file:select-yaml': async () => {
     const file = await selectFile('.yaml,.yml');
     if (file) {

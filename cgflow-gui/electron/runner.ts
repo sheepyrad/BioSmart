@@ -79,7 +79,7 @@ async function openDatabase(dbPath: string): Promise<SqlJsDatabase> {
   return new sql.Database(buffer);
 }
 
-function queryAll<T>(db: SqlJsDatabase, sql: string, params: unknown[] = []): T[] {
+function queryAll<T>(db: SqlJsDatabase, sql: string, params: any[] = []): T[] {
   const stmt = db.prepare(sql);
   stmt.bind(params);
   const results: T[] = [];
@@ -153,6 +153,99 @@ async function readTail(filePath: string, lines = 500): Promise<string[]> {
 
 async function ensureDir(dirPath: string) {
   await fs.mkdir(dirPath, { recursive: true });
+}
+
+const AMINO_ACID_3_TO_1: Record<string, string> = {
+  ALA: 'A',
+  ARG: 'R',
+  ASN: 'N',
+  ASP: 'D',
+  CYS: 'C',
+  GLN: 'Q',
+  GLU: 'E',
+  GLY: 'G',
+  HIS: 'H',
+  ILE: 'I',
+  LEU: 'L',
+  LYS: 'K',
+  MET: 'M',
+  PHE: 'F',
+  PRO: 'P',
+  SER: 'S',
+  THR: 'T',
+  TRP: 'W',
+  TYR: 'Y',
+  VAL: 'V',
+  SEC: 'U',
+  PYL: 'O',
+  MSE: 'M',
+};
+
+interface ParsedProteinSequence {
+  chainId: string;
+  sequence: string;
+}
+
+function parseProteinSequencesFromPdb(pdbContent: string): ParsedProteinSequence[] {
+  const chainResidues = new Map<string, { order: string[]; residues: Map<string, string> }>();
+
+  for (const line of pdbContent.split(/\r?\n/)) {
+    if (!line.startsWith('ATOM')) continue;
+    if (line.length < 27) continue;
+
+    const residueName = line.slice(17, 20).trim().toUpperCase();
+    const chainRaw = line.slice(21, 22).trim();
+    const chainId = chainRaw || 'A';
+    const residueNumber = line.slice(22, 26).trim();
+    const insertionCode = line.slice(26, 27).trim();
+    const residueKey = `${residueNumber}:${insertionCode}`;
+
+    const oneLetter = AMINO_ACID_3_TO_1[residueName];
+    if (!oneLetter) continue;
+
+    let chain = chainResidues.get(chainId);
+    if (!chain) {
+      chain = { order: [], residues: new Map<string, string>() };
+      chainResidues.set(chainId, chain);
+    }
+    if (!chain.residues.has(residueKey)) {
+      chain.order.push(residueKey);
+      chain.residues.set(residueKey, oneLetter);
+    }
+  }
+
+  const sequences: ParsedProteinSequence[] = [];
+  for (const [chainId, chain] of chainResidues.entries()) {
+    const sequence = chain.order.map((key) => chain.residues.get(key) ?? '').join('');
+    if (sequence.length > 0) {
+      sequences.push({ chainId, sequence });
+    }
+  }
+  return sequences;
+}
+
+async function generateBoltzBaseYamlFromPdb(
+  pdbPath: string,
+  outputPath: string,
+  msaPath?: string | null
+): Promise<void> {
+  const pdbContent = await fs.readFile(pdbPath, 'utf-8');
+  const sequences = parseProteinSequencesFromPdb(pdbContent);
+  if (sequences.length === 0) {
+    throw new Error(`Could not extract protein sequence from PDB: ${pdbPath}`);
+  }
+
+  const yamlPayload = {
+    version: 1,
+    sequences: sequences.map((entry) => ({
+      protein: {
+        id: entry.chainId,
+        sequence: entry.sequence,
+        ...(msaPath ? { msa: msaPath } : {}),
+      },
+    })),
+  };
+  await fs.writeFile(outputPath, YAML.stringify(yamlPayload), 'utf-8');
 }
 
 // ============================================================================
@@ -239,7 +332,6 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     resolved.protein_path = (await resolveFile(resolved.protein_path)) ?? '';
     resolved.ref_ligand_path = await resolveFile(resolved.ref_ligand_path);
     resolved.pose_model = (await resolveFile(resolved.pose_model)) ?? resolved.pose_model;
-    resolved.boltz.base_yaml = (await resolveFile(resolved.boltz.base_yaml)) ?? '';
     resolved.boltz.msa_path = await resolveFile(resolved.boltz.msa_path);
 
     return resolved;
@@ -344,6 +436,17 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
 
     const inputsDir = path.join(runMetaDir, 'inputs');
     const resolvedConfig = await resolveConfigPaths(config, inputsDir);
+    if (!resolvedConfig.protein_path) {
+      throw new Error('protein_path is required to generate Boltz base YAML.');
+    }
+    await ensureDir(inputsDir);
+    const generatedBoltzYamlPath = path.join(inputsDir, 'boltz_base.generated.yaml');
+    await generateBoltzBaseYamlFromPdb(
+      resolvedConfig.protein_path,
+      generatedBoltzYamlPath,
+      resolvedConfig.boltz.msa_path
+    );
+    resolvedConfig.boltz.base_yaml = generatedBoltzYamlPath;
     const resolvedConfigPath = path.join(runMetaDir, 'config.resolved.yaml');
     await fs.writeFile(resolvedConfigPath, YAML.stringify(resolvedConfig), 'utf-8');
 
