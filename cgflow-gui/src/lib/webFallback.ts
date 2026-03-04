@@ -3,7 +3,7 @@
  * Used when running in browser without Electron.
  */
 
-import type { IpcChannels, OptConfig, RunInfo, GeneratedObject, BoltzScore, RewardCacheEntry, MoleculeResult } from '@shared/types';
+import type { IpcChannels, OptConfig, GeneratedObject, BoltzScore, RewardCacheEntry, MoleculeResult } from '@shared/types';
 
 // Helper to create a file input and get selection
 function selectFile(accept: string): Promise<File | null> {
@@ -139,6 +139,14 @@ export const webFallback: {
 
   'run:get-checkpoints': async (_runId: string) => {
     return [];
+  },
+
+  'run:import-existing': async (_resultDir: string, _name?: string | null) => {
+    throw new Error('Not available in web mode');
+  },
+
+  'run:get-boltz-metrics': async (_runId: string) => {
+    return null;
   },
 
   // Database queries (return mock data for web demo)

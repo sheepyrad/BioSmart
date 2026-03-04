@@ -191,49 +191,37 @@ export default function App() {
             </TabsList>
           </motion.div>
 
-          <div className="flex-1 overflow-hidden">
-            <AnimatePresence mode="wait">
-              <TabsContent 
-                key="config"
-                value="config" 
-                className="h-full m-0 p-0"
-                forceMount
+          <div className="flex-1 min-h-0">
+            <TabsContent value="config" className="h-full m-0 p-0">
+              <motion.div
+                variants={pageVariants}
+                initial="initial"
+                animate="animate"
+                transition={{ duration: 0.3 }}
+                className="h-full"
               >
-                <motion.div
-                  variants={pageVariants}
-                  initial="initial"
-                  animate={activeTab === 'config' ? 'animate' : 'exit'}
-                  transition={{ duration: 0.3 }}
-                  className={`h-full ${activeTab !== 'config' ? 'hidden' : ''}`}
-                >
-                  <ConfigBuilder
-                    onConfigChange={setCurrentConfig}
-                    onRunStarted={setActiveRun}
-                    activeRun={activeRun}
-                  />
-                </motion.div>
-              </TabsContent>
+                <ConfigBuilder
+                  onConfigChange={setCurrentConfig}
+                  onRunStarted={setActiveRun}
+                  activeRun={activeRun}
+                />
+              </motion.div>
+            </TabsContent>
 
-              <TabsContent 
-                key="dashboard"
-                value="dashboard" 
-                className="h-full m-0 p-0"
-                forceMount
+            <TabsContent value="dashboard" className="h-full m-0 p-0 overflow-y-auto">
+              <motion.div
+                variants={pageVariants}
+                initial="initial"
+                animate="animate"
+                transition={{ duration: 0.3 }}
+                className="min-h-full"
               >
-                <motion.div
-                  variants={pageVariants}
-                  initial="initial"
-                  animate={activeTab === 'dashboard' ? 'animate' : 'exit'}
-                  transition={{ duration: 0.3 }}
-                  className={`h-full ${activeTab !== 'dashboard' ? 'hidden' : ''}`}
-                >
-                  <Dashboard
-                    activeRun={activeRun}
-                    onRunStatusChange={setActiveRun}
-                  />
-                </motion.div>
-              </TabsContent>
-            </AnimatePresence>
+                <Dashboard
+                  activeRun={activeRun}
+                  onRunStatusChange={setActiveRun}
+                />
+              </motion.div>
+            </TabsContent>
           </div>
         </Tabs>
       </main>

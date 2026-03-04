@@ -19,7 +19,9 @@ import { useIpcInvoke } from '@/hooks/useIpc';
 import MolstarViewer from '@/components/MolstarViewer';
 import MoleculeCard from '@/components/MoleculeCard';
 import ReactionPathway from '@/components/ReactionPathway';
-import type { RunInfo, MoleculeResult } from '@shared/types';
+import BoltzMetricsPanel from '@/components/BoltzMetricsPanel';
+import { computeBoltzMetrics } from '@shared/boltzMetrics';
+import type { BoltzMetricInputRow, BoltzMetricSeries, RunInfo, MoleculeResult } from '@shared/types';
 import { 
   Activity, 
   Clock, 
@@ -44,6 +46,9 @@ interface DashboardProps {
   activeRun: RunInfo | null;
   onRunStatusChange: (run: RunInfo) => void;
 }
+
+const DASHBOARD_MOLECULE_LIMIT = 5000;
+const TABLE_PAGE_SIZE = 50;
 
 const kpiVariants = {
   hidden: { opacity: 0, y: 20, scale: 0.95 },
@@ -163,12 +168,22 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
   const [molecules, setMolecules] = useState<MoleculeResult[]>([]);
   const [selectedMolecule, setSelectedMolecule] = useState<MoleculeResult | null>(null);
   const [complexContent, setComplexContent] = useState<string | null>(null);
+  const [localBoltzMetrics, setLocalBoltzMetrics] = useState<BoltzMetricSeries | null>(null);
+  const [isBoltzMetricsLoading, setIsBoltzMetricsLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [tablePage, setTablePage] = useState(1);
 
   const convexMoleculeRows = useQuery(
-    api.molecules.getTopByRun,
+    api.molecules.getByRun,
     isConvexAvailable && selectedRun?.source === 'convex'
-      ? { runId: selectedRun.id, limit: 50 }
+      ? { runId: selectedRun.id as any, orderBy: 'reward' }
+      : 'skip'
+  );
+
+  const convexMetricRows = useQuery(
+    api.molecules.getByRun,
+    isConvexAvailable && selectedRun?.source === 'convex'
+      ? { runId: selectedRun.id as any, orderBy: 'iteration' }
       : 'skip'
   );
 
@@ -212,6 +227,23 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       } as MoleculeResult;
     });
   }, [convexMoleculeRows]);
+
+  const convexMetricInputRows = useMemo<BoltzMetricInputRow[]>(() => {
+    if (!convexMetricRows) return [];
+    return convexMetricRows.map((row: any) => ({
+      iteration: row.iteration ?? 0,
+      smiles: row.smiles,
+      affinityModel1: row.affinityModel1 ?? null,
+      probabilityModel1: row.probabilityModel1 ?? null,
+    }));
+  }, [convexMetricRows]);
+
+  const convexBoltzMetrics = useMemo<BoltzMetricSeries | null>(() => {
+    if (convexMetricInputRows.length === 0) return null;
+    return computeBoltzMetrics(convexMetricInputRows);
+  }, [convexMetricInputRows]);
+
+  const activeBoltzMetrics = selectedRun?.source === 'convex' ? convexBoltzMetrics : localBoltzMetrics;
 
   // Update selected run when activeRun changes
   useEffect(() => {
@@ -289,7 +321,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
 
     const fetchMolecules = async () => {
       try {
-        const results = await invoke('db:get-top-molecules', selectedRun.id, 50);
+        const results = await invoke('db:get-top-molecules', selectedRun.id, DASHBOARD_MOLECULE_LIMIT);
         setMolecules(results);
         if (results.length > 0 && !selectedMolecule) {
           setSelectedMolecule(results[0] ?? null);
@@ -304,6 +336,38 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
 
     return () => clearInterval(interval);
   }, [selectedRun, invoke, selectedMolecule, mappedConvexMolecules]);
+
+  useEffect(() => {
+    if (!selectedRun) {
+      setLocalBoltzMetrics(null);
+      return;
+    }
+
+    if (selectedRun.source === 'convex') {
+      setLocalBoltzMetrics(null);
+      return;
+    }
+
+    let isMounted = true;
+    setIsBoltzMetricsLoading(true);
+    invoke('run:get-boltz-metrics', selectedRun.id)
+      .then((metrics) => {
+        if (!isMounted) return;
+        setLocalBoltzMetrics(metrics);
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        setLocalBoltzMetrics(null);
+      })
+      .finally(() => {
+        if (!isMounted) return;
+        setIsBoltzMetricsLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedRun, invoke]);
 
   useEffect(() => {
     if (!selectedMolecule || !selectedRun) {
@@ -343,8 +407,10 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
         setMolecules(mappedConvexMolecules);
         return;
       }
-      const results = await invoke('db:get-top-molecules', selectedRun.id, 50);
+      const results = await invoke('db:get-top-molecules', selectedRun.id, DASHBOARD_MOLECULE_LIMIT);
       setMolecules(results);
+      const metrics = await invoke('run:get-boltz-metrics', selectedRun.id);
+      setLocalBoltzMetrics(metrics);
     } finally {
       setIsLoading(false);
     }
@@ -354,7 +420,41 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     setSelectedRun(run);
     setSelectedMolecule(null);
     setMolecules([]);
+    setTablePage(1);
   };
+
+  const handleImportRun = useCallback(async () => {
+    try {
+      const dir = await invoke('file:select-directory');
+      if (!dir) return;
+      const importedRun = await invoke('run:import-existing', dir, null);
+      setSelectedRun(importedRun);
+      setSelectedMolecule(null);
+      setMolecules([]);
+      setTablePage(1);
+    } catch (err) {
+      console.error('Failed to import run:', err);
+    }
+  }, [invoke]);
+
+  useEffect(() => {
+    setTablePage(1);
+  }, [selectedRun?.id]);
+
+  const totalPages = Math.max(1, Math.ceil(molecules.length / TABLE_PAGE_SIZE));
+  const safePage = Math.min(tablePage, totalPages);
+  const pageStart = (safePage - 1) * TABLE_PAGE_SIZE;
+  const pageEnd = Math.min(pageStart + TABLE_PAGE_SIZE, molecules.length);
+  const pagedMolecules = useMemo(
+    () => molecules.slice(pageStart, pageEnd),
+    [molecules, pageStart, pageEnd]
+  );
+
+  useEffect(() => {
+    if (tablePage !== safePage) {
+      setTablePage(safePage);
+    }
+  }, [tablePage, safePage]);
 
   const affinityValues = molecules
     .filter((m) => m.boltzScores)
@@ -370,11 +470,12 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
   if (allRuns.length === 0) {
     return (
       <motion.div
-        className="h-full flex items-center justify-center p-6"
+        className="w-full p-6"
         initial={{ opacity: 0, scale: 0.97 }}
         animate={{ opacity: 1, scale: 1 }}
       >
-        <Card className="glass-card card-glow w-full max-w-lg">
+        <div className="mx-auto w-full max-w-lg pt-8">
+        <Card className="glass-card card-glow w-full">
           <CardHeader className="pb-2">
             <div className="flex items-center gap-2">
               <Beaker className="h-5 w-5 text-primary" />
@@ -389,14 +490,19 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
               <FolderOpen className="h-4 w-4" />
               <span>Completed runs will appear here automatically.</span>
             </div>
+            <Button variant="outline" className="w-full gap-2" onClick={handleImportRun}>
+              <FolderOpen className="h-4 w-4" />
+              Import Existing Run Directory
+            </Button>
           </CardContent>
         </Card>
+        </div>
       </motion.div>
     );
   }
 
   return (
-    <div className="h-full flex">
+    <div className="min-h-full flex">
       {/* Left Sidebar: Runs List */}
       <motion.div 
         className="w-64 border-r border-border/50 flex flex-col bg-slate-50/50"
@@ -411,6 +517,15 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
           <p className="text-xs text-muted-foreground mt-1">
             {allRuns.length} run{allRuns.length !== 1 ? 's' : ''}
           </p>
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-3 w-full justify-start gap-2"
+            onClick={handleImportRun}
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
+            Import Existing Run
+          </Button>
         </div>
         
         <ScrollArea className="flex-1">
@@ -450,10 +565,10 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
 
       {/* Main Content */}
       {selectedRun ? (
-        <div className="flex-1 flex flex-col">
+        <div className="flex-1 min-h-0 flex flex-col">
           {/* KPI Header */}
           <motion.div 
-            className="p-4 border-b border-border/50 bg-white/80"
+            className="shrink-0 p-4 border-b border-border/50 bg-white/80"
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.4 }}
@@ -524,11 +639,23 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
             </div>
           </motion.div>
 
+          <motion.div
+            className="shrink-0 px-4 py-3 border-b border-border/50 bg-white/70"
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+          >
+            <BoltzMetricsPanel
+              metrics={activeBoltzMetrics}
+              isLoading={selectedRun.source === 'convex' ? convexMetricRows === undefined : isBoltzMetricsLoading}
+            />
+          </motion.div>
+
           {/* Main Split View */}
-          <div className="flex-1 flex overflow-hidden">
+          <div className="flex-1 min-h-0 flex overflow-hidden">
             {/* Left: Molecule Details */}
             <motion.div 
-              className="w-1/2 border-r border-border/50 flex flex-col"
+              className="w-1/2 min-h-0 border-r border-border/50 flex flex-col"
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ delay: 0.3 }}
@@ -633,7 +760,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
 
             {/* Right: Mol* Viewer */}
             <motion.div 
-              className="w-1/2 flex flex-col bg-white"
+              className="w-1/2 min-h-0 flex flex-col bg-white"
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ delay: 0.4 }}
@@ -656,7 +783,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
 
           {/* Bottom: Molecule Table */}
           <motion.div 
-            className="h-56 border-t border-border/50 bg-white/80"
+            className="shrink-0 border-t border-border/50 bg-white/80"
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.5 }}
@@ -666,11 +793,37 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                 <Beaker className="h-4 w-4 text-primary" />
                 <h3 className="font-semibold text-sm">Generated Molecules</h3>
               </div>
-              <Badge variant="outline" className="text-xs">
-                {molecules.length} total
-              </Badge>
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="text-xs">
+                  {molecules.length} total
+                </Badge>
+                <Badge variant="outline" className="text-xs">
+                  Showing {molecules.length === 0 ? 0 : pageStart + 1}-{pageEnd}
+                </Badge>
+                <Badge variant="secondary" className="text-xs">
+                  Page {safePage}/{totalPages}
+                </Badge>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => setTablePage((p) => Math.max(1, p - 1))}
+                  disabled={safePage <= 1}
+                >
+                  Prev
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => setTablePage((p) => Math.min(totalPages, p + 1))}
+                  disabled={safePage >= totalPages}
+                >
+                  Next
+                </Button>
+              </div>
             </div>
-            <ScrollArea className="h-[calc(100%-40px)]">
+            <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
@@ -684,13 +837,13 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                 </TableHeader>
                 <TableBody>
                   <AnimatePresence>
-                    {molecules.map((mol, idx) => (
+                    {pagedMolecules.map((mol, idx) => (
                       <motion.tr
                         key={mol.smiles}
                         initial={{ opacity: 0, x: -10 }}
                         animate={{ opacity: 1, x: 0 }}
                         exit={{ opacity: 0, x: 10 }}
-                        transition={{ delay: idx * 0.02 }}
+                        transition={{ delay: idx * 0.01 }}
                         className={`cursor-pointer transition-colors ${
                           selectedMolecule?.smiles === mol.smiles 
                             ? 'bg-primary/10 hover:bg-primary/15' 
@@ -698,7 +851,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                         }`}
                         onClick={() => setSelectedMolecule(mol)}
                       >
-                        <TableCell className="font-medium text-sm py-2">{idx + 1}</TableCell>
+                        <TableCell className="font-medium text-sm py-2">{pageStart + idx + 1}</TableCell>
                         <TableCell className="font-mono text-xs truncate max-w-xs py-2">
                           {mol.smiles}
                         </TableCell>
@@ -719,7 +872,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                   </AnimatePresence>
                 </TableBody>
               </Table>
-            </ScrollArea>
+            </div>
           </motion.div>
         </div>
       ) : (

@@ -57,7 +57,7 @@ async function openDatabase(dbPath: string): Promise<SqlJsDatabase> {
 }
 
 // Helper to run a query and get results as objects
-function queryAll<T>(db: SqlJsDatabase, sql: string, params: unknown[] = []): T[] {
+function queryAll<T>(db: SqlJsDatabase, sql: string, params: any[] = []): T[] {
   const stmt = db.prepare(sql);
   stmt.bind(params);
   const results: T[] = [];
@@ -73,18 +73,27 @@ function queryAll<T>(db: SqlJsDatabase, sql: string, params: unknown[] = []): T[
 // ============================================================================
 
 function createWindow() {
+  const preloadPath = app.isPackaged
+    ? path.join(__dirname, 'preload.js')
+    : path.join(__dirname, '../electron/preload.cjs');
+
   mainWindow = new BrowserWindow({
     width: 1600,
     height: 1000,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
 
-  if (process.env.VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
+  const devServerUrl =
+    process.env.VITE_DEV_SERVER_URL ||
+    process.env.ELECTRON_RENDERER_URL ||
+    (!app.isPackaged ? 'http://localhost:5173' : '');
+
+  if (devServerUrl) {
+    mainWindow.loadURL(devServerUrl);
     mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
@@ -99,9 +108,14 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   await initSQL();
+  const parsedRunnerPort = Number.parseInt(
+    process.env.CGFLOW_RUNNER_PORT ?? process.env.VITE_RUNNER_PORT ?? '',
+    10
+  );
   await startRunnerServer({
     dataDir: path.join(app.getPath('userData'), 'runner'),
     convexUrl: process.env.VITE_CONVEX_URL ?? process.env.CONVEX_URL,
+    port: Number.isFinite(parsedRunnerPort) ? parsedRunnerPort : undefined,
   });
   createWindow();
 

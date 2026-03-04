@@ -25,12 +25,29 @@ export default function MolstarViewer({
   onResidueSelect,
   multiSelectMode = true, // Default to always toggle (multi-select)
 }: MolstarViewerProps) {
+  const molstarDisabledByEnv = ['true', '1', 'yes'].includes(
+    String(import.meta.env.VITE_DISABLE_MOLSTAR ?? '').toLowerCase()
+  );
   const containerRef = useRef<HTMLDivElement>(null);
   const pluginRef = useRef<PluginUIContext | null>(null);
   const selectedResiduesRef = useRef<string[]>(selectedResidues);
   const onResidueSelectRef = useRef(onResidueSelect);
   const multiSelectModeRef = useRef(multiSelectMode);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [viewerError, setViewerError] = useState<string | null>(null);
+
+  const supportsWebGL = () => {
+    try {
+      const canvas = document.createElement('canvas');
+      return Boolean(
+        canvas.getContext('webgl2') ||
+          canvas.getContext('webgl') ||
+          canvas.getContext('experimental-webgl')
+      );
+    } catch {
+      return false;
+    }
+  };
 
   // Keep refs in sync with props
   useEffect(() => {
@@ -47,10 +64,19 @@ export default function MolstarViewer({
 
   // Initialize Mol* plugin
   useEffect(() => {
-    if (!containerRef.current || pluginRef.current) return;
+    if (!containerRef.current || pluginRef.current || viewerError) return;
 
     async function init() {
       try {
+        if (molstarDisabledByEnv) {
+          setViewerError('Mol* viewer is disabled by environment setting.');
+          return;
+        }
+        if (!supportsWebGL()) {
+          setViewerError('WebGL is unavailable in this session. 3D viewer is disabled.');
+          return;
+        }
+
         const plugin = await createPluginUI({
           target: containerRef.current!,
           render: renderReact18,
@@ -123,6 +149,7 @@ export default function MolstarViewer({
         setIsInitialized(true);
       } catch (err) {
         console.error('Failed to initialize Mol* plugin:', err);
+        setViewerError('Failed to initialize Mol* viewer (WebGL context unavailable).');
       }
     }
 
@@ -132,11 +159,11 @@ export default function MolstarViewer({
       pluginRef.current?.dispose();
       pluginRef.current = null;
     };
-  }, []);
+  }, [viewerError, molstarDisabledByEnv]);
 
   // Load structure when pdbContent changes
   useEffect(() => {
-    if (!pluginRef.current || !pdbContent || !isInitialized) return;
+    if (molstarDisabledByEnv || !pluginRef.current || !pdbContent || !isInitialized) return;
 
     const loadStructure = async () => {
       const plugin = pluginRef.current!;
@@ -164,11 +191,11 @@ export default function MolstarViewer({
     };
 
     loadStructure();
-  }, [pdbContent, isInitialized]);
+  }, [pdbContent, isInitialized, molstarDisabledByEnv]);
 
   // Highlight selected residues
   useEffect(() => {
-    if (!pluginRef.current || !isInitialized) return;
+    if (molstarDisabledByEnv || !pluginRef.current || !isInitialized) return;
     
     const plugin = pluginRef.current;
     
@@ -225,10 +252,15 @@ export default function MolstarViewer({
     };
 
     highlightResidues();
-  }, [selectedResidues, isInitialized]);
+  }, [selectedResidues, isInitialized, molstarDisabledByEnv]);
 
   return (
     <div className="h-full w-full relative">
+      {viewerError && (
+        <div className="absolute inset-0 flex items-center justify-center bg-white/90 z-20 p-4 text-center">
+          <p className="text-sm text-muted-foreground">{viewerError}</p>
+        </div>
+      )}
       {!pdbContent && (
         <div className="absolute inset-0 flex items-center justify-center bg-white/80 z-10">
           <p className="text-muted-foreground">Load a complex to view structure</p>
