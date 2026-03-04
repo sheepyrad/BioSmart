@@ -1,4 +1,4 @@
-import type { MoleculeResult, OptConfig, RunInfo } from '@shared/types';
+import type { BoltzMetricSeries, MoleculeResult, OptConfig, RunInfo } from '@shared/types';
 
 const DEFAULT_RUNNER_URL =
   import.meta.env.VITE_RUNNER_URL || 'http://127.0.0.1:45731';
@@ -117,6 +117,26 @@ class RunnerClient {
     if (res.status === 404) return null;
     if (!res.ok) throw new Error('Failed to get complex');
     return await res.text();
+  }
+
+  async importExistingRun(resultDir: string, name?: string | null): Promise<RunInfo> {
+    const res = await fetch(`${this.baseUrl}/runs/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resultDir, name: name ?? null }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || 'Failed to import run');
+    }
+    return (await res.json()) as RunInfo;
+  }
+
+  async getBoltzMetrics(runId: string): Promise<BoltzMetricSeries | null> {
+    const res = await fetch(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/boltz-metrics`);
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error('Failed to get boltz metrics');
+    return (await res.json()) as BoltzMetricSeries | null;
   }
 
   on<K extends RunnerEventName>(event: K, handler: (data: RunnerEventMap[K]) => void): () => void {

@@ -8,6 +8,8 @@ import YAML from 'yaml';
 import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
 import { ConvexHttpClient } from 'convex/browser';
 import type {
+  BoltzMetricInputRow,
+  BoltzMetricSeries,
   OptConfig,
   RunInfo,
   MoleculeResult,
@@ -15,6 +17,7 @@ import type {
   BoltzScore,
   TrajectoryStep,
 } from '../shared/types';
+import { computeBoltzMetrics } from '../shared/boltzMetrics';
 import { getConvexSyncService } from './convex-sync';
 import { api } from '../convex/_generated/api';
 
@@ -155,6 +158,55 @@ async function ensureDir(dirPath: string) {
   await fs.mkdir(dirPath, { recursive: true });
 }
 
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function listSubdirectories(parentDir: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(parentDir, { withFileTypes: true });
+    return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+}
+
+async function findFirstMatchingFile(
+  rootDir: string,
+  predicate: (name: string) => boolean,
+  maxDepth = 5
+): Promise<string | null> {
+  const queue: Array<{ dir: string; depth: number }> = [{ dir: rootDir, depth: 0 }];
+
+  while (queue.length > 0) {
+    const item = queue.shift();
+    if (!item) break;
+    let entries: any[];
+    try {
+      entries = await fs.readdir(item.dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(item.dir, entry.name);
+      if (entry.isFile() && predicate(entry.name)) {
+        return fullPath;
+      }
+      if (entry.isDirectory() && item.depth < maxDepth) {
+        queue.push({ dir: fullPath, depth: item.depth + 1 });
+      }
+    }
+  }
+
+  return null;
+}
+
 const AMINO_ACID_3_TO_1: Record<string, string> = {
   ALA: 'A',
   ARG: 'R',
@@ -248,6 +300,198 @@ async function generateBoltzBaseYamlFromPdb(
   await fs.writeFile(outputPath, YAML.stringify(yamlPayload), 'utf-8');
 }
 
+interface ArtifactMolecule {
+  smiles: string;
+  reward: number;
+  oracleIdx: number;
+  molIdx: number;
+  boltzScores: BoltzScore | null;
+}
+
+function normalizeReward(affinity: number | null, probability: number | null): number {
+  if (affinity == null || probability == null) return 0;
+  if (!Number.isFinite(affinity) || !Number.isFinite(probability)) return 0;
+  return ((-affinity + 2.0) / 4.0) * probability;
+}
+
+function toFiniteOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+async function getBoltzMetricRowsFromRunDir(resultDir: string): Promise<BoltzMetricInputRow[]> {
+  const boltzDbPath = path.join(resultDir, 'train', 'boltz_scores_0.db');
+  if (await pathExists(boltzDbPath)) {
+    try {
+      const boltzDb = await openDatabase(boltzDbPath);
+      const rows = queryAll<{
+        iteration: number;
+        smiles: string;
+        affinity_model1: number | null;
+        probability_model1: number | null;
+      }>(
+        boltzDb,
+        `SELECT iteration, smiles, affinity_model1, probability_model1
+         FROM results
+         ORDER BY iteration ASC, rowid ASC`
+      );
+      boltzDb.close();
+      return rows.map((row) => ({
+        iteration: Number(row.iteration ?? 0),
+        smiles: row.smiles,
+        affinityModel1: row.affinity_model1 ?? null,
+        probabilityModel1: row.probability_model1 ?? null,
+      }));
+    } catch {
+      // Fall through to artifact parsing
+    }
+  }
+
+  const artifactRows = await loadMoleculesFromArtifacts(resultDir, Number.MAX_SAFE_INTEGER);
+  return artifactRows
+    .map((row) => ({
+      iteration: row.boltzScores?.iteration ?? row.oracleIdx ?? 0,
+      smiles: row.smiles,
+      affinityModel1: row.boltzScores?.affinity_model1 ?? null,
+      probabilityModel1: row.boltzScores?.probability_model1 ?? null,
+    }))
+    .sort((a, b) => a.iteration - b.iteration || a.smiles.localeCompare(b.smiles));
+}
+
+async function readRunProgressFromLog(resultDir: string): Promise<{ currentStep: number; totalSteps: number }> {
+  const logPath = path.join(resultDir, 'train.log');
+  try {
+    const content = await fs.readFile(logPath, 'utf-8');
+    const matches = content.matchAll(/iteration\s+(\d+)/gi);
+    let maxIteration = 0;
+    for (const match of matches) {
+      const parsed = Number.parseInt(match[1] ?? '0', 10);
+      if (parsed > maxIteration) maxIteration = parsed;
+    }
+    return { currentStep: maxIteration, totalSteps: maxIteration };
+  } catch {
+    return { currentStep: 0, totalSteps: 0 };
+  }
+}
+
+async function getLatestCheckpoint(resultDir: string): Promise<string | null> {
+  try {
+    const files = await fs.readdir(resultDir);
+    const checkpoints = files
+      .filter((file) => file.startsWith('model_state_') && file.endsWith('.pt'))
+      .sort();
+    if (checkpoints.length === 0) return null;
+    const latest = checkpoints[checkpoints.length - 1];
+    return latest ? path.join(resultDir, latest) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadMoleculesFromArtifacts(resultDir: string, limit: number): Promise<MoleculeResult[]> {
+  const boltzRoot = path.join(resultDir, 'boltz_cofold');
+  const oracleDirs = await listSubdirectories(boltzRoot);
+  if (oracleDirs.length === 0) return [];
+
+  const parsedRows: ArtifactMolecule[] = [];
+
+  for (const oracleDir of oracleDirs) {
+    const oracleMatch = oracleDir.match(/^oracle(\d+)$/);
+    if (!oracleMatch?.[1]) continue;
+    const oracleIdx = Number.parseInt(oracleMatch[1], 10);
+    if (!Number.isFinite(oracleIdx)) continue;
+
+    const oraclePath = path.join(boltzRoot, oracleDir);
+    const molDirs = await listSubdirectories(oraclePath);
+    for (const molDir of molDirs) {
+      const molMatch = molDir.match(/^mol_(\d+)$/);
+      if (!molMatch?.[1]) continue;
+      const molIdx = Number.parseInt(molMatch[1], 10);
+      if (!Number.isFinite(molIdx)) continue;
+
+      const molPath = path.join(oraclePath, molDir);
+      const yamlPath = path.join(molPath, `mol_${molIdx}.yaml`);
+      let smiles = '';
+      if (await pathExists(yamlPath)) {
+        try {
+          const yamlContent = await fs.readFile(yamlPath, 'utf-8');
+          const parsedYaml = YAML.parse(yamlContent) as any;
+          const sequences = Array.isArray(parsedYaml?.sequences) ? parsedYaml.sequences : [];
+          const ligandEntry = sequences.find(
+            (entry: any) => entry && typeof entry === 'object' && entry.ligand?.smiles
+          );
+          smiles = ligandEntry?.ligand?.smiles ?? '';
+        } catch {
+          smiles = '';
+        }
+      }
+      if (!smiles) continue;
+
+      const predictionBase = path.join(
+        molPath,
+        'boltz_output',
+        `boltz_results_mol_${molIdx}`,
+        'predictions',
+        `mol_${molIdx}`
+      );
+      const affinityPath = path.join(predictionBase, `affinity_mol_${molIdx}.json`);
+
+      let affinityModel1: number | null = null;
+      let probabilityModel1: number | null = null;
+      let affinityEnsemble: number | null = null;
+      let probabilityEnsemble: number | null = null;
+      let affinityModel2: number | null = null;
+      let probabilityModel2: number | null = null;
+      if (await pathExists(affinityPath)) {
+        try {
+          const affinityRaw = await fs.readFile(affinityPath, 'utf-8');
+          const affinity = JSON.parse(affinityRaw) as Record<string, unknown>;
+          affinityEnsemble = toFiniteOrNull(affinity.affinity_pred_value);
+          probabilityEnsemble = toFiniteOrNull(affinity.affinity_probability_binary);
+          affinityModel1 = toFiniteOrNull(affinity.affinity_pred_value1) ?? affinityEnsemble;
+          probabilityModel1 = toFiniteOrNull(affinity.affinity_probability_binary1) ?? probabilityEnsemble;
+          affinityModel2 = toFiniteOrNull(affinity.affinity_pred_value2);
+          probabilityModel2 = toFiniteOrNull(affinity.affinity_probability_binary2);
+        } catch {
+          // Keep nulls
+        }
+      }
+
+      const reward = normalizeReward(affinityModel1, probabilityModel1);
+      parsedRows.push({
+        smiles,
+        reward,
+        oracleIdx,
+        molIdx,
+        boltzScores:
+          affinityModel1 != null || probabilityModel1 != null
+            ? {
+                iteration: oracleIdx,
+                smiles,
+                docking_score: 0,
+                affinity_ensemble: affinityEnsemble ?? 0,
+                probability_ensemble: probabilityEnsemble ?? 0,
+                affinity_model1: affinityModel1 ?? 0,
+                probability_model1: probabilityModel1 ?? 0,
+                affinity_model2: affinityModel2 ?? 0,
+                probability_model2: probabilityModel2 ?? 0,
+              }
+            : null,
+      });
+    }
+  }
+
+  parsedRows.sort((a, b) => b.reward - a.reward);
+  return parsedRows.slice(0, limit).map((row) => ({
+    smiles: row.smiles,
+    reward: row.reward,
+    trajectory: [],
+    boltzScores: row.boltzScores,
+    complexPath: null,
+    oracleIdx: row.oracleIdx,
+    molIdx: row.molIdx,
+  }));
+}
+
 // ============================================================================
 // Runner core
 // ============================================================================
@@ -268,6 +512,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     outputs: new Map(),
     processes: new Map(),
   };
+  const artifactMapCache = new Map<string, Map<string, MoleculeResult>>();
 
   const sseClients = new Set<http.ServerResponse>();
 
@@ -733,6 +978,41 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     return run;
   }
 
+  async function importExistingRun(resultDir: string, name?: string | null): Promise<RunRecord> {
+    const stats = await fs.stat(resultDir).catch(() => null);
+    if (!stats?.isDirectory()) {
+      throw new Error(`Result directory does not exist: ${resultDir}`);
+    }
+
+    const runId = generateRunId();
+    const progress = await readRunProgressFromLog(resultDir);
+    const checkpointPath = await getLatestCheckpoint(resultDir);
+    const startedAt = new Date(stats.mtimeMs).toISOString();
+    const configPathCandidate = path.join(resultDir, 'config.yaml');
+
+    const run: RunRecord = {
+      id: runId,
+      name: name?.trim() || `Imported ${path.basename(resultDir)}`,
+      configPath: (await pathExists(configPathCandidate)) ? configPathCandidate : resultDir,
+      resultDir,
+      status: 'completed',
+      currentStep: progress.currentStep,
+      totalSteps: progress.totalSteps,
+      startedAt,
+      lastUpdatedAt: new Date().toISOString(),
+      checkpointPath,
+      error: null,
+      pid: null,
+      source: 'local',
+      logPath: path.join(resultDir, 'train.log'),
+    };
+
+    state.runs.set(run.id, run);
+    await persistRuns();
+    broadcast('run:status-changed', run);
+    return run;
+  }
+
   async function loadTrajectoryMap(trainDir: string, smiles: string[]): Promise<Map<string, string>> {
     const trajMap = new Map<string, string>();
     if (smiles.length === 0) return trajMap;
@@ -802,7 +1082,9 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       );
       rewardDb.close();
 
-      if (topEntries.length === 0) return results;
+      if (topEntries.length === 0) {
+        return await loadMoleculesFromArtifacts(run.resultDir, limit);
+      }
 
       // Get trajectory info (scan all generated_objs_*.db)
       const trajMap = await loadTrajectoryMap(
@@ -867,10 +1149,51 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
         });
       }
     } catch {
-      return [];
+      return await loadMoleculesFromArtifacts(run.resultDir, limit);
     }
 
+    if (results.length === 0) {
+      return await loadMoleculesFromArtifacts(run.resultDir, limit);
+    }
+
+    const needsArtifactLookup = results.some(
+      (row) => row.oracleIdx == null || row.molIdx == null || row.boltzScores == null
+    );
+    if (needsArtifactLookup) {
+      let artifactMap = artifactMapCache.get(run.resultDir);
+      if (!artifactMap) {
+        const artifactRows = await loadMoleculesFromArtifacts(run.resultDir, Number.MAX_SAFE_INTEGER);
+        artifactMap = new Map(artifactRows.map((row) => [row.smiles, row]));
+        artifactMapCache.set(run.resultDir, artifactMap);
+      }
+
+      for (const row of results) {
+        const artifact = artifactMap.get(row.smiles);
+        if (!artifact) continue;
+        if (row.oracleIdx == null && artifact.oracleIdx != null) {
+          row.oracleIdx = artifact.oracleIdx;
+        }
+        if (row.molIdx == null && artifact.molIdx != null) {
+          row.molIdx = artifact.molIdx;
+        }
+        if (row.boltzScores == null && artifact.boltzScores) {
+          row.boltzScores = artifact.boltzScores;
+          if (!Number.isFinite(row.reward) || row.reward === 0) {
+            row.reward = artifact.reward;
+          }
+        }
+      }
+    }
     return results;
+  }
+
+  async function getBoltzMetrics(runId: string): Promise<BoltzMetricSeries | null> {
+    const run = state.runs.get(runId);
+    if (!run) return null;
+
+    const rows = await getBoltzMetricRowsFromRunDir(run.resultDir);
+    if (rows.length === 0) return null;
+    return computeBoltzMetrics(rows);
   }
 
   async function getComplexContent(runId: string, oracleIdx: number, molIdx: number): Promise<string | null> {
@@ -884,10 +1207,13 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       'boltz_output'
     );
     try {
-      const files = await fs.readdir(basePath);
-      const structureFile = files.find((f) => f.endsWith('.cif') || f.endsWith('.pdb'));
-      if (structureFile) {
-        return await fs.readFile(path.join(basePath, structureFile), 'utf-8');
+      const structurePath = await findFirstMatchingFile(
+        basePath,
+        (name) => name.endsWith('.cif') || name.endsWith('.pdb'),
+        6
+      );
+      if (structurePath) {
+        return await fs.readFile(structurePath, 'utf-8');
       }
     } catch {
       return null;
@@ -986,6 +1312,18 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       return;
     }
 
+    if (req.method === 'POST' && url.pathname === '/runs/import') {
+      const body = await readBody();
+      const payload = JSON.parse(body) as { resultDir: string; name?: string | null };
+      try {
+        const run = await importExistingRun(payload.resultDir, payload.name);
+        sendJson(200, run);
+      } catch (err) {
+        sendText(500, err instanceof Error ? err.message : 'Failed to import run');
+      }
+      return;
+    }
+
     if (pathParts[0] === 'runs' && pathParts[1]) {
       const runId = pathParts[1];
 
@@ -1068,6 +1406,16 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
         const limit = Number(url.searchParams.get('limit') ?? '50');
         const molecules = await getTopMolecules(runId, limit);
         sendJson(200, molecules);
+        return;
+      }
+
+      if (req.method === 'GET' && pathParts[2] === 'boltz-metrics') {
+        const metrics = await getBoltzMetrics(runId);
+        if (!metrics) {
+          sendJson(404, { error: 'Boltz metrics not found' });
+          return;
+        }
+        sendJson(200, metrics);
         return;
       }
 

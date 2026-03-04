@@ -6,7 +6,10 @@ import { runnerClient } from '@/lib/runnerClient';
 // Typed IPC invoke hook - uses Electron API if available, falls back to web implementation
 export function useIpcInvoke() {
   return useCallback(
-    async <K extends keyof IpcChannels>(channel: K, ...args: Parameters<IpcChannels[K]>) => {
+    async <K extends keyof IpcChannels>(
+      channel: K,
+      ...args: Parameters<IpcChannels[K]>
+    ): Promise<Awaited<ReturnType<IpcChannels[K]>>> => {
       const runnerChannels: Array<keyof IpcChannels> = [
         'run:start',
         'run:stop',
@@ -14,6 +17,8 @@ export function useIpcInvoke() {
         'run:get-status',
         'run:list',
         'run:get-checkpoints',
+        'run:import-existing',
+        'run:get-boltz-metrics',
         'db:get-top-molecules',
         'boltz:get-complex',
       ];
@@ -25,43 +30,54 @@ export function useIpcInvoke() {
             case 'run:start':
               return runnerClient.startRun(
                 args[0] as Parameters<IpcChannels['run:start']>[0]
-              ) as ReturnType<IpcChannels[K]>;
+              ) as Awaited<ReturnType<IpcChannels[K]>>;
             case 'run:stop':
-              return runnerClient.stopRun(args[0] as string) as ReturnType<IpcChannels[K]>;
+              return runnerClient.stopRun(args[0] as string) as Awaited<ReturnType<IpcChannels[K]>>;
             case 'run:resume':
               return runnerClient.resumeRun(
                 args[0] as string,
                 args[1] as string,
                 args[2] as number | undefined
-              ) as ReturnType<IpcChannels[K]>;
+              ) as Awaited<ReturnType<IpcChannels[K]>>;
             case 'run:get-status':
-              return runnerClient.getRun(args[0] as string) as ReturnType<IpcChannels[K]>;
+              return runnerClient.getRun(args[0] as string) as Awaited<ReturnType<IpcChannels[K]>>;
             case 'run:list':
-              return runnerClient.listRuns() as ReturnType<IpcChannels[K]>;
+              return runnerClient.listRuns() as Awaited<ReturnType<IpcChannels[K]>>;
             case 'run:get-checkpoints':
-              return runnerClient.getCheckpoints(args[0] as string) as ReturnType<IpcChannels[K]>;
+              return runnerClient.getCheckpoints(args[0] as string) as Awaited<ReturnType<IpcChannels[K]>>;
+            case 'run:import-existing':
+              return runnerClient.importExistingRun(
+                args[0] as string,
+                (args[1] as string | null | undefined) ?? null
+              ) as Awaited<ReturnType<IpcChannels[K]>>;
+            case 'run:get-boltz-metrics':
+              return runnerClient.getBoltzMetrics(args[0] as string) as Awaited<ReturnType<IpcChannels[K]>>;
             case 'db:get-top-molecules':
               return runnerClient.getTopMolecules(
                 args[0] as string,
                 args[1] as number | undefined
-              ) as ReturnType<IpcChannels[K]>;
+              ) as Awaited<ReturnType<IpcChannels[K]>>;
             case 'boltz:get-complex':
               return runnerClient.getComplex(
                 args[0] as string,
                 args[1] as number,
                 args[2] as number
-              ) as ReturnType<IpcChannels[K]>;
+              ) as Awaited<ReturnType<IpcChannels[K]>>;
             default:
               break;
           }
         }
       }
 
+      if (channel === 'run:import-existing' || channel === 'run:get-boltz-metrics') {
+        throw new Error('Runner server is not available for this operation.');
+      }
+
       if (isElectron()) {
-        return window.electronAPI.invoke(channel, ...args);
+        return await window.electronAPI.invoke(channel, ...args);
       }
       // Use web fallback
-      return webFallback[channel](...args) as ReturnType<IpcChannels[K]>;
+      return await webFallback[channel](...args);
     },
     []
   );
@@ -116,7 +132,7 @@ export function useRunStatus(runId: string | null) {
     }
 
     // Initial fetch
-    invoke('run:get-status', runId).then(setStatus);
+    invoke('run:get-status', runId).then((value) => setStatus(value));
 
     let unsubscribe: (() => void) | undefined;
     const setup = async () => {

@@ -97,6 +97,22 @@ export const BoltzScoreSchema = z.object({
 
 export type BoltzScore = z.infer<typeof BoltzScoreSchema>;
 
+export interface BoltzMetricInputRow {
+  iteration: number;
+  smiles: string;
+  affinityModel1: number | null;
+  probabilityModel1: number | null;
+}
+
+export interface BoltzMetricSeries {
+  pointCount: number;
+  bestProb: number[];
+  top10AvgProb: number[];
+  top100AvgProb: number[];
+  thresholdCounts: Record<string, number[]>;
+  thresholds: number[];
+}
+
 export const RewardCacheEntrySchema = z.object({
   smiles: z.string(),
   reward: z.number(),
@@ -160,6 +176,8 @@ export interface IpcChannels {
   'run:get-status': (runId: string) => Promise<RunInfo | null>;
   'run:list': () => Promise<RunInfo[]>;
   'run:get-checkpoints': (runId: string) => Promise<string[]>;
+  'run:import-existing': (resultDir: string, name?: string | null) => Promise<RunInfo>;
+  'run:get-boltz-metrics': (runId: string) => Promise<BoltzMetricSeries | null>;
 
   // Database queries
   'db:get-generated-objects': (dbPath: string, limit?: number, offset?: number) => Promise<GeneratedObject[]>;

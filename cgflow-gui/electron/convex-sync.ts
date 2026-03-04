@@ -2,6 +2,7 @@ import { ConvexHttpClient } from 'convex/browser';
 import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
 import path from 'path';
 import fs from 'fs/promises';
+import YAML from 'yaml';
 import type {
   BoltzScore,
   RewardCacheEntry,
@@ -23,7 +24,7 @@ async function openDatabase(dbPath: string): Promise<SqlJsDatabase> {
   return new sql.Database(buffer);
 }
 
-function queryAll<T>(db: SqlJsDatabase, sql: string, params: unknown[] = []): T[] {
+function queryAll<T>(db: SqlJsDatabase, sql: string, params: any[] = []): T[] {
   const stmt = db.prepare(sql);
   stmt.bind(params);
   const results: T[] = [];
@@ -32,6 +33,34 @@ function queryAll<T>(db: SqlJsDatabase, sql: string, params: unknown[] = []): T[
   }
   stmt.free();
   return results;
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function listSubdirectories(parentDir: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(parentDir, { withFileTypes: true });
+    return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+}
+
+function normalizeReward(affinity: number | null, probability: number | null): number {
+  if (affinity == null || probability == null) return 0;
+  if (!Number.isFinite(affinity) || !Number.isFinite(probability)) return 0;
+  return ((-affinity + 2.0) / 4.0) * probability;
+}
+
+function toFiniteOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 async function loadTrajectoryMap(trainDir: string, smiles: string[]): Promise<Map<string, string>> {
@@ -83,6 +112,106 @@ async function loadTrajectoryMap(trainDir: string, smiles: string[]): Promise<Ma
   }
 
   return trajMap;
+}
+
+async function loadArtifactMolecules(resultDir: string, limit: number) {
+  const boltzRoot = path.join(resultDir, 'boltz_cofold');
+  const oracleDirs = await listSubdirectories(boltzRoot);
+  if (oracleDirs.length === 0) return [];
+
+  const rows: Array<{
+    smiles: string;
+    reward: number;
+    affinityEnsemble: number | null;
+    probabilityEnsemble: number | null;
+    affinityModel1: number | null;
+    probabilityModel1: number | null;
+    affinityModel2: number | null;
+    probabilityModel2: number | null;
+    oracleIdx: number | null;
+    molIdx: number | null;
+    iteration: number;
+  }> = [];
+
+  for (const oracleDir of oracleDirs) {
+    const oracleMatch = oracleDir.match(/^oracle(\d+)$/);
+    if (!oracleMatch?.[1]) continue;
+    const oracleIdx = Number.parseInt(oracleMatch[1], 10);
+    if (!Number.isFinite(oracleIdx)) continue;
+
+    const oraclePath = path.join(boltzRoot, oracleDir);
+    const molDirs = await listSubdirectories(oraclePath);
+    for (const molDir of molDirs) {
+      const molMatch = molDir.match(/^mol_(\d+)$/);
+      if (!molMatch?.[1]) continue;
+      const molIdx = Number.parseInt(molMatch[1], 10);
+      if (!Number.isFinite(molIdx)) continue;
+
+      const yamlPath = path.join(oraclePath, molDir, `mol_${molIdx}.yaml`);
+      if (!(await pathExists(yamlPath))) continue;
+
+      let smiles = '';
+      try {
+        const yamlRaw = await fs.readFile(yamlPath, 'utf-8');
+        const parsed = YAML.parse(yamlRaw) as any;
+        const sequences = Array.isArray(parsed?.sequences) ? parsed.sequences : [];
+        const ligand = sequences.find((entry: any) => entry?.ligand?.smiles);
+        smiles = ligand?.ligand?.smiles ?? '';
+      } catch {
+        smiles = '';
+      }
+      if (!smiles) continue;
+
+      const predictionBase = path.join(
+        oraclePath,
+        molDir,
+        'boltz_output',
+        `boltz_results_mol_${molIdx}`,
+        'predictions',
+        `mol_${molIdx}`
+      );
+      const affinityPath = path.join(predictionBase, `affinity_mol_${molIdx}.json`);
+
+      let affinityEnsemble: number | null = null;
+      let probabilityEnsemble: number | null = null;
+      let affinityModel1: number | null = null;
+      let probabilityModel1: number | null = null;
+      let affinityModel2: number | null = null;
+      let probabilityModel2: number | null = null;
+
+      if (await pathExists(affinityPath)) {
+        try {
+          const raw = await fs.readFile(affinityPath, 'utf-8');
+          const affinity = JSON.parse(raw) as Record<string, unknown>;
+          affinityEnsemble = toFiniteOrNull(affinity.affinity_pred_value);
+          probabilityEnsemble = toFiniteOrNull(affinity.affinity_probability_binary);
+          affinityModel1 = toFiniteOrNull(affinity.affinity_pred_value1) ?? affinityEnsemble;
+          probabilityModel1 = toFiniteOrNull(affinity.affinity_probability_binary1) ?? probabilityEnsemble;
+          affinityModel2 = toFiniteOrNull(affinity.affinity_pred_value2);
+          probabilityModel2 = toFiniteOrNull(affinity.affinity_probability_binary2);
+        } catch {
+          // Keep nulls
+        }
+      }
+
+      rows.push({
+        smiles,
+        reward: normalizeReward(affinityModel1, probabilityModel1),
+        affinityEnsemble,
+        probabilityEnsemble,
+        affinityModel1,
+        probabilityModel1,
+        affinityModel2,
+        probabilityModel2,
+        oracleIdx,
+        molIdx,
+        iteration: oracleIdx,
+      });
+    }
+  }
+
+  rows.sort((a, b) => b.reward - a.reward);
+  return rows.slice(0, limit);
 }
 
 /**
@@ -211,84 +340,110 @@ export class ConvexSyncService {
     const rewardCachePath = path.join(resultDir, 'boltz_reward_cache.db');
     const trainDir = path.join(resultDir, 'train');
 
-    // Check if reward cache exists
-    try {
-      await fs.access(rewardCachePath);
-    } catch {
-      return; // No data yet
-    }
+    let molecules: Array<{
+      runId: any;
+      smiles: string;
+      reward: number;
+      trajectory: string;
+      affinityEnsemble: number | null;
+      probabilityEnsemble: number | null;
+      affinityModel1: number | null;
+      probabilityModel1: number | null;
+      affinityModel2: number | null;
+      probabilityModel2: number | null;
+      oracleIdx: number | null;
+      molIdx: number | null;
+      complexFileId: null;
+      iteration: number;
+    }> = [];
 
-    // Read reward cache
-    const rewardDb = await openDatabase(rewardCachePath);
-    const entries = queryAll<RewardCacheEntry>(
-      rewardDb,
-      `SELECT smiles, reward, info FROM entries ORDER BY reward DESC LIMIT ?`,
-      [limit]
-    );
-    rewardDb.close();
-
-    if (entries.length === 0) return;
-
-    // Get trajectory info (scan all generated_objs_*.db)
-    const trajMap = await loadTrajectoryMap(
-      trainDir,
-      entries.map((e) => e.smiles)
-    );
-
-    // Get boltz scores
-    let boltzMap = new Map<string, BoltzScore>();
-    const boltzDbPath = path.join(trainDir, 'boltz_scores_0.db');
-    
-    try {
-      const boltzDb = await openDatabase(boltzDbPath);
-      const placeholders = entries.map(() => '?').join(',');
-      const boltzRows = queryAll<BoltzScore>(
-        boltzDb,
-        `SELECT * FROM results WHERE smiles IN (${placeholders})`,
-        entries.map((e) => e.smiles)
+    if (await pathExists(rewardCachePath)) {
+      const rewardDb = await openDatabase(rewardCachePath);
+      const entries = queryAll<RewardCacheEntry>(
+        rewardDb,
+        `SELECT smiles, reward, info FROM entries ORDER BY reward DESC LIMIT ?`,
+        [limit]
       );
-      boltzDb.close();
-      boltzMap = new Map(boltzRows.map((r) => [r.smiles, r]));
-    } catch {
-      // DB may not exist yet
-    }
+      rewardDb.close();
 
-    // Extract oracle and molecule indices from reward cache info
-    const indexMap = new Map<string, { oracleIdx: number | null; molIdx: number | null }>();
-    for (const entry of entries) {
-      if (!entry.info) continue;
-      try {
-        const parsed = JSON.parse(entry.info) as { oracle_idx?: number; mol_idx?: number };
-        indexMap.set(entry.smiles, {
-          oracleIdx: typeof parsed.oracle_idx === 'number' ? parsed.oracle_idx : null,
-          molIdx: typeof parsed.mol_idx === 'number' ? parsed.mol_idx : null,
+      if (entries.length > 0) {
+        const trajMap = await loadTrajectoryMap(
+          trainDir,
+          entries.map((e) => e.smiles)
+        );
+
+        let boltzMap = new Map<string, BoltzScore>();
+        const boltzDbPath = path.join(trainDir, 'boltz_scores_0.db');
+        try {
+          const boltzDb = await openDatabase(boltzDbPath);
+          const placeholders = entries.map(() => '?').join(',');
+          const boltzRows = queryAll<BoltzScore>(
+            boltzDb,
+            `SELECT * FROM results WHERE smiles IN (${placeholders})`,
+            entries.map((e) => e.smiles)
+          );
+          boltzDb.close();
+          boltzMap = new Map(boltzRows.map((r) => [r.smiles, r]));
+        } catch {
+          // DB may not exist yet
+        }
+
+        const indexMap = new Map<string, { oracleIdx: number | null; molIdx: number | null }>();
+        for (const entry of entries) {
+          if (!entry.info) continue;
+          try {
+            const parsed = JSON.parse(entry.info) as { oracle_idx?: number; mol_idx?: number };
+            indexMap.set(entry.smiles, {
+              oracleIdx: typeof parsed.oracle_idx === 'number' ? parsed.oracle_idx : null,
+              molIdx: typeof parsed.mol_idx === 'number' ? parsed.mol_idx : null,
+            });
+          } catch {
+            // Ignore malformed JSON
+          }
+        }
+
+        molecules = entries.map((entry) => {
+          const boltz = boltzMap.get(entry.smiles);
+          const idx = indexMap.get(entry.smiles);
+          return {
+            runId: convexRunId as any,
+            smiles: entry.smiles,
+            reward: entry.reward,
+            trajectory: trajMap.get(entry.smiles) || '[]',
+            affinityEnsemble: boltz?.affinity_ensemble ?? null,
+            probabilityEnsemble: boltz?.probability_ensemble ?? null,
+            affinityModel1: boltz?.affinity_model1 ?? null,
+            probabilityModel1: boltz?.probability_model1 ?? null,
+            affinityModel2: boltz?.affinity_model2 ?? null,
+            probabilityModel2: boltz?.probability_model2 ?? null,
+            oracleIdx: idx?.oracleIdx ?? null,
+            molIdx: idx?.molIdx ?? null,
+            complexFileId: null,
+            iteration: boltz?.iteration ?? 0,
+          };
         });
-      } catch {
-        // Ignore malformed JSON
       }
     }
 
-    // Prepare molecules for batch upsert
-    const molecules = entries.map((entry) => {
-      const boltz = boltzMap.get(entry.smiles);
-      const idx = indexMap.get(entry.smiles);
-      return {
-        runId: convexRunId as any, // Type assertion needed for Convex ID
-        smiles: entry.smiles,
-        reward: entry.reward,
-        trajectory: trajMap.get(entry.smiles) || '[]',
-        affinityEnsemble: boltz?.affinity_ensemble ?? null,
-        probabilityEnsemble: boltz?.probability_ensemble ?? null,
-        affinityModel1: boltz?.affinity_model1 ?? null,
-        probabilityModel1: boltz?.probability_model1 ?? null,
-        affinityModel2: boltz?.affinity_model2 ?? null,
-        probabilityModel2: boltz?.probability_model2 ?? null,
-        oracleIdx: idx?.oracleIdx ?? null,
-        molIdx: idx?.molIdx ?? null,
+    if (molecules.length === 0) {
+      const artifactRows = await loadArtifactMolecules(resultDir, limit);
+      molecules = artifactRows.map((row) => ({
+        runId: convexRunId as any,
+        smiles: row.smiles,
+        reward: row.reward,
+        trajectory: '[]',
+        affinityEnsemble: row.affinityEnsemble,
+        probabilityEnsemble: row.probabilityEnsemble,
+        affinityModel1: row.affinityModel1,
+        probabilityModel1: row.probabilityModel1,
+        affinityModel2: row.affinityModel2,
+        probabilityModel2: row.probabilityModel2,
+        oracleIdx: row.oracleIdx,
+        molIdx: row.molIdx,
         complexFileId: null,
-        iteration: boltz?.iteration ?? 0,
-      };
-    });
+        iteration: row.iteration,
+      }));
+    }
 
     if (molecules.length === 0) return;
 
@@ -352,16 +507,16 @@ export class ConvexSyncService {
         headers: { 'Content-Type': 'application/octet-stream' },
         body: content,
       });
-      const { storageId } = await response.json();
+      const uploadResponse = (await response.json()) as { storageId: string };
 
       // Create file record
       const fileId = await this.client.mutation(api.files.create, {
         name: fileName,
         type: fileType,
         fieldType: 'other',
-        storageId,
+        storageId: uploadResponse.storageId as any,
         size: content.length,
-        runId: runId || null,
+        runId: (runId as any) || null,
       });
 
       return fileId as any;
