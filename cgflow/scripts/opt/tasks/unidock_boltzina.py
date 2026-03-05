@@ -21,7 +21,7 @@ from .docking import BaseDockingTask
 def validate_poses_with_posebusters(
     docked_sdf_path: Path,
     receptor_pdb_path: Path,
-    conda_env: str = "cgflow-env",
+    conda_env: str = "cgflow",
 ) -> list[int]:
     """
     Validate docked poses using PoseBusters.
@@ -227,7 +227,7 @@ class UniDockBoltzinaTask(BaseDockingTask):
             passing_sdf_indices = validate_poses_with_posebusters(
                 docked_sdf_path=output_result_path,
                 receptor_pdb_path=receptor_no_b_path,
-                conda_env="cgflow-env",
+                conda_env="cgflow",
             )
         else:
             print("No valid docked molecules to validate with PoseBusters")

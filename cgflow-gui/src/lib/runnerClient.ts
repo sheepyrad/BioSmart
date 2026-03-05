@@ -114,6 +114,16 @@ class RunnerClient {
     return data.lines;
   }
 
+  async deleteRun(runId: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/runs/${encodeURIComponent(runId)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || 'Failed to delete run');
+    }
+  }
+
   async getTopMolecules(runId: string, limit = 50): Promise<MoleculeResult[]> {
     const res = await fetch(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/molecules?limit=${limit}`);
     if (!res.ok) throw new Error('Failed to get molecules');

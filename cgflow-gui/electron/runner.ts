@@ -37,6 +37,9 @@ function spawnCgflowPython(args: string[], options: SpawnOptions): ChildProcess 
 }
 
 const DEFAULT_PORT = 45731;
+const RESULT_DIR_INITIAL_DETECTION_ATTEMPTS = 30;
+const RESULT_DIR_INITIAL_DETECTION_INTERVAL_MS = 1000;
+const RESULT_DIR_REFRESH_INTERVAL_MS = 10000;
 
 interface RunnerOptions {
   dataDir?: string;
@@ -139,6 +142,64 @@ function formatTimestamp(date = new Date()): string {
 
 function generateRunId(): string {
   return `run_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function formatCondaCommand(args: string[]): string {
+  const full = ['conda', 'run', '--no-capture-output', '-n', CONDA_ENV_NAME, 'python', ...args];
+  return full.map(shellQuote).join(' ');
+}
+
+function summarizeFailureFromOutput(
+  outputLines: string[],
+  maxLines = 20
+): string[] {
+  if (outputLines.length === 0) return [];
+  const stderrLines = outputLines.filter((line) => line.includes('[stderr]'));
+  let tracebackStart = -1;
+  for (let i = outputLines.length - 1; i >= 0; i -= 1) {
+    if (/Traceback \(most recent call last\):/i.test(outputLines[i] ?? '')) {
+      tracebackStart = i;
+      break;
+    }
+  }
+
+  if (tracebackStart >= 0) {
+    return outputLines.slice(tracebackStart).slice(-maxLines);
+  }
+  if (stderrLines.length > 0) {
+    return stderrLines.slice(-maxLines);
+  }
+  return outputLines.slice(-maxLines);
+}
+
+function buildFailureMessage(params: {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  outputLines: string[];
+  logPath: string | null | undefined;
+  command: string;
+}): string {
+  const parts: string[] = [];
+  const statusCore =
+    params.code !== null
+      ? `exit code ${params.code}`
+      : `signal ${params.signal ?? 'unknown'}`;
+  parts.push(`Training process failed (${statusCore}).`);
+  if (params.logPath) {
+    parts.push(`Log: ${params.logPath}`);
+  }
+  parts.push(`Command: ${params.command}`);
+
+  const snippet = summarizeFailureFromOutput(params.outputLines);
+  if (snippet.length > 0) {
+    parts.push('Recent output:');
+    parts.push(...snippet);
+  }
+  return parts.join('\n');
 }
 
 function isConvexPath(value: string | null | undefined): boolean {
@@ -498,8 +559,20 @@ function toFiniteOrNull(value: unknown): number | null {
 }
 
 async function getBoltzMetricRowsFromRunDir(resultDir: string): Promise<BoltzMetricInputRow[]> {
-  const boltzDbPath = path.join(resultDir, 'train', 'boltz_scores_0.db');
-  if (await pathExists(boltzDbPath)) {
+  const trainDir = path.join(resultDir, 'train');
+  let boltzFiles: string[] = [];
+  try {
+    const entries = await fs.readdir(trainDir);
+    boltzFiles = entries
+      .filter((name) => name.startsWith('boltz_scores_') && name.endsWith('.db'))
+      .sort();
+  } catch {
+    boltzFiles = [];
+  }
+
+  const metricRows: BoltzMetricInputRow[] = [];
+  for (const boltzFile of boltzFiles) {
+    const boltzDbPath = path.join(trainDir, boltzFile);
     try {
       const boltzDb = await openDatabase(boltzDbPath);
       const rows = queryAll<{
@@ -514,15 +587,22 @@ async function getBoltzMetricRowsFromRunDir(resultDir: string): Promise<BoltzMet
          ORDER BY iteration ASC, rowid ASC`
       );
       boltzDb.close();
-      return rows.map((row) => ({
-        iteration: Number(row.iteration ?? 0),
-        smiles: row.smiles,
-        affinityModel1: row.affinity_model1 ?? null,
-        probabilityModel1: row.probability_model1 ?? null,
-      }));
+      metricRows.push(
+        ...rows.map((row) => ({
+          iteration: Number(row.iteration ?? 0),
+          smiles: row.smiles,
+          affinityModel1: row.affinity_model1 ?? null,
+          probabilityModel1: row.probability_model1 ?? null,
+        }))
+      );
     } catch {
-      // Fall through to artifact parsing
+      // Continue scanning other shards while files are being written.
     }
+  }
+
+  if (metricRows.length > 0) {
+    metricRows.sort((a, b) => a.iteration - b.iteration || a.smiles.localeCompare(b.smiles));
+    return metricRows;
   }
 
   const artifactRows = await loadMoleculesFromArtifacts(resultDir, Number.MAX_SAFE_INTEGER);
@@ -692,6 +772,8 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     processes: new Map(),
   };
   const artifactMapCache = new Map<string, Map<string, MoleculeResult>>();
+  const resultDirRefreshTimers = new Map<string, NodeJS.Timeout>();
+  const resultDirRefreshInFlight = new Set<string>();
 
   const sseClients = new Set<http.ServerResponse>();
 
@@ -862,6 +944,98 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     }
   }
 
+  async function syncRunResultDir(
+    runId: string,
+    nextResultDir: string,
+    sourceConfigPath?: string
+  ): Promise<boolean> {
+    const run = state.runs.get(runId);
+    if (!run || !nextResultDir || run.resultDir === nextResultDir) {
+      return false;
+    }
+
+    const oldResultDir = run.resultDir;
+    run.resultDir = nextResultDir;
+    run.lastUpdatedAt = new Date().toISOString();
+
+    if (run.checkpointPath) {
+      const checkpointName = path.basename(run.checkpointPath);
+      if (checkpointName.startsWith('model_state_') && checkpointName.endsWith('.pt')) {
+        run.checkpointPath = path.join(nextResultDir, checkpointName);
+      }
+    }
+
+    artifactMapCache.delete(oldResultDir);
+    artifactMapCache.delete(nextResultDir);
+    if (sourceConfigPath) {
+      await copyConfigToResultDir(sourceConfigPath, nextResultDir);
+    }
+
+    await persistRuns();
+    broadcast('run:status-changed', run);
+    if (run.convexRunId) {
+      convexSync.stopSync(runId);
+      convexSync.startSync(runId, run.convexRunId, nextResultDir, 30000);
+    }
+    return true;
+  }
+
+  async function maybeRefreshRunResultDir(
+    runId: string,
+    baseDir: string,
+    startedAt: number,
+    sourceConfigPath?: string
+  ): Promise<boolean> {
+    const run = state.runs.get(runId);
+    if (!run || run.status !== 'running') {
+      return false;
+    }
+    const detected = await detectResultDir(baseDir, startedAt);
+    if (!detected) {
+      return false;
+    }
+    return await syncRunResultDir(runId, detected, sourceConfigPath);
+  }
+
+  function stopResultDirRefresh(runId: string) {
+    const timer = resultDirRefreshTimers.get(runId);
+    if (timer) {
+      clearInterval(timer);
+      resultDirRefreshTimers.delete(runId);
+    }
+    resultDirRefreshInFlight.delete(runId);
+  }
+
+  function startResultDirRefresh(
+    runId: string,
+    baseDir: string,
+    startedAt: number,
+    sourceConfigPath?: string
+  ) {
+    stopResultDirRefresh(runId);
+
+    const tick = async () => {
+      const run = state.runs.get(runId);
+      if (!run || run.status !== 'running') {
+        stopResultDirRefresh(runId);
+        return;
+      }
+      if (resultDirRefreshInFlight.has(runId)) return;
+      resultDirRefreshInFlight.add(runId);
+      try {
+        await maybeRefreshRunResultDir(runId, baseDir, startedAt, sourceConfigPath);
+      } finally {
+        resultDirRefreshInFlight.delete(runId);
+      }
+    };
+
+    const timer = setInterval(() => {
+      void tick();
+    }, RESULT_DIR_REFRESH_INTERVAL_MS);
+    resultDirRefreshTimers.set(runId, timer);
+    void tick();
+  }
+
   async function startRun(payload: RunnerStartPayload): Promise<RunRecord> {
     let config = payload.config;
     let configName = payload.name;
@@ -963,6 +1137,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     state.processes.set(runId, proc);
 
     let stdoutBuffer = '';
+    const commandString = formatCondaCommand(args);
 
     const appendOutput = async (line: string) => {
       if (!line) return;
@@ -975,6 +1150,8 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       await fs.appendFile(logPath, `${line}\n`, 'utf-8');
       broadcast('run:output', { runId, output: line });
     };
+
+    await appendOutput(`[runner] Launching command: ${commandString}`);
 
     const handleChunk = async (chunk: Buffer, label?: string) => {
       const text = chunk.toString();
@@ -1008,12 +1185,25 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       void handleChunk(data, '[stderr]');
     });
 
-    proc.on('close', async (code) => {
+    proc.on('close', async (code, signal) => {
+      stopResultDirRefresh(runId);
       runInfo.status = code === 0 ? 'completed' : 'error';
-      runInfo.error = code === 0 ? null : `Process exited with code ${code}`;
+      runInfo.error =
+        code === 0
+          ? null
+          : buildFailureMessage({
+              code,
+              signal,
+              outputLines: state.outputs.get(runId) ?? [],
+              logPath: runInfo.logPath,
+              command: commandString,
+            });
       runInfo.lastUpdatedAt = new Date().toISOString();
       state.processes.delete(runId);
       await persistRuns();
+      if (code !== 0) {
+        broadcast('run:error', { runId, error: runInfo.error ?? `Process exited with code ${code}` });
+      }
       broadcast('run:status-changed', runInfo);
 
       if (runInfo.convexRunId) {
@@ -1029,6 +1219,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     });
 
     proc.on('error', async (err) => {
+      stopResultDirRefresh(runId);
       runInfo.status = 'error';
       runInfo.error = err.message;
       runInfo.lastUpdatedAt = new Date().toISOString();
@@ -1049,17 +1240,20 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       }
     });
 
-    // Try to detect actual result directory and copy config
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const detected = await detectResultDir(config.result_dir, runStartedAt);
-      if (detected) {
-        runInfo.resultDir = detected;
-        await copyConfigToResultDir(resolvedConfigPath, detected);
-        await persistRuns();
+    // Try to detect actual result directory and keep revalidating while running.
+    for (let attempt = 0; attempt < RESULT_DIR_INITIAL_DETECTION_ATTEMPTS; attempt++) {
+      const refreshed = await maybeRefreshRunResultDir(
+        runId,
+        config.result_dir,
+        runStartedAt,
+        resolvedConfigPath
+      );
+      if (refreshed) {
         break;
       }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, RESULT_DIR_INITIAL_DETECTION_INTERVAL_MS));
     }
+    startResultDirRefresh(runId, config.result_dir, runStartedAt, resolvedConfigPath);
 
     // Start Convex sync if configured
     if (runInfo.convexRunId) {
@@ -1096,6 +1290,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     await persistRuns();
 
     let stdoutBuffer = '';
+    const commandString = formatCondaCommand(args);
 
     const appendOutput = async (line: string) => {
       if (!line) return;
@@ -1110,6 +1305,8 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       }
       broadcast('run:output', { runId, output: line });
     };
+
+    await appendOutput(`[runner] Launching command: ${commandString}`);
 
     const handleChunk = async (chunk: Buffer, label?: string) => {
       const text = chunk.toString();
@@ -1137,12 +1334,25 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       void handleChunk(data, '[stderr]');
     });
 
-    proc.on('close', async (code) => {
+    proc.on('close', async (code, signal) => {
+      stopResultDirRefresh(runId);
       run.status = code === 0 ? 'completed' : 'error';
-      run.error = code === 0 ? null : `Process exited with code ${code}`;
+      run.error =
+        code === 0
+          ? null
+          : buildFailureMessage({
+              code,
+              signal,
+              outputLines: state.outputs.get(runId) ?? [],
+              logPath: run.logPath,
+              command: commandString,
+            });
       run.lastUpdatedAt = new Date().toISOString();
       state.processes.delete(runId);
       await persistRuns();
+      if (code !== 0) {
+        broadcast('run:error', { runId, error: run.error ?? `Process exited with code ${code}` });
+      }
       broadcast('run:status-changed', run);
 
       if (run.convexRunId) {
@@ -1158,6 +1368,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     });
 
     proc.on('error', async (err) => {
+      stopResultDirRefresh(runId);
       run.status = 'error';
       run.error = err.message;
       run.lastUpdatedAt = new Date().toISOString();
@@ -1501,11 +1712,14 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       (row) => row.oracleIdx == null || row.molIdx == null || row.boltzScores == null
     );
     if (needsArtifactLookup) {
-      let artifactMap = artifactMapCache.get(run.resultDir);
+      const shouldUseArtifactCache = run.status !== 'running';
+      let artifactMap = shouldUseArtifactCache ? artifactMapCache.get(run.resultDir) : undefined;
       if (!artifactMap) {
         const artifactRows = await loadMoleculesFromArtifacts(run.resultDir, Number.MAX_SAFE_INTEGER);
         artifactMap = new Map(artifactRows.map((row) => [row.smiles, row]));
-        artifactMapCache.set(run.resultDir, artifactMap);
+        if (shouldUseArtifactCache) {
+          artifactMapCache.set(run.resultDir, artifactMap);
+        }
       }
 
       for (const row of results) {
@@ -1562,6 +1776,27 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     return null;
   }
 
+  async function deleteRun(runId: string): Promise<void> {
+    const run = state.runs.get(runId);
+    if (!run) {
+      throw new Error('Run not found');
+    }
+    if (run.status === 'running' && state.processes.has(runId)) {
+      throw new Error('Cannot delete an active run. Stop it first.');
+    }
+
+    state.runs.delete(runId);
+    state.outputs.delete(runId);
+    stopResultDirRefresh(runId);
+    artifactMapCache.delete(run.resultDir);
+    if (run.convexRunId) {
+      convexSync.stopSync(runId);
+    }
+
+    await fs.rm(path.join(runsDir, runId), { recursive: true, force: true }).catch(() => undefined);
+    await persistRuns();
+  }
+
   // ========================================================================
   // HTTP server
   // ========================================================================
@@ -1575,7 +1810,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
 
     // CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') {
@@ -1678,6 +1913,16 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
         return;
       }
 
+      if (req.method === 'DELETE' && pathParts.length === 2) {
+        try {
+          await deleteRun(runId);
+          sendJson(200, { ok: true });
+        } catch (err) {
+          sendText(400, err instanceof Error ? err.message : 'Failed to delete run');
+        }
+        return;
+      }
+
       if (req.method === 'POST' && pathParts[2] === 'stop') {
         const run = state.runs.get(runId);
         if (!run) {
@@ -1687,6 +1932,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
         const proc = state.processes.get(runId);
         if (proc) {
           proc.kill('SIGINT');
+          stopResultDirRefresh(runId);
           run.status = 'paused';
           run.lastUpdatedAt = new Date().toISOString();
           await persistRuns();

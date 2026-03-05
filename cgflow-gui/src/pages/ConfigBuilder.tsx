@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
-import { useIpcInvoke } from '@/hooks/useIpc';
+import { useIpcInvoke, useIpcEvent, useRunOutput } from '@/hooks/useIpc';
 import { useConvexConfigs } from '@/hooks/useConvexConfigs';
 import MolstarViewer from '@/components/MolstarViewer';
 import FileSelector from '@/components/FileSelector';
@@ -31,6 +31,7 @@ import {
   XCircle,
   Cloud,
   Clock,
+  GripVertical,
 } from 'lucide-react';
 
 interface ConfigBuilderProps {
@@ -170,6 +171,7 @@ export default function ConfigBuilder({
   activeRun,
 }: ConfigBuilderProps) {
   const invoke = useIpcInvoke();
+  const runOutput = useRunOutput(activeRun?.id ?? null);
   const { configs, createConfig, updateConfig, isAvailable: isConvexAvailable } = useConvexConfigs(10);
   const [config, setConfig] = useState<OptConfig>(defaultConfig);
   const [configPath, setConfigPath] = useState<string | null>(null);
@@ -180,10 +182,40 @@ export default function ConfigBuilder({
   const [selectedResidues, setSelectedResidues] = useState<string[]>([]);
   const [newResidue, setNewResidue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+  const [leftPanelWidth, setLeftPanelWidth] = useState(50);
 
   useEffect(() => {
     onConfigChange(config);
   }, [config, onConfigChange]);
+
+  useIpcEvent(
+    'run:status-changed',
+    useCallback(
+      (runInfo: RunInfo) => {
+        if (activeRun && runInfo.id === activeRun.id) {
+          onRunStarted(runInfo);
+        }
+      },
+      [activeRun, onRunStarted]
+    )
+  );
+
+  useIpcEvent(
+    'run:error',
+    useCallback(
+      (runId: string, error: string) => {
+        if (!activeRun || runId !== activeRun.id) return;
+        onRunStarted({
+          ...activeRun,
+          status: 'error',
+          error,
+          lastUpdatedAt: new Date().toISOString(),
+        });
+      },
+      [activeRun, onRunStarted]
+    )
+  );
 
   useEffect(() => {
     setConfig((prev) => ({
@@ -418,6 +450,7 @@ export default function ConfigBuilder({
 
   const handleStartRun = useCallback(async () => {
     setIsLoading(true);
+    setStartError(null);
     try {
       if (savedConfigId && isConvexAvailable) {
         await updateConfig(savedConfigId as any, { lastUsedAt: Date.now() });
@@ -429,6 +462,9 @@ export default function ConfigBuilder({
         name: configName.trim() || undefined,
       });
       onRunStarted(runInfo);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to start run.';
+      setStartError(message);
     } finally {
       setIsLoading(false);
     }
@@ -445,7 +481,7 @@ export default function ConfigBuilder({
   return (
     <div className="h-full flex">
       {/* Left: Config Form */}
-      <div className="w-1/2 border-r border-border/50">
+      <div className="relative border-r border-border/50 shrink-0" style={{ width: `${leftPanelWidth}%` }}>
         <ScrollArea className="h-full">
           <div className="p-6 space-y-5">
             {/* Load/Save Config */}
@@ -974,6 +1010,27 @@ export default function ConfigBuilder({
                             />
                           </div>
                         </div>
+
+                        {(activeRun.error || startError) && (
+                          <div className="rounded-md border border-destructive/30 bg-destructive/10 p-2">
+                            <p className="text-xs text-destructive break-words">
+                              {activeRun.error ?? startError}
+                            </p>
+                          </div>
+                        )}
+
+                        <div className="space-y-1">
+                          <span className="text-xs text-muted-foreground uppercase tracking-wide">
+                            Recent Logs
+                          </span>
+                          <div className="max-h-40 overflow-auto rounded-md border bg-background/40 p-2">
+                            <pre className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-muted-foreground">
+                              {runOutput.length > 0
+                                ? runOutput.slice(-60).join('\n')
+                                : 'No output yet.'}
+                            </pre>
+                          </div>
+                        </div>
                       </motion.div>
                     )}
                   </AnimatePresence>
@@ -982,10 +1039,36 @@ export default function ConfigBuilder({
             </motion.div>
           </div>
         </ScrollArea>
+        <div
+          className="absolute top-0 right-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-primary/20 transition-colors"
+          onMouseDown={(event) => {
+            event.preventDefault();
+            const startX = event.clientX;
+            const startPercent = leftPanelWidth;
+            const container = (event.currentTarget as HTMLDivElement).parentElement?.parentElement;
+            const containerWidth = container?.clientWidth ?? 1;
+            const onMove = (moveEvent: MouseEvent) => {
+              const deltaPercent = ((moveEvent.clientX - startX) / containerWidth) * 100;
+              const nextPercent = startPercent + deltaPercent;
+              setLeftPanelWidth(Math.max(30, Math.min(70, nextPercent)));
+            };
+            const onUp = () => {
+              window.removeEventListener('mousemove', onMove);
+              window.removeEventListener('mouseup', onUp);
+            };
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+          }}
+          title="Drag to resize panel"
+        >
+          <div className="h-full flex items-center justify-center">
+            <GripVertical className="h-4 w-4 text-muted-foreground/50" />
+          </div>
+        </div>
       </div>
 
       {/* Right: Mol* Viewer */}
-      <div className="w-1/2 flex flex-col bg-white">
+      <div className="flex-1 min-w-0 flex flex-col bg-white">
         <motion.div 
           className="p-4 border-b border-border/50 glass"
           initial={{ opacity: 0, y: -10 }}

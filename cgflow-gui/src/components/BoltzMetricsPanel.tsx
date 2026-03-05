@@ -2,37 +2,63 @@ import { useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import type { BoltzMetricSeries } from '@shared/types';
+import Plot from 'react-plotly.js';
 
 interface BoltzMetricsPanelProps {
   metrics: BoltzMetricSeries | null;
   isLoading?: boolean;
 }
 
-function buildPath(values: number[], width: number, height: number, yMax: number) {
-  if (values.length === 0 || yMax <= 0) return '';
-  const points = values.map((value, idx) => {
-    const x = values.length === 1 ? 0 : (idx / (values.length - 1)) * width;
-    const y = height - (Math.max(0, value) / yMax) * height;
-    return `${x.toFixed(2)},${y.toFixed(2)}`;
-  });
-  return `M ${points.join(' L ')}`;
-}
+function lineChart(
+  data: Array<{ label: string; color: string; values: number[] }>,
+  yAxisTitle: string,
+  yMax?: number
+) {
+  const pointCount = data[0]?.values.length ?? 0;
+  const xValues = Array.from({ length: pointCount }, (_, idx) => idx + 1);
+  const traces = data.map((series) => ({
+    x: xValues,
+    y: series.values,
+    type: 'scatter',
+    mode: 'lines',
+    name: series.label,
+    line: { color: series.color, width: 2 },
+    hovertemplate: 'Molecules processed: %{x}<br>%{y:.4f}<extra>%{fullData.name}</extra>',
+  }));
 
-function lineChart(data: Array<{ label: string; color: string; values: number[] }>, yMax: number) {
-  const width = 900;
-  const height = 180;
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-44 rounded bg-slate-50">
-      {data.map((series) => (
-        <path
-          key={series.label}
-          d={buildPath(series.values, width, height, yMax)}
-          fill="none"
-          stroke={series.color}
-          strokeWidth={2}
-        />
-      ))}
-    </svg>
+    <div className="h-44 w-full overflow-hidden rounded bg-slate-50">
+      <Plot
+        data={traces as any}
+        layout={{
+          autosize: true,
+          height: 176,
+          margin: { l: 62, r: 12, t: 10, b: 46 },
+          paper_bgcolor: 'rgba(0,0,0,0)',
+          plot_bgcolor: '#f8fafc',
+          showlegend: false,
+          xaxis: {
+            title: { text: 'Molecules processed' },
+            automargin: true,
+            zeroline: false,
+          },
+          yaxis: {
+            title: { text: yAxisTitle },
+            automargin: true,
+            rangemode: 'tozero',
+            ...(typeof yMax === 'number' && Number.isFinite(yMax) ? { range: [0, yMax * 1.05] } : {}),
+          },
+        } as any}
+        config={{
+          responsive: true,
+          displaylogo: false,
+          scrollZoom: true,
+          modeBarButtonsToRemove: ['lasso2d', 'select2d'],
+        }}
+        style={{ width: '100%', height: '100%' }}
+        useResizeHandler
+      />
+    </div>
   );
 }
 
@@ -110,7 +136,7 @@ export default function BoltzMetricsPanel({ metrics, isLoading = false }: BoltzM
         ) : (
           <>
             <div className="space-y-1">
-              {lineChart(mainSeries, 1)}
+              {lineChart(mainSeries, 'Binding Probability', 1)}
               <div className="flex gap-3 text-xs text-muted-foreground">
                 {mainSeries.map((entry) => (
                   <span key={entry.label} className="inline-flex items-center gap-1">
@@ -122,7 +148,7 @@ export default function BoltzMetricsPanel({ metrics, isLoading = false }: BoltzM
             </div>
 
             <div className="space-y-1">
-              {lineChart(thresholdSeries, thresholdMax)}
+              {lineChart(thresholdSeries, 'Number of molecules', thresholdMax)}
               <div className="flex gap-3 text-xs text-muted-foreground">
                 {thresholdSeries.map((entry) => (
                   <span key={entry.label} className="inline-flex items-center gap-1">

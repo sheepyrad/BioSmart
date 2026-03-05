@@ -41,7 +41,9 @@ import {
   Circle,
   FolderOpen,
   CloudUpload,
+  FileText,
   Trash2,
+  Square,
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -55,6 +57,7 @@ const SIDEBAR_MIN_WIDTH = 220;
 const SIDEBAR_MAX_WIDTH = 520;
 const SIDEBAR_DEFAULT_WIDTH = 256;
 const HIDDEN_RUN_IDS_KEY = 'cgflow.hiddenRunIds';
+const LOG_TAIL_LINES = 200;
 
 const kpiVariants = {
   hidden: { opacity: 0, y: 20, scale: 0.95 },
@@ -189,9 +192,11 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
   const [isLoading, setIsLoading] = useState(false);
   const [isSyncingCloud, setIsSyncingCloud] = useState(false);
   const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
+  const [isLogLoading, setIsLogLoading] = useState(false);
   const [tablePage, setTablePage] = useState(1);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+  const [runLogLines, setRunLogLines] = useState<string[]>([]);
   const [hiddenRunIds, setHiddenRunIds] = useState<Set<string>>(() => {
     if (typeof window === 'undefined') return new Set();
     try {
@@ -464,6 +469,42 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     loadComplex();
   }, [selectedMolecule, selectedRun, invoke]);
 
+  useEffect(() => {
+    if (!selectedRun) {
+      setRunLogLines([]);
+      return;
+    }
+
+    if (selectedRun.source === 'convex') {
+      setRunLogLines([]);
+      return;
+    }
+
+    let isMounted = true;
+    const fetchLogs = async () => {
+      setIsLogLoading(true);
+      try {
+        const lines = await invoke('run:get-output', selectedRun.id, LOG_TAIL_LINES);
+        if (!isMounted) return;
+        setRunLogLines(lines);
+      } catch {
+        if (!isMounted) return;
+        setRunLogLines([]);
+      } finally {
+        if (isMounted) {
+          setIsLogLoading(false);
+        }
+      }
+    };
+
+    void fetchLogs();
+    const interval = setInterval(fetchLogs, 4000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [selectedRun, invoke]);
+
   const handleRefresh = useCallback(async () => {
     if (!selectedRun) return;
     setIsLoading(true);
@@ -476,6 +517,8 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       setMolecules(results);
       const metrics = await invoke('run:get-boltz-metrics', selectedRun.id);
       setLocalBoltzMetrics(metrics);
+      const logs = await invoke('run:get-output', selectedRun.id, LOG_TAIL_LINES);
+      setRunLogLines(logs);
     } finally {
       setIsLoading(false);
     }
@@ -487,6 +530,15 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     setMolecules([]);
     setTablePage(1);
   };
+
+  const handleStopRun = useCallback(async (run: RunInfo) => {
+    if (run.source !== 'local' || run.status !== 'running') return;
+    try {
+      await invoke('run:stop', run.id);
+    } catch (err) {
+      console.error('Failed to stop run:', err);
+    }
+  }, [invoke]);
 
   const handleImportRun = useCallback(async () => {
     try {
@@ -519,6 +571,10 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
   const handleDeleteRun = useCallback(
     async (run: RunInfo) => {
       if (run.source === 'convex') return;
+      if (run.status === 'running') {
+        window.alert('Stop this run before deleting it.');
+        return;
+      }
       const confirmed = window.confirm(`Delete run "${run.name}" from sidebar history?`);
       if (!confirmed) return;
 
@@ -527,8 +583,8 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
         await invoke('run:delete', run.id);
         hideRunFromSidebar(run.id);
       } catch (err) {
-        console.error('Failed to delete run via backend; hiding from UI only:', err);
-        hideRunFromSidebar(run.id);
+        console.error('Failed to delete run:', err);
+        window.alert(err instanceof Error ? err.message : 'Failed to delete run.');
       } finally {
         setDeletingRunId(null);
       }
@@ -638,7 +694,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     <div className="min-h-full flex">
       {/* Left Sidebar: Runs List */}
       <motion.div 
-        className="border-r border-border/50 flex flex-col bg-slate-50/50"
+        className="shrink-0 border-r border-border/50 flex flex-col bg-slate-50/50"
         style={{ width: sidebarWidth }}
         initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: 1, x: 0 }}
@@ -703,21 +759,35 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                     </div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0 mt-0.5">
+                    {run.source === 'local' && run.status === 'running' && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        title="Stop run"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleStopRun(run);
+                        }}
+                      >
+                        <Square className="h-3.5 w-3.5 text-amber-600" />
+                      </Button>
+                    )}
                     {selectedRun?.id === run.id && (
                       <ChevronRight className="h-4 w-4 text-primary" />
                     )}
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-6 w-6"
-                      disabled={run.source === 'convex' || deletingRunId === run.id}
+                      className="h-7 w-7"
+                      disabled={run.source !== 'local' || deletingRunId === run.id || run.status === 'running'}
                       onClick={(event) => {
                         event.stopPropagation();
                         void handleDeleteRun(run);
                       }}
-                      title={run.source === 'convex' ? 'Cloud run cannot be deleted here' : 'Delete run'}
+                      title={run.source === 'convex' ? 'Cloud run cannot be deleted here' : 'Delete run from history'}
                     >
-                      <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+                      <Trash2 className="h-3.5 w-3.5 text-red-600" />
                     </Button>
                   </div>
                 </div>
@@ -820,6 +890,37 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
               metrics={activeBoltzMetrics}
               isLoading={selectedRun.source === 'convex' ? convexMetricRows === undefined : isBoltzMetricsLoading}
             />
+          </motion.div>
+
+          <motion.div
+            className="shrink-0 px-4 py-3 border-b border-border/50 bg-white/70"
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+          >
+            <Card className="glass-card">
+              <CardHeader className="pb-2">
+                <div className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-primary" />
+                  <CardTitle className="text-base">Run Logs (Last {LOG_TAIL_LINES} Lines)</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {selectedRun.source === 'convex' ? (
+                  <p className="text-xs text-muted-foreground">Logs are only available for local runner runs.</p>
+                ) : (
+                  <div className="max-h-52 overflow-auto rounded-md border bg-background/40 p-2">
+                    <pre className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-muted-foreground">
+                      {runLogLines.length > 0
+                        ? runLogLines.join('\n')
+                        : isLogLoading
+                        ? 'Loading logs...'
+                        : 'No log output yet.'}
+                    </pre>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </motion.div>
 
           {/* Main Split View */}

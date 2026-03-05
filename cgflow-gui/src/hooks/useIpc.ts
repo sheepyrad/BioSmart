@@ -16,8 +16,9 @@ export function useIpcInvoke() {
         'run:resume',
         'run:get-status',
         'run:list',
-        'run:delete',
         'run:get-checkpoints',
+        'run:get-output',
+        'run:delete',
         'run:import-existing',
         'run:sync-to-cloud',
         'run:get-boltz-metrics',
@@ -49,6 +50,11 @@ export function useIpcInvoke() {
               return runnerClient.deleteRun(args[0] as string) as Awaited<ReturnType<IpcChannels[K]>>;
             case 'run:get-checkpoints':
               return runnerClient.getCheckpoints(args[0] as string) as Awaited<ReturnType<IpcChannels[K]>>;
+            case 'run:get-output':
+              return runnerClient.getOutput(
+                args[0] as string,
+                (args[1] as number | undefined) ?? 500
+              ) as Awaited<ReturnType<IpcChannels[K]>>;
             case 'run:import-existing':
               return runnerClient.importExistingRun(
                 args[0] as string,
