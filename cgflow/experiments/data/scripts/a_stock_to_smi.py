@@ -14,7 +14,18 @@ def main(block_path: str, save_block_path: str, num_cpus: int):
     print("Read SDF Files")
     mols = list(Chem.SDMolSupplier(str(block_file)))
     mols = [mol for mol in mols if mol is not None]
-    ids = [mol.GetProp("ID") for mol in mols]
+    id_keys = ("Catalog_ID", "ID", "_Name")
+    ids = []
+    missing_id_count = 0
+    for i, mol in enumerate(mols):
+        mol_id = next((mol.GetProp(key) for key in id_keys if mol.HasProp(key)), None)
+        if not mol_id:
+            mol_id = f"MOL_{i}"
+            missing_id_count += 1
+        ids.append(mol_id)
+
+    if missing_id_count:
+        print(f"Warning: {missing_id_count} molecules missing ID fields {id_keys}. Using generated IDs.")
     print("Including Mols:", len(mols))
     print("Run Building Blocks...")
     clean_smiles_list = []

@@ -275,8 +275,9 @@ export default function FileSelector({
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                              className="h-6 w-6 opacity-70 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
                               onClick={(e) => handleDelete(e, file._id)}
+                              title="Delete uploaded file"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </Button>
