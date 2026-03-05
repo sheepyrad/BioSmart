@@ -137,11 +137,19 @@ export const webFallback: {
     return [];
   },
 
+  'run:delete': async (_runId: string) => {
+    throw new Error('Not available in web mode');
+  },
+
   'run:get-checkpoints': async (_runId: string) => {
     return [];
   },
 
   'run:import-existing': async (_resultDir: string, _name?: string | null) => {
+    throw new Error('Not available in web mode');
+  },
+
+  'run:sync-to-cloud': async (_runId: string) => {
     throw new Error('Not available in web mode');
   },
 

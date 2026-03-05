@@ -16,8 +16,10 @@ export function useIpcInvoke() {
         'run:resume',
         'run:get-status',
         'run:list',
+        'run:delete',
         'run:get-checkpoints',
         'run:import-existing',
+        'run:sync-to-cloud',
         'run:get-boltz-metrics',
         'db:get-top-molecules',
         'boltz:get-complex',
@@ -43,6 +45,8 @@ export function useIpcInvoke() {
               return runnerClient.getRun(args[0] as string) as Awaited<ReturnType<IpcChannels[K]>>;
             case 'run:list':
               return runnerClient.listRuns() as Awaited<ReturnType<IpcChannels[K]>>;
+            case 'run:delete':
+              return runnerClient.deleteRun(args[0] as string) as Awaited<ReturnType<IpcChannels[K]>>;
             case 'run:get-checkpoints':
               return runnerClient.getCheckpoints(args[0] as string) as Awaited<ReturnType<IpcChannels[K]>>;
             case 'run:import-existing':
@@ -50,6 +54,8 @@ export function useIpcInvoke() {
                 args[0] as string,
                 (args[1] as string | null | undefined) ?? null
               ) as Awaited<ReturnType<IpcChannels[K]>>;
+            case 'run:sync-to-cloud':
+              return runnerClient.syncRunToCloud(args[0] as string) as Awaited<ReturnType<IpcChannels[K]>>;
             case 'run:get-boltz-metrics':
               return runnerClient.getBoltzMetrics(args[0] as string) as Awaited<ReturnType<IpcChannels[K]>>;
             case 'db:get-top-molecules':
@@ -69,7 +75,12 @@ export function useIpcInvoke() {
         }
       }
 
-      if (channel === 'run:import-existing' || channel === 'run:get-boltz-metrics') {
+      if (
+        channel === 'run:delete' ||
+        channel === 'run:import-existing' ||
+        channel === 'run:sync-to-cloud' ||
+        channel === 'run:get-boltz-metrics'
+      ) {
         throw new Error('Runner server is not available for this operation.');
       }
 
