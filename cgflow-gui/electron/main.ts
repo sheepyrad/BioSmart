@@ -5,7 +5,9 @@ import fs from 'fs/promises';
 import { spawn, ChildProcess, type SpawnOptions } from 'child_process';
 import YAML from 'yaml';
 import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
+import { ConvexHttpClient } from 'convex/browser';
 import { startRunnerServer } from './runner';
+import { api } from '../convex/_generated/api';
 import type {
   OptConfig,
   RunInfo,
@@ -32,6 +34,8 @@ let isQuitting = false;
 const CGFLOW_ROOT = path.resolve(__dirname, '../../cgflow');
 const OPT_SCRIPT = path.join(CGFLOW_ROOT, 'scripts/opt/opt_boltz.py');
 const CONDA_ENV_NAME = process.env.CGFLOW_CONDA_ENV?.trim() || 'cgflow';
+const CONVEX_URL = process.env.VITE_CONVEX_URL ?? process.env.CONVEX_URL;
+const convexClient = CONVEX_URL ? new ConvexHttpClient(CONVEX_URL) : null;
 
 function spawnCgflowPython(args: string[], options: SpawnOptions): ChildProcess {
   return spawn(
@@ -39,6 +43,30 @@ function spawnCgflowPython(args: string[], options: SpawnOptions): ChildProcess 
     ['run', '--no-capture-output', '-n', CONDA_ENV_NAME, 'python', ...args],
     options
   );
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function formatCondaCommand(args: string[]): string {
+  const full = ['conda', 'run', '--no-capture-output', '-n', CONDA_ENV_NAME, 'python', ...args];
+  return full.map(shellQuote).join(' ');
+}
+
+function summarizeFailureLines(lines: string[], maxLines = 20): string[] {
+  const stderrLines = lines.filter((line) => line.includes('[stderr]'));
+  let tracebackStart = -1;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (/Traceback \(most recent call last\):/i.test(lines[i] ?? '')) {
+      tracebackStart = i;
+      break;
+    }
+  }
+
+  if (tracebackStart >= 0) return lines.slice(tracebackStart).slice(-maxLines);
+  if (stderrLines.length > 0) return stderrLines.slice(-maxLines);
+  return lines.slice(-maxLines);
 }
 
 // Initialize SQL.js
@@ -66,6 +94,83 @@ function queryAll<T>(db: SqlJsDatabase, sql: string, params: any[] = []): T[] {
   }
   stmt.free();
   return results;
+}
+
+function isConvexPath(value: string | null | undefined): boolean {
+  return typeof value === 'string' && value.startsWith('convex://');
+}
+
+function parseConvexPath(value: string): { id: string; name?: string } | null {
+  if (!value.startsWith('convex://')) return null;
+  const parts = value.replace('convex://', '').split('::');
+  return { id: parts[0]!, name: parts[1] };
+}
+
+async function readConvexFileText(convexPath: string): Promise<string> {
+  if (!convexClient) {
+    throw new Error('Convex is not configured. Set VITE_CONVEX_URL or CONVEX_URL.');
+  }
+  const parsed = parseConvexPath(convexPath);
+  if (!parsed) {
+    throw new Error(`Invalid Convex file path: ${convexPath}`);
+  }
+  const url = await convexClient.query(api.files.getUrl, { id: parsed.id as any });
+  if (!url) {
+    throw new Error(`Convex file URL not available for: ${parsed.id}`);
+  }
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Failed to download Convex file (${res.status}): ${res.statusText}`);
+  }
+  return await res.text();
+}
+
+async function resolveConvexFileToLocalPath(convexPath: string, destDir: string): Promise<string> {
+  if (!convexClient) {
+    throw new Error('Convex is not configured. Set VITE_CONVEX_URL or CONVEX_URL.');
+  }
+  const parsed = parseConvexPath(convexPath);
+  if (!parsed) {
+    throw new Error(`Invalid Convex file path: ${convexPath}`);
+  }
+  const url = await convexClient.query(api.files.getUrl, { id: parsed.id as any });
+  if (!url) {
+    throw new Error(`Convex file URL not available for: ${parsed.id}`);
+  }
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Failed to download Convex file (${res.status}): ${res.statusText}`);
+  }
+  const buffer = Buffer.from(await res.arrayBuffer());
+  const safeName = parsed.name ? parsed.name.replace(/[^a-zA-Z0-9._-]/g, '_') : 'file';
+  await fs.mkdir(destDir, { recursive: true });
+  const destPath = path.join(destDir, `${parsed.id}_${safeName}`);
+  await fs.writeFile(destPath, buffer);
+  return destPath;
+}
+
+async function resolveConfigConvexPaths(config: OptConfig, destDir: string): Promise<OptConfig> {
+  const resolved = JSON.parse(JSON.stringify(config)) as OptConfig;
+  const resolveOne = async (value: string | null): Promise<string | null> => {
+    if (!value) return null;
+    if (!isConvexPath(value)) return value;
+    return await resolveConvexFileToLocalPath(value, destDir);
+  };
+
+  resolved.protein_path = (await resolveOne(resolved.protein_path)) ?? '';
+  resolved.ref_ligand_path = await resolveOne(resolved.ref_ligand_path);
+  resolved.pose_model = (await resolveOne(resolved.pose_model)) ?? resolved.pose_model;
+  resolved.boltz.msa_path = await resolveOne(resolved.boltz.msa_path);
+  return resolved;
+}
+
+function configHasConvexPaths(config: OptConfig): boolean {
+  return [
+    config.protein_path,
+    config.ref_ligand_path,
+    config.pose_model,
+    config.boltz.msa_path,
+  ].some((value) => isConvexPath(value ?? null));
 }
 
 // ============================================================================
@@ -205,6 +310,9 @@ ipcMain.handle('file:select-directory', async () => {
 });
 
 ipcMain.handle('file:read-pdb', async (_event, filePath: string) => {
+  if (isConvexPath(filePath)) {
+    return await readConvexFileText(filePath);
+  }
   return fs.readFile(filePath, 'utf-8');
 });
 
@@ -219,6 +327,16 @@ ipcMain.handle('file:write-yaml', async (_event, filePath: string, config: OptCo
 });
 
 ipcMain.handle('file:exists', async (_event, filePath: string) => {
+  if (isConvexPath(filePath)) {
+    try {
+      const parsed = parseConvexPath(filePath);
+      if (!parsed || !convexClient) return false;
+      const url = await convexClient.query(api.files.getUrl, { id: parsed.id as any });
+      return Boolean(url);
+    } catch {
+      return false;
+    }
+  }
   try {
     await fs.access(filePath);
     return true;
@@ -240,15 +358,19 @@ function emitToRenderer(channel: string, ...args: unknown[]) {
 }
 
 ipcMain.handle('run:start', async (_event, payload: { config: OptConfig; configPath?: string | null; name?: string | null }) => {
-  const config = payload.config;
+  const runId = generateRunId();
+  const resolvedInputsDir = path.join(app.getPath('userData'), 'inputs', runId);
+  const hasConvexPaths = configHasConvexPaths(payload.config);
+  const config = hasConvexPaths
+    ? await resolveConfigConvexPaths(payload.config, resolvedInputsDir)
+    : payload.config;
   let configPath = payload.configPath ?? null;
-  if (!configPath) {
+  if (!configPath || hasConvexPaths) {
     const path = `./configs/opt/generated_${Date.now()}.yaml`;
     const content = YAML.stringify(config);
     await fs.writeFile(path, content, 'utf-8');
     configPath = path;
   }
-  const runId = generateRunId();
   const timestamp = new Date().toISOString().replace(/[:.]/g, '').substring(0, 15);
   const resultDir = path.join(config.result_dir, timestamp);
 
@@ -277,9 +399,23 @@ ipcMain.handle('run:start', async (_event, payload: { config: OptConfig; configP
     cwd: CGFLOW_ROOT,
     env: { ...process.env },
   });
+  const commandString = formatCondaCommand(args);
+  const outputBuffer: string[] = [];
+  const pushOutput = (line: string) => {
+    outputBuffer.push(line);
+    if (outputBuffer.length > 2000) {
+      outputBuffer.splice(0, outputBuffer.length - 2000);
+    }
+  };
+  const launchLine = `[runner] Launching command: ${commandString}`;
+  pushOutput(launchLine);
+  emitToRenderer('run:output', runId, launchLine);
 
   proc.stdout?.on('data', (data: Buffer) => {
     const output = data.toString();
+    output.split(/\r?\n/).forEach((line) => {
+      if (line.trim().length > 0) pushOutput(line);
+    });
     emitToRenderer('run:output', runId, output);
     
     // Parse step from output
@@ -300,13 +436,22 @@ ipcMain.handle('run:start', async (_event, payload: { config: OptConfig; configP
 
   proc.stderr?.on('data', (data: Buffer) => {
     const output = data.toString();
+    output.split(/\r?\n/).forEach((line) => {
+      if (line.trim().length > 0) pushOutput(`[stderr] ${line}`);
+    });
     emitToRenderer('run:output', runId, `[stderr] ${output}`);
   });
 
-  proc.on('close', (code) => {
+  proc.on('close', (code, signal) => {
     runInfo.status = code === 0 ? 'completed' : 'error';
     if (code !== 0) {
-      runInfo.error = `Process exited with code ${code}`;
+      const snippet = summarizeFailureLines(outputBuffer);
+      runInfo.error = [
+        `Training process failed (${code !== null ? `exit code ${code}` : `signal ${signal ?? 'unknown'}`}).`,
+        `Command: ${commandString}`,
+        ...(snippet.length > 0 ? ['Recent output:', ...snippet] : []),
+      ].join('\n');
+      emitToRenderer('run:error', runId, runInfo.error);
     }
     runInfo.lastUpdatedAt = new Date().toISOString();
     activeRuns.delete(runId);
@@ -356,12 +501,26 @@ ipcMain.handle('run:resume', async (_event, runId: string, checkpointPath: strin
     cwd: CGFLOW_ROOT,
     env: { ...process.env },
   });
+  const commandString = formatCondaCommand(args);
+  const outputBuffer: string[] = [];
+  const pushOutput = (line: string) => {
+    outputBuffer.push(line);
+    if (outputBuffer.length > 2000) {
+      outputBuffer.splice(0, outputBuffer.length - 2000);
+    }
+  };
+  const launchLine = `[runner] Launching command: ${commandString}`;
+  pushOutput(launchLine);
+  emitToRenderer('run:output', runId, launchLine);
 
   info.status = 'running';
   info.lastUpdatedAt = new Date().toISOString();
 
   proc.stdout?.on('data', (data: Buffer) => {
     const output = data.toString();
+    output.split(/\r?\n/).forEach((line) => {
+      if (line.trim().length > 0) pushOutput(line);
+    });
     emitToRenderer('run:output', runId, output);
     
     const stepMatch = output.match(/iteration\s+(\d+)/i);
@@ -373,11 +532,26 @@ ipcMain.handle('run:resume', async (_event, runId: string, checkpointPath: strin
   });
 
   proc.stderr?.on('data', (data: Buffer) => {
-    emitToRenderer('run:output', runId, `[stderr] ${data.toString()}`);
+    const output = data.toString();
+    output.split(/\r?\n/).forEach((line) => {
+      if (line.trim().length > 0) pushOutput(`[stderr] ${line}`);
+    });
+    emitToRenderer('run:output', runId, `[stderr] ${output}`);
   });
 
-  proc.on('close', (code) => {
+  proc.on('close', (code, signal) => {
     info.status = code === 0 ? 'completed' : 'error';
+    if (code !== 0) {
+      const snippet = summarizeFailureLines(outputBuffer);
+      info.error = [
+        `Training process failed (${code !== null ? `exit code ${code}` : `signal ${signal ?? 'unknown'}`}).`,
+        `Command: ${commandString}`,
+        ...(snippet.length > 0 ? ['Recent output:', ...snippet] : []),
+      ].join('\n');
+      emitToRenderer('run:error', runId, info.error);
+    } else {
+      info.error = null;
+    }
     info.lastUpdatedAt = new Date().toISOString();
     activeRuns.delete(runId);
     emitToRenderer('run:status-changed', info);
@@ -397,6 +571,14 @@ ipcMain.handle('run:list', async () => {
   return Array.from(activeRuns.values()).map((r) => r.info);
 });
 
+ipcMain.handle('run:delete', async (_event, runId: string) => {
+  const run = activeRuns.get(runId);
+  if (run?.info.status === 'running') {
+    throw new Error('Cannot delete an active run. Stop it first.');
+  }
+  activeRuns.delete(runId);
+});
+
 ipcMain.handle('run:get-checkpoints', async (_event, runIdOrDir: string) => {
   const run = activeRuns.get(runIdOrDir);
   const resultDir = run?.info.resultDir ?? runIdOrDir;
@@ -409,6 +591,27 @@ ipcMain.handle('run:get-checkpoints', async (_event, runIdOrDir: string) => {
   } catch {
     return [];
   }
+});
+
+ipcMain.handle('run:get-output', async (_event, runIdOrDir: string, tail = 200) => {
+  const run = activeRuns.get(runIdOrDir);
+  const resultDir = run?.info.resultDir ?? runIdOrDir;
+  const candidatePaths = [
+    path.join(resultDir, 'train.log'),
+    path.join(resultDir, 'run.log'),
+  ];
+
+  for (const logPath of candidatePaths) {
+    try {
+      const content = await fs.readFile(logPath, 'utf-8');
+      const all = content.split(/\r?\n/).filter((line) => line.length > 0);
+      return all.slice(-Math.max(1, tail));
+    } catch {
+      // Try next candidate path
+    }
+  }
+
+  return [];
 });
 
 // ============================================================================

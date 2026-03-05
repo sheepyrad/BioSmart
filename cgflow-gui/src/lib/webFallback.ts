@@ -141,6 +141,14 @@ export const webFallback: {
     return [];
   },
 
+  'run:get-output': async (_runId: string, _tail?: number) => {
+    return [];
+  },
+
+  'run:delete': async (_runId: string) => {
+    throw new Error('Not available in web mode');
+  },
+
   'run:import-existing': async (_resultDir: string, _name?: string | null) => {
     throw new Error('Not available in web mode');
   },

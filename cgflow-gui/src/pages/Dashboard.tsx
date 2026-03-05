@@ -40,6 +40,10 @@ import {
   PauseCircle,
   Circle,
   FolderOpen,
+  GripVertical,
+  FileText,
+  Trash2,
+  Square,
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -49,6 +53,7 @@ interface DashboardProps {
 
 const DASHBOARD_MOLECULE_LIMIT = 5000;
 const TABLE_PAGE_SIZE = 50;
+const LOG_TAIL_LINES = 200;
 
 const kpiVariants = {
   hidden: { opacity: 0, y: 20, scale: 0.95 },
@@ -171,7 +176,10 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
   const [localBoltzMetrics, setLocalBoltzMetrics] = useState<BoltzMetricSeries | null>(null);
   const [isBoltzMetricsLoading, setIsBoltzMetricsLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isLogLoading, setIsLogLoading] = useState(false);
   const [tablePage, setTablePage] = useState(1);
+  const [sidebarWidth, setSidebarWidth] = useState(280);
+  const [runLogLines, setRunLogLines] = useState<string[]>([]);
 
   const convexMoleculeRows = useQuery(
     api.molecules.getByRun,
@@ -399,6 +407,42 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     loadComplex();
   }, [selectedMolecule, selectedRun, invoke]);
 
+  useEffect(() => {
+    if (!selectedRun) {
+      setRunLogLines([]);
+      return;
+    }
+
+    if (selectedRun.source === 'convex') {
+      setRunLogLines([]);
+      return;
+    }
+
+    let isMounted = true;
+    const fetchLogs = async () => {
+      setIsLogLoading(true);
+      try {
+        const lines = await invoke('run:get-output', selectedRun.id, LOG_TAIL_LINES);
+        if (!isMounted) return;
+        setRunLogLines(lines);
+      } catch {
+        if (!isMounted) return;
+        setRunLogLines([]);
+      } finally {
+        if (isMounted) {
+          setIsLogLoading(false);
+        }
+      }
+    };
+
+    void fetchLogs();
+    const interval = setInterval(fetchLogs, 4000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [selectedRun, invoke]);
+
   const handleRefresh = useCallback(async () => {
     if (!selectedRun) return;
     setIsLoading(true);
@@ -411,6 +455,8 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       setMolecules(results);
       const metrics = await invoke('run:get-boltz-metrics', selectedRun.id);
       setLocalBoltzMetrics(metrics);
+      const logs = await invoke('run:get-output', selectedRun.id, LOG_TAIL_LINES);
+      setRunLogLines(logs);
     } finally {
       setIsLoading(false);
     }
@@ -422,6 +468,36 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     setMolecules([]);
     setTablePage(1);
   };
+
+  const handleStopRun = useCallback(async (run: RunInfo) => {
+    if (run.source !== 'local' || run.status !== 'running') return;
+    try {
+      await invoke('run:stop', run.id);
+    } catch (err) {
+      console.error('Failed to stop run:', err);
+    }
+  }, [invoke]);
+
+  const handleDeleteRun = useCallback(async (run: RunInfo) => {
+    if (run.source !== 'local') return;
+    if (run.status === 'running') {
+      window.alert('Stop this run before deleting it.');
+      return;
+    }
+    const confirmed = window.confirm(`Delete "${run.name}" from run history?`);
+    if (!confirmed) return;
+
+    try {
+      await invoke('run:delete', run.id);
+      setRunnerRuns((prev) => prev.filter((item) => item.id !== run.id));
+      setSelectedRun((prev) => (prev?.id === run.id ? null : prev));
+      setSelectedMolecule(null);
+      setMolecules([]);
+    } catch (err) {
+      console.error('Failed to delete run:', err);
+      window.alert(err instanceof Error ? err.message : 'Failed to delete run.');
+    }
+  }, [invoke]);
 
   const handleImportRun = useCallback(async () => {
     try {
@@ -505,7 +581,8 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     <div className="min-h-full flex">
       {/* Left Sidebar: Runs List */}
       <motion.div 
-        className="w-64 border-r border-border/50 flex flex-col bg-slate-50/50"
+        className="shrink-0 border-r border-border/50 flex flex-col bg-slate-50/50 relative"
+        style={{ width: sidebarWidth }}
         initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: 1, x: 0 }}
       >
@@ -531,12 +608,11 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
         <ScrollArea className="flex-1">
           <div className="p-2 space-y-1">
             {allRuns.map((run, idx) => (
-              <motion.button
+              <motion.div
                 key={run.id}
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: idx * 0.05 }}
-                onClick={() => handleSelectRun(run)}
                 className={`w-full text-left p-3 rounded-lg transition-all duration-200 ${
                   selectedRun?.id === run.id
                     ? 'bg-primary/10 border border-primary/30'
@@ -545,22 +621,77 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      {getStatusIcon(run.status)}
-                      <span className="text-sm font-medium truncate">{run.name}</span>
-                    </div>
-                    <div className="text-xs text-muted-foreground mt-1">
-                      Step {run.currentStep}/{run.totalSteps}
-                    </div>
+                    <button className="w-full text-left" onClick={() => handleSelectRun(run)}>
+                      <div className="flex items-center gap-2">
+                        {getStatusIcon(run.status)}
+                        <span className="text-sm font-medium truncate">{run.name}</span>
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        Step {run.currentStep}/{run.totalSteps}
+                      </div>
+                    </button>
                   </div>
-                  {selectedRun?.id === run.id && (
-                    <ChevronRight className="h-4 w-4 text-primary shrink-0 mt-0.5" />
-                  )}
+                  <div className="flex items-center gap-1 shrink-0">
+                    {run.source === 'local' && run.status === 'running' && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        title="Stop run"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleStopRun(run);
+                        }}
+                      >
+                        <Square className="h-3.5 w-3.5 text-amber-600" />
+                      </Button>
+                    )}
+                    {run.source === 'local' && run.status !== 'running' && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        title="Delete run from history"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleDeleteRun(run);
+                        }}
+                      >
+                        <Trash2 className="h-3.5 w-3.5 text-red-600" />
+                      </Button>
+                    )}
+                    {selectedRun?.id === run.id && (
+                      <ChevronRight className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+                    )}
+                  </div>
                 </div>
-              </motion.button>
+              </motion.div>
             ))}
           </div>
         </ScrollArea>
+        <div
+          className="absolute top-0 right-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-primary/20 transition-colors"
+          onMouseDown={(event) => {
+            event.preventDefault();
+            const startX = event.clientX;
+            const startWidth = sidebarWidth;
+            const onMove = (moveEvent: MouseEvent) => {
+              const nextWidth = startWidth + (moveEvent.clientX - startX);
+              setSidebarWidth(Math.max(220, Math.min(480, nextWidth)));
+            };
+            const onUp = () => {
+              window.removeEventListener('mousemove', onMove);
+              window.removeEventListener('mouseup', onUp);
+            };
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+          }}
+          title="Drag to resize sidebar"
+        >
+          <div className="h-full flex items-center justify-center">
+            <GripVertical className="h-4 w-4 text-muted-foreground/50" />
+          </div>
+        </div>
       </motion.div>
 
       {/* Main Content */}
@@ -649,6 +780,37 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
               metrics={activeBoltzMetrics}
               isLoading={selectedRun.source === 'convex' ? convexMetricRows === undefined : isBoltzMetricsLoading}
             />
+          </motion.div>
+
+          <motion.div
+            className="shrink-0 px-4 py-3 border-b border-border/50 bg-white/70"
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+          >
+            <Card className="glass-card">
+              <CardHeader className="pb-2">
+                <div className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-primary" />
+                  <CardTitle className="text-base">Run Logs (Last {LOG_TAIL_LINES} Lines)</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {selectedRun.source === 'convex' ? (
+                  <p className="text-xs text-muted-foreground">Logs are only available for local runner runs.</p>
+                ) : (
+                  <div className="max-h-52 overflow-auto rounded-md border bg-background/40 p-2">
+                    <pre className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-muted-foreground">
+                      {runLogLines.length > 0
+                        ? runLogLines.join('\n')
+                        : isLogLoading
+                        ? 'Loading logs...'
+                        : 'No log output yet.'}
+                    </pre>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </motion.div>
 
           {/* Main Split View */}

@@ -176,6 +176,8 @@ export interface IpcChannels {
   'run:get-status': (runId: string) => Promise<RunInfo | null>;
   'run:list': () => Promise<RunInfo[]>;
   'run:get-checkpoints': (runId: string) => Promise<string[]>;
+  'run:get-output': (runId: string, tail?: number) => Promise<string[]>;
+  'run:delete': (runId: string) => Promise<void>;
   'run:import-existing': (resultDir: string, name?: string | null) => Promise<RunInfo>;
   'run:get-boltz-metrics': (runId: string) => Promise<BoltzMetricSeries | null>;
 
