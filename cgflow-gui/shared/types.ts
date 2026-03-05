@@ -175,10 +175,12 @@ export interface IpcChannels {
   'run:resume': (runId: string, checkpointPath: string, oracleIdx?: number) => Promise<RunInfo>;
   'run:get-status': (runId: string) => Promise<RunInfo | null>;
   'run:list': () => Promise<RunInfo[]>;
+  'run:delete': (runId: string) => Promise<void>;
   'run:get-checkpoints': (runId: string) => Promise<string[]>;
   'run:get-output': (runId: string, tail?: number) => Promise<string[]>;
   'run:delete': (runId: string) => Promise<void>;
   'run:import-existing': (resultDir: string, name?: string | null) => Promise<RunInfo>;
+  'run:sync-to-cloud': (runId: string) => Promise<RunInfo>;
   'run:get-boltz-metrics': (runId: string) => Promise<BoltzMetricSeries | null>;
 
   // Database queries

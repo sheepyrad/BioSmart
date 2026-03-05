@@ -17,6 +17,7 @@ import type {
   BoltzScore,
   TrajectoryStep,
 } from '../shared/types';
+import { OptConfigSchema } from '../shared/types';
 import { computeBoltzMetrics } from '../shared/boltzMetrics';
 import { getConvexSyncService } from './convex-sync';
 import { api } from '../convex/_generated/api';
@@ -60,6 +61,35 @@ interface RunnerStartPayload {
   configId?: string | null;
   name?: string | null;
 }
+
+type ConvexConfigCreateInput = {
+  name: string;
+  resultDir: string;
+  envDir: string;
+  maxAtoms: number;
+  subsamplingRatio: number;
+  proteinPath: string;
+  center: number[] | null;
+  refLigandPath: string | null;
+  size: number[];
+  numSteps: number;
+  numSamplingPerStep: number;
+  temperatureMin: number;
+  temperatureMax: number;
+  seed: number;
+  poseModel: string;
+  poseSteps: number;
+  samplingTau: number;
+  randomActionProb: number;
+  replayWarmupStep: number;
+  replayCapacity: number;
+  boltzBaseYaml: string;
+  boltzTargetResidues: string[];
+  boltzMsaPath: string | null;
+  boltzCacheDir: string | null;
+  boltzUseMsaServer: boolean;
+  boltzWorker: number;
+};
 
 interface RunnerState {
   runs: Map<string, RunRecord>;
@@ -180,6 +210,155 @@ function parseConvexPath(value: string): { id: string; name?: string } | null {
   if (!value.startsWith('convex://')) return null;
   const parts = value.replace('convex://', '').split('::');
   return { id: parts[0]!, name: parts[1] };
+}
+
+function defaultImportedConfig(resultDir: string): OptConfig {
+  return {
+    result_dir: resultDir,
+    env_dir: './data/envs/enamine_stock_new',
+    max_atoms: 60,
+    subsampling_ratio: 0.1,
+    protein_path: '',
+    center: null,
+    ref_ligand_path: null,
+    size: [16, 16, 16],
+    num_steps: 0,
+    num_sampling_per_step: 32,
+    temperature: [1, 64],
+    seed: 481,
+    pose_model: './weights/cgflow_crossdock.ckpt',
+    pose_steps: 40,
+    sampling_tau: 0.9,
+    random_action_prob: 0.05,
+    replay_warmup_step: 10,
+    replay_capacity: 6400,
+    boltz: {
+      base_yaml: '',
+      target_residues: [],
+      msa_path: null,
+      cache_dir: null,
+      use_msa_server: false,
+      worker: 1,
+    },
+  };
+}
+
+function toNumberOrDefault(value: unknown, fallback: number): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+function toOptionalString(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  return null;
+}
+
+function toArray3(value: unknown, fallback: [number, number, number]): [number, number, number] {
+  if (Array.isArray(value) && value.length >= 3) {
+    return [
+      toNumberOrDefault(value[0], fallback[0]),
+      toNumberOrDefault(value[1], fallback[1]),
+      toNumberOrDefault(value[2], fallback[2]),
+    ];
+  }
+  return fallback;
+}
+
+function toArray2(value: unknown, fallback: [number, number]): [number, number] {
+  if (Array.isArray(value) && value.length >= 2) {
+    return [
+      toNumberOrDefault(value[0], fallback[0]),
+      toNumberOrDefault(value[1], fallback[1]),
+    ];
+  }
+  return fallback;
+}
+
+function normalizeImportedConfig(raw: unknown, resultDir: string): OptConfig {
+  const base = defaultImportedConfig(resultDir);
+  if (!raw || typeof raw !== 'object') return base;
+
+  const record = raw as Record<string, unknown>;
+  const boltzRaw =
+    (record.boltz && typeof record.boltz === 'object' ? (record.boltz as Record<string, unknown>) : null) ??
+    {};
+
+  const normalized: OptConfig = {
+    result_dir: (record.result_dir as string) || (record.resultDir as string) || base.result_dir,
+    env_dir: (record.env_dir as string) || (record.envDir as string) || base.env_dir,
+    max_atoms: toNumberOrDefault(record.max_atoms ?? record.maxAtoms, base.max_atoms),
+    subsampling_ratio: toNumberOrDefault(
+      record.subsampling_ratio ?? record.subsamplingRatio,
+      base.subsampling_ratio
+    ),
+    protein_path: (record.protein_path as string) || (record.proteinPath as string) || base.protein_path,
+    center:
+      Array.isArray(record.center) && record.center.length >= 3
+        ? [
+            toNumberOrDefault(record.center[0], 0),
+            toNumberOrDefault(record.center[1], 0),
+            toNumberOrDefault(record.center[2], 0),
+          ]
+        : null,
+    ref_ligand_path: toOptionalString(record.ref_ligand_path ?? record.refLigandPath),
+    size: toArray3(record.size, base.size),
+    num_steps: toNumberOrDefault(record.num_steps ?? record.numSteps, base.num_steps),
+    num_sampling_per_step: toNumberOrDefault(
+      record.num_sampling_per_step ?? record.numSamplingPerStep,
+      base.num_sampling_per_step
+    ),
+    temperature: toArray2(record.temperature, base.temperature),
+    seed: toNumberOrDefault(record.seed, base.seed),
+    pose_model: (record.pose_model as string) || (record.poseModel as string) || base.pose_model,
+    pose_steps: toNumberOrDefault(record.pose_steps ?? record.poseSteps, base.pose_steps),
+    sampling_tau: toNumberOrDefault(record.sampling_tau ?? record.samplingTau, base.sampling_tau),
+    random_action_prob: toNumberOrDefault(
+      record.random_action_prob ?? record.randomActionProb,
+      base.random_action_prob
+    ),
+    replay_warmup_step: toNumberOrDefault(
+      record.replay_warmup_step ?? record.replayWarmupStep,
+      base.replay_warmup_step
+    ),
+    replay_capacity: toNumberOrDefault(record.replay_capacity ?? record.replayCapacity, base.replay_capacity),
+    boltz: {
+      base_yaml:
+        (boltzRaw.base_yaml as string) ||
+        (boltzRaw.baseYaml as string) ||
+        (record.boltzBaseYaml as string) ||
+        base.boltz.base_yaml,
+      target_residues: Array.isArray(boltzRaw.target_residues)
+        ? boltzRaw.target_residues.filter((x): x is string => typeof x === 'string')
+        : Array.isArray(boltzRaw.targetResidues)
+        ? boltzRaw.targetResidues.filter((x): x is string => typeof x === 'string')
+        : base.boltz.target_residues,
+      msa_path: toOptionalString(boltzRaw.msa_path ?? boltzRaw.msaPath ?? record.boltzMsaPath),
+      cache_dir: toOptionalString(boltzRaw.cache_dir ?? boltzRaw.cacheDir ?? record.boltzCacheDir),
+      use_msa_server:
+        typeof (boltzRaw.use_msa_server ?? boltzRaw.useMsaServer ?? record.boltzUseMsaServer) === 'boolean'
+          ? Boolean(boltzRaw.use_msa_server ?? boltzRaw.useMsaServer ?? record.boltzUseMsaServer)
+          : base.boltz.use_msa_server,
+      worker: Math.max(
+        1,
+        Math.floor(
+          toNumberOrDefault(
+            boltzRaw.worker ?? boltzRaw.boltzWorker ?? record.boltzWorker,
+            base.boltz.worker ?? 1
+          )
+        )
+      ),
+    },
+  };
+
+  const parsed = OptConfigSchema.safeParse(normalized);
+  return parsed.success ? parsed.data : base;
 }
 
 async function readJson<T>(filePath: string, fallback: T): Promise<T> {
@@ -695,6 +874,37 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     };
   }
 
+  function optConfigToConvexCreateInput(config: OptConfig, name: string): ConvexConfigCreateInput {
+    return {
+      name,
+      resultDir: config.result_dir,
+      envDir: config.env_dir,
+      maxAtoms: config.max_atoms,
+      subsamplingRatio: config.subsampling_ratio,
+      proteinPath: config.protein_path,
+      center: config.center ? [...config.center] : null,
+      refLigandPath: config.ref_ligand_path,
+      size: [...config.size],
+      numSteps: config.num_steps,
+      numSamplingPerStep: config.num_sampling_per_step,
+      temperatureMin: config.temperature[0],
+      temperatureMax: config.temperature[1],
+      seed: config.seed,
+      poseModel: config.pose_model,
+      poseSteps: config.pose_steps,
+      samplingTau: config.sampling_tau,
+      randomActionProb: config.random_action_prob,
+      replayWarmupStep: config.replay_warmup_step,
+      replayCapacity: config.replay_capacity,
+      boltzBaseYaml: config.boltz.base_yaml,
+      boltzTargetResidues: config.boltz.target_residues,
+      boltzMsaPath: config.boltz.msa_path,
+      boltzCacheDir: config.boltz.cache_dir,
+      boltzUseMsaServer: config.boltz.use_msa_server,
+      boltzWorker: Math.max(1, Math.floor(config.boltz.worker ?? 1)),
+    };
+  }
+
   async function detectResultDir(baseDir: string, startedAt: number): Promise<string | null> {
     try {
       const entries = await fs.readdir(baseDir, { withFileTypes: true });
@@ -1200,6 +1410,15 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     const checkpointPath = await getLatestCheckpoint(resultDir);
     const startedAt = new Date(stats.mtimeMs).toISOString();
     const configPathCandidate = path.join(resultDir, 'config.yaml');
+    let importedConfig: OptConfig | null = null;
+    if (await pathExists(configPathCandidate)) {
+      try {
+        const configRaw = await fs.readFile(configPathCandidate, 'utf-8');
+        importedConfig = normalizeImportedConfig(YAML.parse(configRaw), resultDir);
+      } catch {
+        importedConfig = null;
+      }
+    }
 
     const run: RunRecord = {
       id: runId,
@@ -1208,16 +1427,138 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       resultDir,
       status: 'completed',
       currentStep: progress.currentStep,
-      totalSteps: progress.totalSteps,
+      totalSteps: progress.totalSteps || importedConfig?.num_steps || progress.currentStep,
       startedAt,
       lastUpdatedAt: new Date().toISOString(),
       checkpointPath,
       error: null,
       pid: null,
+      configId: null,
+      convexRunId: null,
       source: 'local',
       logPath: path.join(resultDir, 'train.log'),
     };
 
+    // Best-effort cloud sync for imported runs when Convex is configured.
+    if (convexClient && convexUrl) {
+      try {
+        const configForCloud = importedConfig ?? defaultImportedConfig(resultDir);
+        const convexConfigId = await convexClient.mutation(
+          api.configs.create,
+          optConfigToConvexCreateInput(configForCloud, `${run.name} (imported)`) as any
+        );
+        run.configId = convexConfigId as any;
+
+        const convexRunId = await convexSync.createRun(
+          convexConfigId as any,
+          run.name,
+          run.resultDir,
+          run.totalSteps
+        );
+
+        if (convexRunId) {
+          run.convexRunId = convexRunId;
+          await convexSync.syncRun(run.id, convexRunId, run.resultDir);
+          await convexSync.updateRunStatus(
+            convexRunId,
+            run.status,
+            run.currentStep,
+            run.checkpointPath,
+            run.error
+          );
+        }
+      } catch (err) {
+        console.error(`Failed to sync imported run ${run.id} to Convex:`, err);
+      }
+    }
+
+    state.runs.set(run.id, run);
+    await persistRuns();
+    broadcast('run:status-changed', run);
+    return run;
+  }
+
+  async function deleteRun(runId: string): Promise<void> {
+    const run = state.runs.get(runId);
+    if (!run) {
+      throw new Error(`Run ${runId} not found`);
+    }
+    if (state.processes.has(runId) || isProcessAlive(run.pid)) {
+      throw new Error('Cannot delete a running run. Stop it first.');
+    }
+
+    convexSync.stopSync(runId);
+
+    if (run.convexRunId && convexClient) {
+      try {
+        await convexClient.mutation(api.runs.remove, { id: run.convexRunId as any });
+      } catch (err) {
+        console.error(`Failed to delete cloud run for ${runId}:`, err);
+      }
+    }
+
+    state.runs.delete(runId);
+    state.outputs.delete(runId);
+    state.processes.delete(runId);
+    artifactMapCache.delete(run.resultDir);
+    await persistRuns();
+  }
+
+  async function syncRunToCloud(runId: string): Promise<RunRecord> {
+    const run = state.runs.get(runId);
+    if (!run) {
+      throw new Error(`Run ${runId} not found`);
+    }
+    if (!convexClient || !convexUrl) {
+      throw new Error('Convex is not configured. Set VITE_CONVEX_URL/CONVEX_URL to enable cloud sync.');
+    }
+
+    if (!run.configId) {
+      let configForCloud: OptConfig | null = null;
+      if (run.configPath && run.configPath.endsWith('.yaml')) {
+        try {
+          const configRaw = await fs.readFile(run.configPath, 'utf-8');
+          configForCloud = normalizeImportedConfig(YAML.parse(configRaw), run.resultDir);
+        } catch {
+          configForCloud = null;
+        }
+      }
+      const fallbackConfig = configForCloud ?? defaultImportedConfig(run.resultDir);
+      const convexConfigId = await convexClient.mutation(
+        api.configs.create,
+        optConfigToConvexCreateInput(fallbackConfig, `${run.name} (synced)`) as any
+      );
+      run.configId = convexConfigId as any;
+    }
+
+    if (!run.convexRunId) {
+      const convexRunId = await convexSync.createRun(
+        run.configId!,
+        run.name,
+        run.resultDir,
+        run.totalSteps
+      );
+      if (!convexRunId) {
+        throw new Error('Failed to create run in cloud.');
+      }
+      run.convexRunId = convexRunId;
+    }
+
+    await convexSync.syncRun(run.id, run.convexRunId, run.resultDir);
+    await convexSync.updateRunStatus(
+      run.convexRunId,
+      run.status,
+      run.currentStep,
+      run.checkpointPath,
+      run.error
+    );
+
+    // Keep periodic sync active only for actively running runs.
+    if (run.status === 'running') {
+      convexSync.startSync(run.id, run.convexRunId, run.resultDir, 30000);
+    }
+
+    run.lastUpdatedAt = new Date().toISOString();
     state.runs.set(run.id, run);
     await persistRuns();
     broadcast('run:status-changed', run);
@@ -1613,6 +1954,26 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
           sendJson(200, run);
         } catch (err) {
           sendText(500, err instanceof Error ? err.message : 'Failed to resume run');
+        }
+        return;
+      }
+
+      if (req.method === 'POST' && pathParts[2] === 'delete') {
+        try {
+          await deleteRun(runId);
+          sendJson(200, { ok: true });
+        } catch (err) {
+          sendText(500, err instanceof Error ? err.message : 'Failed to delete run');
+        }
+        return;
+      }
+
+      if (req.method === 'POST' && pathParts[2] === 'sync-cloud') {
+        try {
+          const run = await syncRunToCloud(runId);
+          sendJson(200, run);
+        } catch (err) {
+          sendText(500, err instanceof Error ? err.message : 'Failed to sync run to cloud');
         }
         return;
       }

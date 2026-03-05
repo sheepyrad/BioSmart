@@ -40,7 +40,7 @@ import {
   PauseCircle,
   Circle,
   FolderOpen,
-  GripVertical,
+  CloudUpload,
   FileText,
   Trash2,
   Square,
@@ -53,6 +53,10 @@ interface DashboardProps {
 
 const DASHBOARD_MOLECULE_LIMIT = 5000;
 const TABLE_PAGE_SIZE = 50;
+const SIDEBAR_MIN_WIDTH = 220;
+const SIDEBAR_MAX_WIDTH = 520;
+const SIDEBAR_DEFAULT_WIDTH = 256;
+const HIDDEN_RUN_IDS_KEY = 'cgflow.hiddenRunIds';
 const LOG_TAIL_LINES = 200;
 
 const kpiVariants = {
@@ -145,6 +149,16 @@ function getStatusIcon(status: string) {
   }
 }
 
+function getRunOrigin(run: RunInfo): 'Cloud' | 'Synced' | 'Local' {
+  if (run.source === 'convex') return 'Cloud';
+  if (run.convexRunId) return 'Synced';
+  return 'Local';
+}
+
+function computeBoltzScore(affinity: number, probability: number): number {
+  return ((-affinity + 2) / 4) * probability;
+}
+
 // Type for Convex run
 interface ConvexRun {
   _id: string;
@@ -176,10 +190,24 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
   const [localBoltzMetrics, setLocalBoltzMetrics] = useState<BoltzMetricSeries | null>(null);
   const [isBoltzMetricsLoading, setIsBoltzMetricsLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
+  const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
   const [isLogLoading, setIsLogLoading] = useState(false);
   const [tablePage, setTablePage] = useState(1);
-  const [sidebarWidth, setSidebarWidth] = useState(280);
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const [runLogLines, setRunLogLines] = useState<string[]>([]);
+  const [hiddenRunIds, setHiddenRunIds] = useState<Set<string>>(() => {
+    if (typeof window === 'undefined') return new Set();
+    try {
+      const raw = window.localStorage.getItem(HIDDEN_RUN_IDS_KEY);
+      if (!raw) return new Set();
+      const parsed = JSON.parse(raw) as string[];
+      return new Set(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      return new Set();
+    }
+  });
 
   const convexMoleculeRows = useQuery(
     api.molecules.getByRun,
@@ -260,6 +288,34 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     }
   }, [activeRun]);
 
+  const persistHiddenRunIds = useCallback((next: Set<string>) => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(HIDDEN_RUN_IDS_KEY, JSON.stringify(Array.from(next)));
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
+  const hideRunFromSidebar = useCallback(
+    (runId: string) => {
+      setHiddenRunIds((prev) => {
+        const next = new Set(prev);
+        next.add(runId);
+        persistHiddenRunIds(next);
+        return next;
+      });
+      setRunnerRuns((prev) => prev.filter((r) => r.id !== runId));
+      if (selectedRun?.id === runId) {
+        setSelectedRun(null);
+        setSelectedMolecule(null);
+        setMolecules([]);
+        setTablePage(1);
+      }
+    },
+    [persistHiddenRunIds, selectedRun]
+  );
+
   // Fetch local runner runs
   useEffect(() => {
     let mounted = true;
@@ -268,7 +324,11 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       try {
         const runs = await invoke('run:list');
         if (!mounted) return;
-        setRunnerRuns((runs ?? []).map((run) => ({ ...run, source: 'local' })));
+        setRunnerRuns(
+          (runs ?? [])
+            .map((run) => ({ ...run, source: 'local' as const }))
+            .filter((run) => !hiddenRunIds.has(run.id))
+        );
       } catch {
         if (!mounted) return;
         setRunnerRuns([]);
@@ -282,7 +342,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       mounted = false;
       clearInterval(interval);
     };
-  }, [invoke]);
+  }, [invoke, hiddenRunIds]);
 
   // Convert Convex run to RunInfo format
   const convertConvexRun = (run: ConvexRun): RunInfo => ({
@@ -302,8 +362,10 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
 
   // Combine local runner runs with Convex runs (dedupe by convexRunId)
   const localRuns = [
-    ...runnerRuns,
-    ...(activeRun && !runnerRuns.find((r) => r.id === activeRun.id) ? [activeRun] : []),
+    ...runnerRuns.filter((run) => !hiddenRunIds.has(run.id)),
+    ...(activeRun && !hiddenRunIds.has(activeRun.id) && !runnerRuns.find((r) => r.id === activeRun.id)
+      ? [activeRun]
+      : []),
   ].map((run) => ({ ...run, source: 'local' as const }));
 
   const convexRunList = convexRuns?.map(convertConvexRun) ?? [];
@@ -478,27 +540,6 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     }
   }, [invoke]);
 
-  const handleDeleteRun = useCallback(async (run: RunInfo) => {
-    if (run.source !== 'local') return;
-    if (run.status === 'running') {
-      window.alert('Stop this run before deleting it.');
-      return;
-    }
-    const confirmed = window.confirm(`Delete "${run.name}" from run history?`);
-    if (!confirmed) return;
-
-    try {
-      await invoke('run:delete', run.id);
-      setRunnerRuns((prev) => prev.filter((item) => item.id !== run.id));
-      setSelectedRun((prev) => (prev?.id === run.id ? null : prev));
-      setSelectedMolecule(null);
-      setMolecules([]);
-    } catch (err) {
-      console.error('Failed to delete run:', err);
-      window.alert(err instanceof Error ? err.message : 'Failed to delete run.');
-    }
-  }, [invoke]);
-
   const handleImportRun = useCallback(async () => {
     try {
       const dir = await invoke('file:select-directory');
@@ -512,6 +553,78 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       console.error('Failed to import run:', err);
     }
   }, [invoke]);
+
+  const handleSyncSelectedRunToCloud = useCallback(async () => {
+    if (!selectedRun || selectedRun.source === 'convex') return;
+    setIsSyncingCloud(true);
+    try {
+      const synced = await invoke('run:sync-to-cloud', selectedRun.id);
+      setSelectedRun(synced);
+      setRunnerRuns((prev) => prev.map((run) => (run.id === synced.id ? { ...synced, source: 'local' } : run)));
+    } catch (err) {
+      console.error('Failed to sync run to cloud:', err);
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  }, [invoke, selectedRun]);
+
+  const handleDeleteRun = useCallback(
+    async (run: RunInfo) => {
+      if (run.source === 'convex') return;
+      if (run.status === 'running') {
+        window.alert('Stop this run before deleting it.');
+        return;
+      }
+      const confirmed = window.confirm(`Delete run "${run.name}" from sidebar history?`);
+      if (!confirmed) return;
+
+      setDeletingRunId(run.id);
+      try {
+        await invoke('run:delete', run.id);
+        hideRunFromSidebar(run.id);
+      } catch (err) {
+        console.error('Failed to delete run:', err);
+        window.alert(err instanceof Error ? err.message : 'Failed to delete run.');
+      } finally {
+        setDeletingRunId(null);
+      }
+    },
+    [hideRunFromSidebar, invoke]
+  );
+
+  const startSidebarResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsResizingSidebar(true);
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const deltaX = moveEvent.clientX - startX;
+      const nextWidth = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, startWidth + deltaX));
+      setSidebarWidth(nextWidth);
+    };
+
+    const onUp = () => {
+      setIsResizingSidebar(false);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp, { once: true });
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    if (!isResizingSidebar) return;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+    };
+  }, [isResizingSidebar]);
 
   useEffect(() => {
     setTablePage(1);
@@ -581,7 +694,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     <div className="min-h-full flex">
       {/* Left Sidebar: Runs List */}
       <motion.div 
-        className="shrink-0 border-r border-border/50 flex flex-col bg-slate-50/50 relative"
+        className="shrink-0 border-r border-border/50 flex flex-col bg-slate-50/50"
         style={{ width: sidebarWidth }}
         initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: 1, x: 0 }}
@@ -603,6 +716,16 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
             <FolderOpen className="h-3.5 w-3.5" />
             Import Existing Run
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-2 w-full justify-start gap-2"
+            onClick={handleSyncSelectedRunToCloud}
+            disabled={!selectedRun || selectedRun.source === 'convex' || isSyncingCloud}
+          >
+            <CloudUpload className="h-3.5 w-3.5" />
+            {isSyncingCloud ? 'Syncing...' : 'Sync Selected Run'}
+          </Button>
         </div>
         
         <ScrollArea className="flex-1">
@@ -613,25 +736,29 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: idx * 0.05 }}
+                onClick={() => handleSelectRun(run)}
                 className={`w-full text-left p-3 rounded-lg transition-all duration-200 ${
                   selectedRun?.id === run.id
                     ? 'bg-primary/10 border border-primary/30'
                     : 'hover:bg-white border border-transparent hover:border-border/50'
-                }`}
+                } cursor-pointer`}
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex-1 min-w-0">
-                    <button className="w-full text-left" onClick={() => handleSelectRun(run)}>
-                      <div className="flex items-center gap-2">
-                        {getStatusIcon(run.status)}
-                        <span className="text-sm font-medium truncate">{run.name}</span>
-                      </div>
-                      <div className="text-xs text-muted-foreground mt-1">
-                        Step {run.currentStep}/{run.totalSteps}
-                      </div>
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {getStatusIcon(run.status)}
+                      <span className="text-sm font-medium truncate">{run.name}</span>
+                    </div>
+                    <div className="mt-1">
+                      <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-medium">
+                        {getRunOrigin(run)}
+                      </Badge>
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      Step {run.currentStep}/{run.totalSteps}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
+                  <div className="flex items-center gap-1 shrink-0 mt-0.5">
                     {run.source === 'local' && run.status === 'running' && (
                       <Button
                         variant="ghost"
@@ -646,53 +773,36 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                         <Square className="h-3.5 w-3.5 text-amber-600" />
                       </Button>
                     )}
-                    {run.source === 'local' && run.status !== 'running' && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        title="Delete run from history"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void handleDeleteRun(run);
-                        }}
-                      >
-                        <Trash2 className="h-3.5 w-3.5 text-red-600" />
-                      </Button>
-                    )}
                     {selectedRun?.id === run.id && (
-                      <ChevronRight className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+                      <ChevronRight className="h-4 w-4 text-primary" />
                     )}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      disabled={run.source !== 'local' || deletingRunId === run.id || run.status === 'running'}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleDeleteRun(run);
+                      }}
+                      title={run.source === 'convex' ? 'Cloud run cannot be deleted here' : 'Delete run from history'}
+                    >
+                      <Trash2 className="h-3.5 w-3.5 text-red-600" />
+                    </Button>
                   </div>
                 </div>
               </motion.div>
             ))}
           </div>
         </ScrollArea>
-        <div
-          className="absolute top-0 right-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-primary/20 transition-colors"
-          onMouseDown={(event) => {
-            event.preventDefault();
-            const startX = event.clientX;
-            const startWidth = sidebarWidth;
-            const onMove = (moveEvent: MouseEvent) => {
-              const nextWidth = startWidth + (moveEvent.clientX - startX);
-              setSidebarWidth(Math.max(220, Math.min(480, nextWidth)));
-            };
-            const onUp = () => {
-              window.removeEventListener('mousemove', onMove);
-              window.removeEventListener('mouseup', onUp);
-            };
-            window.addEventListener('mousemove', onMove);
-            window.addEventListener('mouseup', onUp);
-          }}
-          title="Drag to resize sidebar"
-        >
-          <div className="h-full flex items-center justify-center">
-            <GripVertical className="h-4 w-4 text-muted-foreground/50" />
-          </div>
-        </div>
       </motion.div>
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize run history sidebar"
+        className="w-1 shrink-0 cursor-col-resize bg-border/40 hover:bg-primary/40 transition-colors"
+        onPointerDown={startSidebarResize}
+      />
 
       {/* Main Content */}
       {selectedRun ? (
@@ -860,7 +970,9 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                                   { label: 'Ensemble', aff: selectedMolecule.boltzScores.affinity_ensemble, prob: selectedMolecule.boltzScores.probability_ensemble },
                                   { label: 'Model 1', aff: selectedMolecule.boltzScores.affinity_model1, prob: selectedMolecule.boltzScores.probability_model1 },
                                   { label: 'Model 2', aff: selectedMolecule.boltzScores.affinity_model2, prob: selectedMolecule.boltzScores.probability_model2 },
-                                ].map((item, i) => (
+                                ].map((item, i) => {
+                                  const boltzScore = computeBoltzScore(item.aff, item.prob);
+                                  return (
                                   <motion.div
                                     key={item.label}
                                     initial={{ opacity: 0, y: 10 }}
@@ -878,9 +990,14 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                                         <span className="text-muted-foreground">Probability</span>
                                         <span className="font-mono font-medium">{item.prob.toFixed(3)}</span>
                                       </div>
+                                      <div className="flex justify-between">
+                                        <span className="text-muted-foreground">Boltz Score</span>
+                                        <span className="font-mono font-medium">{boltzScore.toFixed(3)}</span>
+                                      </div>
                                     </div>
                                   </motion.div>
-                                ))}
+                                  );
+                                })}
                               </div>
                             </CardContent>
                           </Card>
