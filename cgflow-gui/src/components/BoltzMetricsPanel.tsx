@@ -27,7 +27,7 @@ function lineChart(
   }));
 
   return (
-    <div className="h-44 w-full overflow-hidden rounded bg-slate-50">
+    <div className="h-44 w-full overflow-hidden rounded-md border border-border bg-card">
       <Plot
         data={traces as any}
         layout={{
@@ -35,17 +35,19 @@ function lineChart(
           height: 176,
           margin: { l: 62, r: 12, t: 10, b: 46 },
           paper_bgcolor: 'rgba(0,0,0,0)',
-          plot_bgcolor: '#f8fafc',
+          plot_bgcolor: '#fffdfb',
           showlegend: false,
           xaxis: {
             title: { text: 'Molecules processed' },
             automargin: true,
             zeroline: false,
+            gridcolor: '#e9dfd2',
           },
           yaxis: {
             title: { text: yAxisTitle },
             automargin: true,
             rangemode: 'tozero',
+            gridcolor: '#e9dfd2',
             ...(typeof yMax === 'number' && Number.isFinite(yMax) ? { range: [0, yMax * 1.05] } : {}),
           },
         } as any}
@@ -104,7 +106,7 @@ export default function BoltzMetricsPanel({ metrics, isLoading = false }: BoltzM
   }, [thresholdSeries]);
 
   return (
-    <Card className="glass-card">
+    <Card>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between gap-2">
           <CardTitle className="text-base">Boltz Score Trends</CardTitle>

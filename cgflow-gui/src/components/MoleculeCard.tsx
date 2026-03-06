@@ -1,5 +1,4 @@
 import { useEffect, useState, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import type { MoleculeResult } from '@shared/types';
@@ -66,13 +65,11 @@ export default function MoleculeCard({ molecule }: MoleculeCardProps) {
   };
 
   return (
-    <Card className="glass-card overflow-hidden">
-      <CardHeader className="pb-2">
+    <Card className="overflow-hidden">
+      <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="p-2 rounded-lg bg-cyan-500/10">
-              <Atom className="h-4 w-4 text-cyan-500" />
-            </div>
+            <Atom className="h-4 w-4 text-muted-foreground" />
             <CardTitle className="text-base">Structure</CardTitle>
           </div>
           <Badge variant="success">
@@ -81,106 +78,50 @@ export default function MoleculeCard({ molecule }: MoleculeCardProps) {
         </div>
       </CardHeader>
       <CardContent>
-        {/* Molecule visualization */}
-        <motion.div 
-          className="bg-gradient-to-br from-slate-50 to-white rounded-xl h-52 flex items-center justify-center mb-4 overflow-hidden border border-slate-200"
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.3 }}
-        >
-          <AnimatePresence mode="wait">
-            {svgContent ? (
-              <motion.div
-                key="svg"
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.9 }}
-                transition={{ duration: 0.3 }}
-                dangerouslySetInnerHTML={{ __html: svgContent }}
-                className="[&_svg]:max-w-full [&_svg]:h-auto p-4"
-              />
-            ) : error ? (
-              <motion.div
-                key="error"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="text-center p-4"
-              >
-                <p className="text-sm text-destructive">{error}</p>
-              </motion.div>
-            ) : (
-              <motion.div
-                key="loading"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="text-center p-4"
-              >
-                <motion.div
-                  animate={{
-                    rotate: 360,
-                  }}
-                  transition={{
-                    duration: 2,
-                    repeat: Infinity,
-                    ease: 'linear',
-                  }}
-                >
-                  <Atom className="h-8 w-8 text-muted-foreground/50 mx-auto mb-2" />
-                </motion.div>
-                <p className="text-sm text-muted-foreground">Loading structure...</p>
-                <canvas ref={canvasRef} width={300} height={150} className="hidden" />
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </motion.div>
+        <div className="mb-4 flex h-52 items-center justify-center overflow-hidden rounded-md border border-border bg-muted/35">
+          {svgContent ? (
+            <div
+              dangerouslySetInnerHTML={{ __html: svgContent }}
+              className="[&_svg]:h-auto [&_svg]:max-w-full p-4"
+            />
+          ) : error ? (
+            <div className="p-4 text-center">
+              <p className="text-sm text-destructive">{error}</p>
+            </div>
+          ) : (
+            <div className="p-4 text-center">
+              <Atom className="mx-auto mb-2 h-8 w-8 text-muted-foreground/60" />
+              <p className="text-sm text-muted-foreground">Loading structure...</p>
+              <canvas ref={canvasRef} width={300} height={150} className="hidden" />
+            </div>
+          )}
+        </div>
 
-        {/* SMILES string */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">SMILES</p>
+            <p className="text-sm font-medium text-foreground">SMILES</p>
             <Button
               variant="ghost"
               size="sm"
               onClick={handleCopy}
               className="h-6 px-2 text-xs"
             >
-              <AnimatePresence mode="wait">
-                {copied ? (
-                  <motion.div
-                    key="check"
-                    initial={{ scale: 0 }}
-                    animate={{ scale: 1 }}
-                    exit={{ scale: 0 }}
-                    className="flex items-center gap-1 text-green-500"
-                  >
-                    <Check className="h-3 w-3" />
-                    Copied
-                  </motion.div>
-                ) : (
-                  <motion.div
-                    key="copy"
-                    initial={{ scale: 0 }}
-                    animate={{ scale: 1 }}
-                    exit={{ scale: 0 }}
-                    className="flex items-center gap-1"
-                  >
-                    <Copy className="h-3 w-3" />
-                    Copy
-                  </motion.div>
-                )}
-              </AnimatePresence>
+              {copied ? (
+                <span className="flex items-center gap-1 text-accent">
+                  <Check className="h-3 w-3" />
+                  Copied
+                </span>
+              ) : (
+                <span className="flex items-center gap-1">
+                  <Copy className="h-3 w-3" />
+                  Copy
+                </span>
+              )}
             </Button>
           </div>
-          <motion.div 
-            className="bg-slate-50 p-3 rounded-lg font-mono text-xs break-all border border-slate-200"
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-          >
+          <div className="rounded-md border border-border bg-muted/35 p-3 font-mono text-xs break-all">
             {molecule.smiles}
-          </motion.div>
+          </div>
         </div>
       </CardContent>
     </Card>
