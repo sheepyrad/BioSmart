@@ -1,7 +1,6 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, type PointerEvent as ReactPointerEvent } from 'react';
 import { useQuery } from 'convex/react';
 import { api } from '../../convex/_generated/api';
-import { motion, AnimatePresence } from 'framer-motion';
 import { useConvexRuns, useConvexAvailable } from '@/hooks/useConvex';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -22,28 +21,21 @@ import ReactionPathway from '@/components/ReactionPathway';
 import BoltzMetricsPanel from '@/components/BoltzMetricsPanel';
 import { computeBoltzMetrics } from '@shared/boltzMetrics';
 import type { BoltzMetricInputRow, BoltzMetricSeries, RunInfo, MoleculeResult } from '@shared/types';
-import { 
-  Activity, 
-  Clock, 
-  Zap, 
-  TrendingUp, 
-  RefreshCw, 
-  Beaker,
-  Sparkles,
-  BarChart3,
+import {
   Atom,
-  History,
-  ChevronRight,
-  PlayCircle,
+  Beaker,
   CheckCircle2,
-  XCircle,
-  PauseCircle,
   Circle,
-  FolderOpen,
   CloudUpload,
   FileText,
-  Trash2,
+  FolderOpen,
+  History,
+  PauseCircle,
+  PlayCircle,
+  RefreshCw,
   Square,
+  Trash2,
+  XCircle,
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -58,81 +50,6 @@ const SIDEBAR_MAX_WIDTH = 520;
 const SIDEBAR_DEFAULT_WIDTH = 256;
 const HIDDEN_RUN_IDS_KEY = 'cgflow.hiddenRunIds';
 const LOG_TAIL_LINES = 200;
-
-const kpiVariants = {
-  hidden: { opacity: 0, y: 20, scale: 0.95 },
-  visible: (i: number) => ({
-    opacity: 1,
-    y: 0,
-    scale: 1,
-    transition: {
-      delay: i * 0.1,
-      duration: 0.4,
-      ease: [0.25, 0.1, 0.25, 1],
-    },
-  }),
-};
-
-function KPICard({ 
-  title, 
-  value, 
-  icon: Icon, 
-  color,
-  index,
-  suffix,
-  isLoading,
-}: { 
-  title: string; 
-  value: string | number; 
-  icon: React.ElementType; 
-  color: string;
-  index: number;
-  suffix?: string;
-  isLoading?: boolean;
-}) {
-  return (
-    <motion.div
-      variants={kpiVariants}
-      initial="hidden"
-      animate="visible"
-      custom={index}
-    >
-      <Card className="glass-card card-glow h-full overflow-hidden relative">
-        <div className={`absolute inset-0 bg-gradient-to-br ${color} opacity-5`} />
-        <CardContent className="pt-5 relative">
-          <div className="flex items-start justify-between">
-            <div className="space-y-1">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{title}</p>
-              <div className="flex items-baseline gap-1">
-                {isLoading ? (
-                  <div className="h-8 w-16 skeleton rounded" />
-                ) : (
-                  <>
-                    <motion.p 
-                      className="text-2xl font-bold tabular-nums"
-                      key={value}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ duration: 0.3 }}
-                    >
-                      {value}
-                    </motion.p>
-                    {suffix && (
-                      <span className="text-sm text-muted-foreground">{suffix}</span>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-            <div className={`p-2 rounded-lg bg-gradient-to-br ${color} bg-opacity-10`}>
-              <Icon className="h-5 w-5 text-foreground/70" />
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-    </motion.div>
-  );
-}
 
 function getStatusIcon(status: string) {
   switch (status) {
@@ -159,7 +76,34 @@ function computeBoltzScore(affinity: number, probability: number): number {
   return ((-affinity + 2) / 4) * probability;
 }
 
-// Type for Convex run
+function getStatusBadgeVariant(status: RunInfo['status']) {
+  switch (status) {
+    case 'running':
+      return 'success';
+    case 'error':
+      return 'destructive';
+    case 'paused':
+      return 'warning';
+    default:
+      return 'secondary';
+  }
+}
+
+function SummaryField({
+  label,
+  value,
+}: {
+  label: string;
+  value: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1 rounded-md border border-border bg-muted/25 px-3 py-3">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <div className="text-sm font-medium">{value}</div>
+    </div>
+  );
+}
+
 interface ConvexRun {
   _id: string;
   configId: string;
@@ -177,12 +121,9 @@ interface ConvexRun {
 
 export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusChange }: DashboardProps) {
   const invoke = useIpcInvoke();
-  
-  // Fetch runs from Convex (returns null if Convex is not configured)
   const convexRuns = useConvexRuns();
   const isConvexAvailable = useConvexAvailable();
   const [runnerRuns, setRunnerRuns] = useState<RunInfo[]>([]);
-  
   const [selectedRun, setSelectedRun] = useState<RunInfo | null>(activeRun);
   const [molecules, setMolecules] = useState<MoleculeResult[]>([]);
   const [selectedMolecule, setSelectedMolecule] = useState<MoleculeResult | null>(null);
@@ -232,6 +173,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       } catch {
         trajectory = [];
       }
+
       const hasScores =
         row.affinityEnsemble !== null ||
         row.probabilityEnsemble !== null ||
@@ -281,7 +223,6 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
 
   const activeBoltzMetrics = selectedRun?.source === 'convex' ? convexBoltzMetrics : localBoltzMetrics;
 
-  // Update selected run when activeRun changes
   useEffect(() => {
     if (activeRun) {
       setSelectedRun(activeRun);
@@ -293,7 +234,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     try {
       window.localStorage.setItem(HIDDEN_RUN_IDS_KEY, JSON.stringify(Array.from(next)));
     } catch {
-      // ignore storage errors
+      // Ignore storage errors.
     }
   }, []);
 
@@ -305,7 +246,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
         persistHiddenRunIds(next);
         return next;
       });
-      setRunnerRuns((prev) => prev.filter((r) => r.id !== runId));
+      setRunnerRuns((prev) => prev.filter((run) => run.id !== runId));
       if (selectedRun?.id === runId) {
         setSelectedRun(null);
         setSelectedMolecule(null);
@@ -316,7 +257,6 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     [persistHiddenRunIds, selectedRun]
   );
 
-  // Fetch local runner runs
   useEffect(() => {
     let mounted = true;
 
@@ -335,20 +275,19 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       }
     };
 
-    fetchRuns();
+    void fetchRuns();
     const interval = setInterval(fetchRuns, 5000);
 
     return () => {
       mounted = false;
       clearInterval(interval);
     };
-  }, [invoke, hiddenRunIds]);
+  }, [hiddenRunIds, invoke]);
 
-  // Convert Convex run to RunInfo format
   const convertConvexRun = (run: ConvexRun): RunInfo => ({
     id: run._id,
     name: run.name,
-    configPath: '', // Not stored in Convex run, use configId if needed
+    configPath: '',
     resultDir: run.resultDir,
     status: run.status,
     currentStep: run.currentStep,
@@ -360,17 +299,16 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     source: 'convex',
   });
 
-  // Combine local runner runs with Convex runs (dedupe by convexRunId)
   const localRuns = [
     ...runnerRuns.filter((run) => !hiddenRunIds.has(run.id)),
-    ...(activeRun && !hiddenRunIds.has(activeRun.id) && !runnerRuns.find((r) => r.id === activeRun.id)
+    ...(activeRun && !hiddenRunIds.has(activeRun.id) && !runnerRuns.find((run) => run.id === activeRun.id)
       ? [activeRun]
       : []),
   ].map((run) => ({ ...run, source: 'local' as const }));
 
   const convexRunList = convexRuns?.map(convertConvexRun) ?? [];
   const localConvexIds = new Set(
-    localRuns.map((r) => r.convexRunId).filter((id): id is string => Boolean(id))
+    localRuns.map((run) => run.convexRunId).filter((id): id is string => Boolean(id))
   );
 
   const allRuns: RunInfo[] = [
@@ -401,11 +339,10 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       }
     };
 
-    fetchMolecules();
+    void fetchMolecules();
     const interval = setInterval(fetchMolecules, 5000);
-
     return () => clearInterval(interval);
-  }, [selectedRun, invoke, selectedMolecule, mappedConvexMolecules]);
+  }, [invoke, mappedConvexMolecules, selectedMolecule, selectedRun]);
 
   useEffect(() => {
     if (!selectedRun) {
@@ -437,7 +374,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     return () => {
       isMounted = false;
     };
-  }, [selectedRun, invoke]);
+  }, [invoke, selectedRun]);
 
   useEffect(() => {
     if (!selectedMolecule || !selectedRun) {
@@ -466,8 +403,8 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       }
     };
 
-    loadComplex();
-  }, [selectedMolecule, selectedRun, invoke]);
+    void loadComplex();
+  }, [invoke, selectedMolecule, selectedRun]);
 
   useEffect(() => {
     if (!selectedRun) {
@@ -503,7 +440,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       isMounted = false;
       clearInterval(interval);
     };
-  }, [selectedRun, invoke]);
+  }, [invoke, selectedRun]);
 
   const handleRefresh = useCallback(async () => {
     if (!selectedRun) return;
@@ -522,14 +459,14 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     } finally {
       setIsLoading(false);
     }
-  }, [selectedRun, invoke, mappedConvexMolecules]);
+  }, [invoke, mappedConvexMolecules, selectedRun]);
 
-  const handleSelectRun = (run: RunInfo) => {
+  const handleSelectRun = useCallback((run: RunInfo) => {
     setSelectedRun(run);
     setSelectedMolecule(null);
     setMolecules([]);
     setTablePage(1);
-  };
+  }, []);
 
   const handleStopRun = useCallback(async (run: RunInfo) => {
     if (run.source !== 'local' || run.status !== 'running') return;
@@ -568,31 +505,28 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     }
   }, [invoke, selectedRun]);
 
-  const handleDeleteRun = useCallback(
-    async (run: RunInfo) => {
-      if (run.source === 'convex') return;
-      if (run.status === 'running') {
-        window.alert('Stop this run before deleting it.');
-        return;
-      }
-      const confirmed = window.confirm(`Delete run "${run.name}" from sidebar history?`);
-      if (!confirmed) return;
+  const handleDeleteRun = useCallback(async (run: RunInfo) => {
+    if (run.source === 'convex') return;
+    if (run.status === 'running') {
+      window.alert('Stop this run before deleting it.');
+      return;
+    }
+    const confirmed = window.confirm(`Delete run "${run.name}" from sidebar history?`);
+    if (!confirmed) return;
 
-      setDeletingRunId(run.id);
-      try {
-        await invoke('run:delete', run.id);
-        hideRunFromSidebar(run.id);
-      } catch (err) {
-        console.error('Failed to delete run:', err);
-        window.alert(err instanceof Error ? err.message : 'Failed to delete run.');
-      } finally {
-        setDeletingRunId(null);
-      }
-    },
-    [hideRunFromSidebar, invoke]
-  );
+    setDeletingRunId(run.id);
+    try {
+      await invoke('run:delete', run.id);
+      hideRunFromSidebar(run.id);
+    } catch (err) {
+      console.error('Failed to delete run:', err);
+      window.alert(err instanceof Error ? err.message : 'Failed to delete run.');
+    } finally {
+      setDeletingRunId(null);
+    }
+  }, [hideRunFromSidebar, invoke]);
 
-  const startSidebarResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+  const startSidebarResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     setIsResizingSidebar(true);
     const startX = event.clientX;
@@ -643,68 +577,53 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     if (tablePage !== safePage) {
       setTablePage(safePage);
     }
-  }, [tablePage, safePage]);
+  }, [safePage, tablePage]);
 
   const affinityValues = molecules
-    .filter((m) => m.boltzScores)
-    .map((m) => m.boltzScores!.affinity_ensemble);
+    .filter((molecule) => molecule.boltzScores)
+    .map((molecule) => molecule.boltzScores!.affinity_ensemble);
   const probabilityValues = molecules
-    .filter((m) => m.boltzScores)
-    .map((m) => m.boltzScores!.probability_ensemble);
+    .filter((molecule) => molecule.boltzScores)
+    .map((molecule) => molecule.boltzScores!.probability_ensemble);
 
   const bestAffinity = affinityValues.length > 0 ? Math.min(...affinityValues) : null;
   const bestProbability = probabilityValues.length > 0 ? Math.max(...probabilityValues) : null;
 
-  // No runs at all - show empty state
   if (allRuns.length === 0) {
     return (
-      <motion.div
-        className="w-full p-6"
-        initial={{ opacity: 0, scale: 0.97 }}
-        animate={{ opacity: 1, scale: 1 }}
-      >
+      <div className="w-full p-6">
         <div className="mx-auto w-full max-w-lg pt-8">
-        <Card className="glass-card card-glow w-full">
-          <CardHeader className="pb-2">
-            <div className="flex items-center gap-2">
-              <Beaker className="h-5 w-5 text-primary" />
-              <CardTitle className="text-base">No runs found</CardTitle>
-            </div>
-          </CardHeader>
-          <CardContent className="pt-2 space-y-3">
-            <p className="text-sm text-muted-foreground">
-              There are no previous runs yet. Start your first training run from the Configuration tab.
-            </p>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <FolderOpen className="h-4 w-4" />
-              <span>Completed runs will appear here automatically.</span>
-            </div>
-            <Button variant="outline" className="w-full gap-2" onClick={handleImportRun}>
-              <FolderOpen className="h-4 w-4" />
-              Import Existing Run Directory
-            </Button>
-          </CardContent>
-        </Card>
+          <Card className="w-full">
+            <CardHeader className="pb-2">
+              <div className="flex items-center gap-2">
+                <Beaker className="h-5 w-5 text-muted-foreground" />
+                <CardTitle className="text-base">No runs found</CardTitle>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3 pt-2">
+              <p className="text-sm text-muted-foreground">
+                Start a run from the configuration view, or import an existing result directory.
+              </p>
+              <Button variant="outline" className="w-full gap-2" onClick={handleImportRun}>
+                <FolderOpen className="h-4 w-4" />
+                Import Existing Run Directory
+              </Button>
+            </CardContent>
+          </Card>
         </div>
-      </motion.div>
+      </div>
     );
   }
 
   return (
-    <div className="min-h-full flex">
-      {/* Left Sidebar: Runs List */}
-      <motion.div 
-        className="shrink-0 border-r border-border/50 flex flex-col bg-slate-50/50"
-        style={{ width: sidebarWidth }}
-        initial={{ opacity: 0, x: -20 }}
-        animate={{ opacity: 1, x: 0 }}
-      >
-        <div className="p-4 border-b border-border/50">
+    <div className="flex min-h-full bg-background">
+      <div className="flex shrink-0 flex-col border-r border-border bg-card" style={{ width: sidebarWidth }}>
+        <div className="border-b border-border p-4">
           <div className="flex items-center gap-2">
-            <History className="h-4 w-4 text-primary" />
-            <h3 className="font-semibold text-sm">Run History</h3>
+            <History className="h-4 w-4 text-muted-foreground" />
+            <h3 className="text-sm font-semibold">Run History</h3>
           </div>
-          <p className="text-xs text-muted-foreground mt-1">
+          <p className="mt-1 text-xs text-muted-foreground">
             {allRuns.length} run{allRuns.length !== 1 ? 's' : ''}
           </p>
           <Button
@@ -727,39 +646,36 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
             {isSyncingCloud ? 'Syncing...' : 'Sync Selected Run'}
           </Button>
         </div>
-        
+
         <ScrollArea className="flex-1">
-          <div className="p-2 space-y-1">
-            {allRuns.map((run, idx) => (
-              <motion.div
+          <div className="space-y-1 p-2">
+            {allRuns.map((run) => (
+              <div
                 key={run.id}
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: idx * 0.05 }}
                 onClick={() => handleSelectRun(run)}
-                className={`w-full text-left p-3 rounded-lg transition-all duration-200 ${
+                className={`w-full cursor-pointer rounded-md border p-3 text-left ${
                   selectedRun?.id === run.id
-                    ? 'bg-primary/10 border border-primary/30'
-                    : 'hover:bg-white border border-transparent hover:border-border/50'
-                } cursor-pointer`}
+                    ? 'border-primary bg-primary/5'
+                    : 'border-transparent hover:border-border hover:bg-muted/35'
+                }`}
               >
                 <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
+                  <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       {getStatusIcon(run.status)}
-                      <span className="text-sm font-medium truncate">{run.name}</span>
+                      <span className="truncate text-sm font-medium">{run.name}</span>
                     </div>
                     <div className="mt-1">
                       <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-medium">
                         {getRunOrigin(run)}
                       </Badge>
                     </div>
-                    <div className="text-xs text-muted-foreground mt-1">
+                    <div className="mt-1 text-xs text-muted-foreground">
                       Step {run.currentStep}/{run.totalSteps}
                     </div>
                   </div>
-                  <div className="flex items-center gap-1 shrink-0 mt-0.5">
-                    {run.source === 'local' && run.status === 'running' && (
+                  <div className="mt-0.5 flex shrink-0 items-center gap-1">
+                    {run.source === 'local' && run.status === 'running' ? (
                       <Button
                         variant="ghost"
                         size="icon"
@@ -772,399 +688,301 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                       >
                         <Square className="h-3.5 w-3.5 text-amber-600" />
                       </Button>
-                    )}
-                    {selectedRun?.id === run.id && (
-                      <ChevronRight className="h-4 w-4 text-primary" />
-                    )}
+                    ) : null}
+                    {selectedRun?.id === run.id ? (
+                      <Badge variant="outline" className="text-[10px]">
+                        Open
+                      </Badge>
+                    ) : null}
                     <Button
                       variant="ghost"
                       size="icon"
                       className="h-7 w-7"
                       disabled={run.source !== 'local' || deletingRunId === run.id || run.status === 'running'}
+                      title={run.source === 'convex' ? 'Cloud run cannot be deleted here' : 'Delete run from history'}
                       onClick={(event) => {
                         event.stopPropagation();
                         void handleDeleteRun(run);
                       }}
-                      title={run.source === 'convex' ? 'Cloud run cannot be deleted here' : 'Delete run from history'}
                     >
                       <Trash2 className="h-3.5 w-3.5 text-red-600" />
                     </Button>
                   </div>
                 </div>
-              </motion.div>
+              </div>
             ))}
           </div>
         </ScrollArea>
-      </motion.div>
+      </div>
+
       <div
         role="separator"
         aria-orientation="vertical"
         aria-label="Resize run history sidebar"
-        className="w-1 shrink-0 cursor-col-resize bg-border/40 hover:bg-primary/40 transition-colors"
+        className="w-1 shrink-0 cursor-col-resize bg-border/40 transition-colors hover:bg-primary/40"
         onPointerDown={startSidebarResize}
       />
 
-      {/* Main Content */}
       {selectedRun ? (
-        <div className="flex-1 min-h-0 flex flex-col">
-          {/* KPI Header */}
-          <motion.div 
-            className="shrink-0 p-4 border-b border-border/50 bg-white/80"
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4 }}
-          >
-            <div className="grid grid-cols-5 gap-3">
-              <KPICard
-                title="Status"
-                value={selectedRun.status}
-                icon={Activity}
-                color="from-green-500 to-emerald-500"
-                index={0}
-              />
-              <KPICard
-                title="Progress"
-                value={`${selectedRun.currentStep}/${selectedRun.totalSteps}`}
-                icon={Clock}
-                color="from-blue-500 to-cyan-500"
-                index={1}
-              />
-              <KPICard
-                title="Best Affinity"
-                value={bestAffinity?.toFixed(2) ?? 'N/A'}
-                icon={Zap}
-                color="from-yellow-500 to-orange-500"
-                index={2}
-              />
-              <KPICard
-                title="Best Probability"
-                value={bestProbability?.toFixed(2) ?? 'N/A'}
-                icon={TrendingUp}
-                color="from-purple-500 to-pink-500"
-                index={3}
-              />
-              <motion.div
-                variants={kpiVariants}
-                initial="hidden"
-                animate="visible"
-                custom={4}
-              >
-                <Card className="glass-card card-glow h-full overflow-hidden relative">
-                  <div className="absolute inset-0 bg-gradient-to-br from-primary to-blue-500 opacity-5" />
-                  <CardContent className="pt-5 relative">
-                    <div className="flex items-start justify-between">
-                      <div className="space-y-1">
-                        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Molecules</p>
-                        <motion.p 
-                          className="text-2xl font-bold tabular-nums"
-                          key={molecules.length}
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                        >
-                          {molecules.length}
-                        </motion.p>
-                      </div>
-                      <Button 
-                        variant="ghost" 
-                        size="icon" 
-                        onClick={handleRefresh} 
-                        disabled={isLoading}
-                        className="hover-lift h-8 w-8"
-                      >
-                        <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              </motion.div>
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="border-b border-border bg-card px-5 py-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-lg font-semibold">{selectedRun.name}</h2>
+                  <Badge variant={getStatusBadgeVariant(selectedRun.status)}>{selectedRun.status}</Badge>
+                  <Badge variant="outline">{selectedRun.source}</Badge>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Step {selectedRun.currentStep} of {selectedRun.totalSteps}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isLoading}>
+                  <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+                  Refresh
+                </Button>
+                {selectedRun.source === 'local' && selectedRun.status === 'running' ? (
+                  <Button variant="destructive" size="sm" onClick={() => void handleStopRun(selectedRun)}>
+                    <Square className="mr-2 h-4 w-4" />
+                    Stop
+                  </Button>
+                ) : null}
+              </div>
             </div>
-          </motion.div>
+          </div>
 
-          <motion.div
-            className="shrink-0 px-4 py-3 border-b border-border/50 bg-white/70"
-            initial={{ opacity: 0, y: -8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.3 }}
-          >
+          <div className="space-y-4 p-4">
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Run summary</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="stats-grid">
+                  <SummaryField
+                    label="Progress"
+                    value={<span className="tabular-nums">{selectedRun.currentStep} / {selectedRun.totalSteps}</span>}
+                  />
+                  <SummaryField label="Molecules" value={<span className="tabular-nums">{molecules.length}</span>} />
+                  <SummaryField label="Best affinity" value={bestAffinity?.toFixed(3) ?? 'N/A'} />
+                  <SummaryField label="Best probability" value={bestProbability?.toFixed(3) ?? 'N/A'} />
+                </div>
+                <div className="grid gap-3 xl:grid-cols-2">
+                  <SummaryField
+                    label="Result directory"
+                    value={<span className="break-all text-sm text-muted-foreground">{selectedRun.resultDir}</span>}
+                  />
+                  <SummaryField
+                    label="Checkpoint"
+                    value={
+                      <span className="break-all text-sm text-muted-foreground">
+                        {selectedRun.checkpointPath ?? 'No checkpoint recorded'}
+                      </span>
+                    }
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
             <BoltzMetricsPanel
               metrics={activeBoltzMetrics}
               isLoading={selectedRun.source === 'convex' ? convexMetricRows === undefined : isBoltzMetricsLoading}
             />
-          </motion.div>
 
-          <motion.div
-            className="shrink-0 px-4 py-3 border-b border-border/50 bg-white/70"
-            initial={{ opacity: 0, y: -8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.3 }}
-          >
-            <Card className="glass-card">
-              <CardHeader className="pb-2">
+            <Card>
+              <CardHeader className="pb-3">
                 <div className="flex items-center gap-2">
-                  <FileText className="h-4 w-4 text-primary" />
-                  <CardTitle className="text-base">Run Logs (Last {LOG_TAIL_LINES} Lines)</CardTitle>
+                  <FileText className="h-4 w-4 text-muted-foreground" />
+                  <CardTitle className="text-base">Run logs</CardTitle>
                 </div>
               </CardHeader>
               <CardContent>
                 {selectedRun.source === 'convex' ? (
-                  <p className="text-xs text-muted-foreground">Logs are only available for local runner runs.</p>
+                  <p className="text-sm text-muted-foreground">Logs are only available for local runner runs.</p>
                 ) : (
-                  <div className="max-h-52 overflow-auto rounded-md border bg-background/40 p-2">
+                  <div className="max-h-52 overflow-auto rounded-md border border-border bg-muted/20 p-3">
                     <pre className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-muted-foreground">
                       {runLogLines.length > 0
                         ? runLogLines.join('\n')
                         : isLogLoading
-                        ? 'Loading logs...'
-                        : 'No log output yet.'}
+                          ? 'Loading logs...'
+                          : 'No log output yet.'}
                     </pre>
                   </div>
                 )}
               </CardContent>
             </Card>
-          </motion.div>
 
-          {/* Main Split View */}
-          <div className="flex-1 min-h-0 flex overflow-hidden">
-            {/* Left: Molecule Details */}
-            <motion.div 
-              className="w-1/2 min-h-0 border-r border-border/50 flex flex-col"
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.3 }}
-            >
-              <div className="p-3 border-b border-border/50 bg-white/80">
-                <div className="flex items-center gap-2">
-                  <Sparkles className="h-4 w-4 text-primary" />
-                  <h3 className="font-semibold text-sm">Selected Molecule</h3>
-                </div>
-              </div>
-              
-              <AnimatePresence mode="wait">
+            <div className="grid gap-4 xl:grid-cols-[minmax(360px,420px)_minmax(0,1fr)]">
+              <div className="space-y-4">
                 {selectedMolecule ? (
-                  <ScrollArea className="flex-1">
-                    <motion.div 
-                      className="p-4 space-y-4"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      key={selectedMolecule.smiles}
-                    >
-                      <MoleculeCard molecule={selectedMolecule} />
+                  <>
+                    <MoleculeCard molecule={selectedMolecule} />
 
-                      {selectedMolecule.boltzScores && (
-                        <motion.div
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: 0.1 }}
-                        >
-                          <Card className="glass-card">
-                            <CardHeader className="pb-2">
-                              <div className="flex items-center gap-2">
-                                <BarChart3 className="h-4 w-4 text-blue-500" />
-                                <CardTitle className="text-base">Boltz-2 Scores</CardTitle>
+                    {selectedMolecule.boltzScores ? (
+                      <Card>
+                        <CardHeader className="pb-3">
+                          <CardTitle className="text-base">Boltz-2 scores</CardTitle>
+                        </CardHeader>
+                        <CardContent className="grid gap-3 md:grid-cols-3">
+                          {[
+                            {
+                              label: 'Ensemble',
+                              aff: selectedMolecule.boltzScores.affinity_ensemble,
+                              prob: selectedMolecule.boltzScores.probability_ensemble,
+                            },
+                            {
+                              label: 'Model 1',
+                              aff: selectedMolecule.boltzScores.affinity_model1,
+                              prob: selectedMolecule.boltzScores.probability_model1,
+                            },
+                            {
+                              label: 'Model 2',
+                              aff: selectedMolecule.boltzScores.affinity_model2,
+                              prob: selectedMolecule.boltzScores.probability_model2,
+                            },
+                          ].map((item) => (
+                            <div key={item.label} className="rounded-md border border-border bg-muted/25 p-3 text-sm">
+                              <p className="mb-2 font-medium">{item.label}</p>
+                              <div className="space-y-1 text-muted-foreground">
+                                <div className="flex justify-between">
+                                  <span>Affinity</span>
+                                  <span className="font-mono text-foreground">{item.aff.toFixed(3)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span>Probability</span>
+                                  <span className="font-mono text-foreground">{item.prob.toFixed(3)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span>Boltz score</span>
+                                  <span className="font-mono text-foreground">
+                                    {computeBoltzScore(item.aff, item.prob).toFixed(3)}
+                                  </span>
+                                </div>
                               </div>
-                            </CardHeader>
-                            <CardContent>
-                              <div className="grid grid-cols-3 gap-3">
-                                {[
-                                  { label: 'Ensemble', aff: selectedMolecule.boltzScores.affinity_ensemble, prob: selectedMolecule.boltzScores.probability_ensemble },
-                                  { label: 'Model 1', aff: selectedMolecule.boltzScores.affinity_model1, prob: selectedMolecule.boltzScores.probability_model1 },
-                                  { label: 'Model 2', aff: selectedMolecule.boltzScores.affinity_model2, prob: selectedMolecule.boltzScores.probability_model2 },
-                                ].map((item, i) => {
-                                  const boltzScore = computeBoltzScore(item.aff, item.prob);
-                                  return (
-                                  <motion.div
-                                    key={item.label}
-                                    initial={{ opacity: 0, y: 10 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    transition={{ delay: 0.1 + i * 0.05 }}
-                                    className="text-sm p-3 rounded-lg bg-slate-50"
-                                  >
-                                    <p className="text-xs text-muted-foreground font-medium mb-2">{item.label}</p>
-                                    <div className="space-y-1">
-                                      <div className="flex justify-between">
-                                        <span className="text-muted-foreground">Affinity</span>
-                                        <span className="font-mono font-medium">{item.aff.toFixed(3)}</span>
-                                      </div>
-                                      <div className="flex justify-between">
-                                        <span className="text-muted-foreground">Probability</span>
-                                        <span className="font-mono font-medium">{item.prob.toFixed(3)}</span>
-                                      </div>
-                                      <div className="flex justify-between">
-                                        <span className="text-muted-foreground">Boltz Score</span>
-                                        <span className="font-mono font-medium">{boltzScore.toFixed(3)}</span>
-                                      </div>
-                                    </div>
-                                  </motion.div>
-                                  );
-                                })}
-                              </div>
-                            </CardContent>
-                          </Card>
-                        </motion.div>
-                      )}
+                            </div>
+                          ))}
+                        </CardContent>
+                      </Card>
+                    ) : null}
 
-                      {selectedMolecule.trajectory.length > 0 && (
-                        <motion.div
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: 0.2 }}
-                        >
-                          <Card className="glass-card">
-                            <CardHeader className="pb-2">
-                              <div className="flex items-center gap-2">
-                                <Atom className="h-4 w-4 text-purple-500" />
-                                <CardTitle className="text-base">Reaction Pathway</CardTitle>
-                              </div>
-                            </CardHeader>
-                            <CardContent>
-                              <ReactionPathway trajectory={selectedMolecule.trajectory} />
-                            </CardContent>
-                          </Card>
-                        </motion.div>
-                      )}
-                    </motion.div>
-                  </ScrollArea>
+                    {selectedMolecule.trajectory.length > 0 ? (
+                      <Card>
+                        <CardHeader className="pb-3">
+                          <div className="flex items-center gap-2">
+                            <Atom className="h-4 w-4 text-muted-foreground" />
+                            <CardTitle className="text-base">Reaction pathway</CardTitle>
+                          </div>
+                        </CardHeader>
+                        <CardContent>
+                          <ReactionPathway trajectory={selectedMolecule.trajectory} />
+                        </CardContent>
+                      </Card>
+                    ) : null}
+                  </>
                 ) : (
-                  <motion.div 
-                    className="flex-1 flex items-center justify-center"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                  >
-                    <p className="text-muted-foreground text-sm">Select a molecule from the table below</p>
-                  </motion.div>
+                  <Card>
+                    <CardContent className="py-8">
+                      <p className="text-sm text-muted-foreground">Select a molecule from the table to inspect it.</p>
+                    </CardContent>
+                  </Card>
                 )}
-              </AnimatePresence>
-            </motion.div>
+              </div>
 
-            {/* Right: Mol* Viewer */}
-            <motion.div 
-              className="w-1/2 min-h-0 flex flex-col bg-white"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.4 }}
-            >
-              <div className="p-3 border-b border-border/50 bg-white/80">
-                <h3 className="font-semibold text-sm">Protein-Ligand Complex</h3>
-                <p className="text-xs text-muted-foreground">
-                  Boltz-2 predicted structure
-                </p>
-              </div>
-              <div className="flex-1">
-                <MolstarViewer
-                  pdbContent={complexContent}
-                  selectedResidues={[]}
-                  onResidueSelect={() => {}}
-                />
-              </div>
-            </motion.div>
+              <Card className="min-h-[420px] overflow-hidden">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Protein-ligand complex</CardTitle>
+                </CardHeader>
+                <CardContent className="h-[520px] p-0">
+                  <MolstarViewer
+                    pdbContent={complexContent}
+                    selectedResidues={[]}
+                    onResidueSelect={() => {}}
+                  />
+                </CardContent>
+              </Card>
+            </div>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Beaker className="h-4 w-4 text-muted-foreground" />
+                    <CardTitle className="text-base">Generated molecules</CardTitle>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="outline">{molecules.length} total</Badge>
+                    <Badge variant="outline">
+                      Showing {molecules.length === 0 ? 0 : pageStart + 1}-{pageEnd}
+                    </Badge>
+                    <Badge variant="secondary">Page {safePage}/{totalPages}</Badge>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setTablePage((page) => Math.max(1, page - 1))}
+                      disabled={safePage <= 1}
+                    >
+                      Prev
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setTablePage((page) => Math.min(totalPages, page + 1))}
+                      disabled={safePage >= totalPages}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="hover:bg-transparent">
+                        <TableHead className="w-12 text-xs">#</TableHead>
+                        <TableHead className="text-xs">SMILES</TableHead>
+                        <TableHead className="w-24 text-xs">Reward</TableHead>
+                        <TableHead className="w-24 text-xs">Affinity</TableHead>
+                        <TableHead className="w-24 text-xs">Probability</TableHead>
+                        <TableHead className="w-20 text-xs">Steps</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {pagedMolecules.map((molecule, idx) => (
+                        <TableRow
+                          key={molecule.smiles}
+                          className={`cursor-pointer ${selectedMolecule?.smiles === molecule.smiles ? 'bg-primary/5' : ''}`}
+                          onClick={() => setSelectedMolecule(molecule)}
+                        >
+                          <TableCell className="py-2 text-sm font-medium">{pageStart + idx + 1}</TableCell>
+                          <TableCell className="max-w-xs truncate py-2 font-mono text-xs">{molecule.smiles}</TableCell>
+                          <TableCell className="py-2 font-mono text-sm">{molecule.reward.toFixed(3)}</TableCell>
+                          <TableCell className="py-2 font-mono text-sm">
+                            {molecule.boltzScores?.affinity_ensemble.toFixed(3) ?? 'N/A'}
+                          </TableCell>
+                          <TableCell className="py-2 font-mono text-sm">
+                            {molecule.boltzScores?.probability_ensemble.toFixed(3) ?? 'N/A'}
+                          </TableCell>
+                          <TableCell className="py-2 text-sm">
+                            <Badge variant="secondary">{molecule.trajectory.length}</Badge>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
           </div>
-
-          {/* Bottom: Molecule Table */}
-          <motion.div 
-            className="shrink-0 border-t border-border/50 bg-white/80"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.5 }}
-          >
-            <div className="p-2 border-b border-border/50 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Beaker className="h-4 w-4 text-primary" />
-                <h3 className="font-semibold text-sm">Generated Molecules</h3>
-              </div>
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className="text-xs">
-                  {molecules.length} total
-                </Badge>
-                <Badge variant="outline" className="text-xs">
-                  Showing {molecules.length === 0 ? 0 : pageStart + 1}-{pageEnd}
-                </Badge>
-                <Badge variant="secondary" className="text-xs">
-                  Page {safePage}/{totalPages}
-                </Badge>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => setTablePage((p) => Math.max(1, p - 1))}
-                  disabled={safePage <= 1}
-                >
-                  Prev
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => setTablePage((p) => Math.min(totalPages, p + 1))}
-                  disabled={safePage >= totalPages}
-                >
-                  Next
-                </Button>
-              </div>
-            </div>
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="hover:bg-transparent">
-                    <TableHead className="w-12 text-xs">#</TableHead>
-                    <TableHead className="text-xs">SMILES</TableHead>
-                    <TableHead className="w-20 text-xs">Reward</TableHead>
-                    <TableHead className="w-20 text-xs">Aff</TableHead>
-                    <TableHead className="w-20 text-xs">Prob</TableHead>
-                    <TableHead className="w-16 text-xs">Steps</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  <AnimatePresence>
-                    {pagedMolecules.map((mol, idx) => (
-                      <motion.tr
-                        key={mol.smiles}
-                        initial={{ opacity: 0, x: -10 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: 10 }}
-                        transition={{ delay: idx * 0.01 }}
-                        className={`cursor-pointer transition-colors ${
-                          selectedMolecule?.smiles === mol.smiles 
-                            ? 'bg-primary/10 hover:bg-primary/15' 
-                            : 'hover:bg-slate-50'
-                        }`}
-                        onClick={() => setSelectedMolecule(mol)}
-                      >
-                        <TableCell className="font-medium text-sm py-2">{pageStart + idx + 1}</TableCell>
-                        <TableCell className="font-mono text-xs truncate max-w-xs py-2">
-                          {mol.smiles}
-                        </TableCell>
-                        <TableCell className="font-mono text-sm py-2">{mol.reward.toFixed(3)}</TableCell>
-                        <TableCell className="font-mono text-sm py-2">
-                          {mol.boltzScores?.affinity_ensemble.toFixed(3) ?? 'N/A'}
-                        </TableCell>
-                        <TableCell className="font-mono text-sm py-2">
-                          {mol.boltzScores?.probability_ensemble.toFixed(3) ?? 'N/A'}
-                        </TableCell>
-                        <TableCell className="text-sm py-2">
-                          <Badge variant="secondary" className="text-xs">
-                            {mol.trajectory.length}
-                          </Badge>
-                        </TableCell>
-                      </motion.tr>
-                    ))}
-                  </AnimatePresence>
-                </TableBody>
-              </Table>
-            </div>
-          </motion.div>
         </div>
       ) : (
-        <motion.div 
-          className="flex-1 flex items-center justify-center"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-        >
-          <div className="text-center space-y-4">
-            <ChevronRight className="h-12 w-12 mx-auto text-muted-foreground/40" />
-            <p className="text-muted-foreground">Select a run from the sidebar to view details</p>
+        <div className="flex flex-1 items-center justify-center">
+          <div className="space-y-3 text-center">
+            <History className="mx-auto h-10 w-10 text-muted-foreground/40" />
+            <p className="text-sm text-muted-foreground">Select a run from the sidebar to view details.</p>
           </div>
-        </motion.div>
+        </div>
       )}
     </div>
   );

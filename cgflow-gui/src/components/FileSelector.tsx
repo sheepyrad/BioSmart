@@ -1,6 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -173,35 +172,33 @@ export default function FileSelector({
 
   return (
     <div className="space-y-2">
-      <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+      <Label className="text-sm font-medium text-foreground">
         {label}
-        {optional && <span className="text-muted-foreground/60 ml-1">(optional)</span>}
+        {optional && <span className="ml-1 text-muted-foreground">(optional)</span>}
       </Label>
       
       <div ref={containerRef} className="relative">
-        {/* Main input row */}
         <div className="flex gap-2">
           <div className="relative flex-1">
             <Input
               value={displayValue}
               onChange={(e) => onChange(e.target.value)}
               placeholder={placeholder}
-              className="bg-white pr-8"
+              className="pr-8"
             />
             {isConvexFile && (
-              <Cloud className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-blue-500" />
+              <Cloud className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             )}
             {!isConvexFile && value && (
               <HardDrive className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             )}
           </div>
-          
-          {/* Dropdown button */}
+
           <Button
             variant="outline"
             size="icon"
             onClick={() => setIsOpen(!isOpen)}
-            className="shrink-0 hover-lift"
+            className="shrink-0"
           >
             {isUploading ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -209,139 +206,127 @@ export default function FileSelector({
               <ChevronDown className={`h-4 w-4 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
             )}
           </Button>
-          
-          {/* Local file select button */}
+
           <Button
             variant="outline"
             size="icon"
             onClick={handleSelectLocal}
-            className="shrink-0 hover-lift"
+            className="shrink-0"
             title="Select from local filesystem"
           >
             <FileUp className="h-4 w-4" />
           </Button>
         </div>
 
-        {/* Dropdown panel - rendered in portal to escape overflow clipping */}
         {isOpen && createPortal(
-          <AnimatePresence>
-            <motion.div
-              id="file-selector-dropdown"
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="fixed bg-white rounded-lg border border-border shadow-lg overflow-hidden"
-              style={{
-                top: dropdownPosition.top,
-                left: dropdownPosition.left,
-                width: dropdownPosition.width,
-                zIndex: 9999,
-              }}
-            >
-              <div className="p-2 border-b border-border/50">
-                <p className="text-xs font-medium text-muted-foreground">
-                  {isAvailable ? 'Previously Uploaded Files' : 'Convex not connected'}
-                </p>
-              </div>
+          <div
+            id="file-selector-dropdown"
+            className="fixed overflow-hidden rounded-lg border border-border bg-card shadow-lg"
+            style={{
+              top: dropdownPosition.top,
+              left: dropdownPosition.left,
+              width: dropdownPosition.width,
+              zIndex: 9999,
+            }}
+          >
+            <div className="border-b border-border px-3 py-2">
+              <p className="text-sm font-medium text-foreground">
+                {isAvailable ? 'Cloud files' : 'Cloud storage unavailable'}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {isAvailable ? 'Pick a previously uploaded file or add a new one.' : 'Use the local file picker until Convex is connected.'}
+              </p>
+            </div>
 
-              {isAvailable && (
-                <>
-                  <ScrollArea className="max-h-48">
-                    {files && files.length > 0 ? (
-                      <div className="p-1">
-                        {files.map((file) => (
-                          <motion.button
-                            key={file._id}
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            onClick={() => handleSelectUploadedFile(file)}
-                            className="w-full text-left p-2 rounded-md hover:bg-slate-50 transition-colors flex items-center justify-between group"
-                          >
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2">
-                                <Cloud className="h-3.5 w-3.5 text-blue-500 shrink-0" />
-                                <span className="text-sm font-medium truncate">{file.name}</span>
-                                {value.includes(file._id) && (
-                                  <Check className="h-3.5 w-3.5 text-green-500 shrink-0" />
-                                )}
-                              </div>
-                              <div className="flex items-center gap-2 mt-0.5 text-xs text-muted-foreground">
-                                <span>{formatFileSize(file.size)}</span>
-                                <span>•</span>
-                                <Clock className="h-3 w-3" />
-                                <span>{formatFileDate(file.createdAt)}</span>
-                              </div>
+            {isAvailable && (
+              <>
+                <ScrollArea className="max-h-56">
+                  {files && files.length > 0 ? (
+                    <div className="p-1">
+                      {files.map((file) => (
+                        <button
+                          key={file._id}
+                          onClick={() => void handleSelectUploadedFile(file)}
+                          className="flex w-full items-start justify-between gap-3 rounded-md px-3 py-2 text-left hover:bg-muted/60"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <Cloud className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              <span className="truncate text-sm font-medium">{file.name}</span>
+                              {value.includes(file._id) && <Check className="h-3.5 w-3.5 shrink-0 text-accent" />}
                             </div>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-6 w-6 opacity-70 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
-                              onClick={(e) => handleDelete(e, file._id)}
-                              title="Delete uploaded file"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </motion.button>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="p-4 text-center text-sm text-muted-foreground">
-                        No files uploaded yet
-                      </div>
-                    )}
-                  </ScrollArea>
+                            <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                              <span>{formatFileSize(file.size)}</span>
+                              <span>•</span>
+                              <Clock className="h-3 w-3" />
+                              <span>{formatFileDate(file.createdAt)}</span>
+                            </div>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            onClick={(e) => void handleDelete(e, file._id)}
+                            title="Delete uploaded file"
+                          >
+                            <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+                          </Button>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="px-3 py-4 text-sm text-muted-foreground">No files uploaded yet.</div>
+                  )}
+                </ScrollArea>
 
-                  <div className="p-2 border-t border-border/50">
-                    <label className="block">
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept={accept}
-                        onChange={handleUploadNew}
-                        className="hidden"
-                      />
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="w-full"
-                        onClick={() => fileInputRef.current?.click()}
-                        disabled={isUploading}
-                      >
-                        {isUploading ? (
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        ) : (
-                          <Cloud className="mr-2 h-4 w-4" />
-                        )}
-                        Upload & Save to Cloud
-                      </Button>
-                    </label>
-                  </div>
-                </>
-              )}
-
-              {!isAvailable && (
-                <div className="p-4 text-center text-sm text-muted-foreground">
-                  <p>Connect to Convex to save files</p>
-                  <p className="text-xs mt-1">Files selected locally won't be persisted</p>
+                <div className="border-t border-border p-2">
+                  <label className="block">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept={accept}
+                      onChange={handleUploadNew}
+                      className="hidden"
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full justify-center"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={isUploading}
+                    >
+                      {isUploading ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Cloud className="mr-2 h-4 w-4" />
+                      )}
+                      Upload to Cloud
+                    </Button>
+                  </label>
                 </div>
-              )}
-            </motion.div>
-          </AnimatePresence>,
+              </>
+            )}
+
+            {!isAvailable && (
+              <div className="px-3 py-4 text-sm text-muted-foreground">
+                Cloud-backed file storage is not available in this session.
+              </div>
+            )}
+          </div>,
           document.body
         )}
       </div>
 
-      {/* Selected file indicator */}
       {value && (
         <div className="flex items-center gap-2">
           <Badge 
             variant="secondary" 
-            className={`text-xs ${isConvexFile ? 'bg-blue-500/10 text-blue-600' : 'bg-slate-100 text-slate-600'}`}
+            className="text-xs"
           >
             {isConvexFile ? (
               <>
                 <Cloud className="h-3 w-3 mr-1" />
-                Cloud stored
+                Cloud file
               </>
             ) : (
               <>
