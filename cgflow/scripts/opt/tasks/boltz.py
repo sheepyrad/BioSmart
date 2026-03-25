@@ -70,8 +70,13 @@ class BoltzTask(BaseDockingTask):
         else:
             cache_path = Path(cache_path)
         self.reward_cache = BoltzRewardCache(str(cache_path))
-        self._boltz_log(f"Initialized Boltz reward cache at: {cache_path}")
-        self._boltz_log(f"Cache size: {self.reward_cache.get_db_size(fast=True):,} entries")
+        self._boltz_log(
+            "Reward cache initialized",
+            file_detail_lines=[
+                f"path={cache_path}",
+                f"entries={self.reward_cache.get_db_size(fast=True):,}",
+            ],
+        )
         
         # Storage for database logging
         self.batch_docking_scores = []  # Empty list - no docking in co-folding
@@ -111,16 +116,37 @@ class BoltzTask(BaseDockingTask):
             if restored:
                 self.topn_affinity = restored
 
-    def _boltz_log(self, message: str) -> None:
-        """Print Boltz-related logs and append them to a dedicated log file."""
+    def _boltz_log(
+        self,
+        message: str,
+        *,
+        file_detail_lines: list[str] | None = None,
+        terminal: bool = False,
+    ) -> None:
+        """Append timestamped lines to boltz_metrics.log (verbose audit trail).
+
+        Multiline ``message`` values are written as a first line plus indented continuations.
+        ``file_detail_lines`` are written only to the log file (extra breakdown, not stdout).
+
+        Terminal output is opt-in (``terminal=True``): prints a single line (first line of
+        ``message``) so training tty stays quiet while the log file keeps full detail.
+        """
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
-        line = f"[{ts}] {message}"
-        print(line)
         try:
             with open(self.boltz_metrics_log_path, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
+                head, *tail = message.split("\n")
+                f.write(f"[{ts}] {head}\n")
+                for part in tail:
+                    f.write(f"[{ts}]   {part}\n")
+                if file_detail_lines:
+                    for line in file_detail_lines:
+                        f.write(f"[{ts}]   {line}\n")
         except Exception as e:
-            print(f"Warning: failed to write boltz metrics log {self.boltz_metrics_log_path}: {e}")
+            print(f"Warning: failed to write boltz_metrics log {self.boltz_metrics_log_path}: {e}")
+
+        if terminal:
+            head = message.split("\n", 1)[0]
+            print(f"[{ts}] {head}", flush=True)
 
     def restore_topn_from_cache(self) -> OrderedDict[str, float] | None:
         """Load top N molecules from boltz_reward_cache.db on resume."""
@@ -142,7 +168,7 @@ class BoltzTask(BaseDockingTask):
             conn.close()
             
             topn = OrderedDict((smiles, reward) for smiles, reward in results)
-            self._boltz_log(f"Restored {len(topn)} top molecules from reward cache")
+            self._boltz_log(f"Restored {len(topn):,} top molecules from reward cache")
             return topn
         except Exception as e:
             self._boltz_log(f"Warning: Failed to restore topn_affinity from cache: {e}")
@@ -283,12 +309,34 @@ class BoltzTask(BaseDockingTask):
         uncached_smiles = [s for s in smiles_to_compute if s not in cached_results]
         # Keep FIFO order but avoid duplicate Boltz jobs for repeated SMILES in a batch.
         uncached_smiles = list(dict.fromkeys(uncached_smiles))
-        
-        if len(smiles_to_compute) > 0:
-            cache_hit_rate = 100 * len(cached_results) / len(smiles_to_compute)
-            self._boltz_log(f"Cache hit rate: {len(cached_results)}/{len(smiles_to_compute)} ({cache_hit_rate:.1f}%)")
+
+        n_unique_smiles = len(smiles_to_indices)
+        n_cached_entries = len(cached_results)
+        n_uncached_entries = len(uncached_smiles)
+        n_smiles_slots = len(smiles_to_compute)
+        if n_smiles_slots > 0:
+            slot_hits = sum(1 for s in smiles_to_compute if s in cached_results)
+            slot_hit_pct = 100.0 * slot_hits / n_smiles_slots
         else:
-            self._boltz_log("Cache hit rate: 0/0 (0.0%)")
+            slot_hits = 0
+            slot_hit_pct = 0.0
+
+        file_msg = (
+            f"Boltz batch | oracle_idx={self.oracle_idx} | batch_size={total_generated:,} | "
+            f"smiles_slots={n_smiles_slots:,} | unique_smiles={n_unique_smiles:,} | "
+            f"cached_entries={n_cached_entries:,} | uncached_entries={n_uncached_entries:,} | "
+            f"slot_hit_rate={slot_hits:,}/{n_smiles_slots:,} ({slot_hit_pct:.1f}%)"
+        )
+        self._boltz_log(
+            file_msg,
+            file_detail_lines=[
+                f"Number of unique SMILES: {n_unique_smiles:,}",
+                f"Cached entries: {n_cached_entries:,}",
+                f"Uncached entries: {n_uncached_entries:,}",
+                f"Slot hit rate: {slot_hits:,}/{n_smiles_slots:,} ({slot_hit_pct:.1f}%)",
+            ],
+            terminal=True,
+        )
         
         # Initialize results arrays (will be filled in order)
         results_dict = {}  # smiles -> (score, result_dict)
@@ -325,7 +373,14 @@ class BoltzTask(BaseDockingTask):
         uncached_status_by_smiles: dict[str, str] = {}
         if uncached_smiles:
             worker_count = min(self.boltz_worker, len(uncached_smiles))
-            self._boltz_log(f"Running Boltz for {len(uncached_smiles)} uncached SMILES with {worker_count} worker(s)")
+            n_unc = len(uncached_smiles)
+            self._boltz_log(
+                f"Running Boltz | uncached_smiles={n_unc:,} | workers={worker_count}",
+                file_detail_lines=[
+                    f"uncached_unique_smiles={n_unc:,}",
+                    f"worker_count={worker_count}",
+                ],
+            )
             worker_results: dict[str, tuple[float, dict[str, float], tuple[str, float, str], str]] = {}
 
             if worker_count == 1:
@@ -389,8 +444,11 @@ class BoltzTask(BaseDockingTask):
         if new_cache_entries:
             try:
                 self.reward_cache.insert_entries(new_cache_entries)
+                n_new = len(new_cache_entries)
+                cache_sz = self.reward_cache.get_db_size(fast=True)
                 self._boltz_log(
-                    f"Cached {len(new_cache_entries)} new entries. Cache size: {self.reward_cache.get_db_size(fast=True):,}"
+                    f"Reward cache updated | new_entries={n_new:,} | cache_size={cache_sz:,}",
+                    file_detail_lines=[f"new_entries={n_new:,}", f"total_cache_size={cache_sz:,}"],
                 )
             except Exception as e:
                 self._boltz_log(f"Warning: Failed to update cache: {e}")
@@ -407,15 +465,24 @@ class BoltzTask(BaseDockingTask):
         lilly_pass_count = sum(1 for status in uncached_status_by_smiles.values() if status != "lilly_fail")
         failed_count = sum(1 for status in uncached_status_by_smiles.values() if status in {"failed", "error"})
         success_count = sum(1 for status in uncached_status_by_smiles.values() if status == "success")
+        file_summary = (
+            "[Boltz iteration summary] "
+            f"generated={total_generated:,} | none={none_molecule_count:,} | "
+            f"smiles_parse_error={smiles_parse_error_count:,} | evaluated={evaluated_this_iteration:,} | "
+            f"lilly_pass={lilly_pass_count:,} | failed={failed_count:,} | success={success_count:,}"
+        )
         self._boltz_log(
-            "[Boltz Iteration Summary] "
-            f"generated={total_generated}, "
-            f"none={none_molecule_count}, "
-            f"smiles_parse_error={smiles_parse_error_count}, "
-            f"evaluated={evaluated_this_iteration}, "
-            f"lilly_pass={lilly_pass_count}, "
-            f"failed={failed_count}, "
-            f"success={success_count}"
+            file_summary,
+            file_detail_lines=[
+                f"generated={total_generated:,}",
+                f"none={none_molecule_count:,}",
+                f"smiles_parse_error={smiles_parse_error_count:,}",
+                f"evaluated_uncached={evaluated_this_iteration:,}",
+                f"lilly_pass={lilly_pass_count:,}",
+                f"failed={failed_count:,}",
+                f"success={success_count:,}",
+            ],
+            terminal=True,
         )
         
         # Store for database logging
@@ -473,7 +540,9 @@ class BoltzTask(BaseDockingTask):
                     contacts.append([chain_id, int(res_id)])
                 else:
                     # If format is incorrect, skip with warning
-                    self._boltz_log(f"Warning: Invalid residue format '{residue_spec}', expected 'A:123' format. Skipping.")
+                    self._boltz_log(
+                        f"Warning: Invalid residue format '{residue_spec}', expected 'A:123' format. Skipping."
+                    )
             
             if contacts:
                 yaml_dict["constraints"] = [
@@ -590,7 +659,9 @@ class BoltzTask(BaseDockingTask):
                     if is_badzip and attempt < max_attempts and cache_dir is not None:
                         # Corrupted npz in cache can happen when multiple boltz subprocesses write/read shared files.
                         # Reset this worker-local cache and retry once.
-                        self._boltz_log(f"Boltz cache corruption detected in {cache_dir}. Rebuilding cache and retrying once.")
+                        self._boltz_log(
+                            f"Boltz cache corruption detected in {cache_dir}. Rebuilding cache and retrying once."
+                        )
                         shutil.rmtree(cache_dir, ignore_errors=True)
                         cache_dir.mkdir(parents=True, exist_ok=True)
                         continue
