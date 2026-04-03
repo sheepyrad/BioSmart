@@ -257,13 +257,20 @@ export default function MolstarViewer({
   return (
     <div className="h-full w-full relative">
       {viewerError && (
-        <div className="absolute inset-0 flex items-center justify-center bg-white/90 z-20 p-4 text-center">
+        <div className="absolute inset-0 flex items-center justify-center bg-background/95 z-20 p-4 text-center">
           <p className="text-sm text-muted-foreground">{viewerError}</p>
         </div>
       )}
       {!pdbContent && (
-        <div className="absolute inset-0 flex items-center justify-center bg-white/80 z-10">
-          <p className="text-muted-foreground">Load a complex to view structure</p>
+        <div className="absolute inset-0 flex items-center justify-center bg-background/90 z-10">
+          <div className="text-center">
+            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10">
+              <svg className="h-6 w-6 text-primary/50" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+              </svg>
+            </div>
+            <p className="text-sm text-muted-foreground">Load a complex to view structure</p>
+          </div>
         </div>
       )}
       <div 

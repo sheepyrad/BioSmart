@@ -58,16 +58,6 @@ class RunnerClient {
     return (await res.json()) as RunInfo;
   }
 
-  async deleteRun(runId: string): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/delete`, {
-      method: 'POST',
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || 'Failed to delete run');
-    }
-  }
-
   async startRun(payload: RunnerStartPayload): Promise<RunInfo> {
     const res = await fetch(`${this.baseUrl}/runs`, {
       method: 'POST',

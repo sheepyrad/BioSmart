@@ -19,6 +19,8 @@ import MolstarViewer from '@/components/MolstarViewer';
 import MoleculeCard from '@/components/MoleculeCard';
 import ReactionPathway from '@/components/ReactionPathway';
 import BoltzMetricsPanel from '@/components/BoltzMetricsPanel';
+import ParallelCoordinatesPanel from '@/components/ParallelCoordinatesPanel';
+import SmilesCell from '@/components/SmilesCell';
 import { computeBoltzMetrics } from '@shared/boltzMetrics';
 import type { BoltzMetricInputRow, BoltzMetricSeries, RunInfo, MoleculeResult } from '@shared/types';
 import {
@@ -36,6 +38,9 @@ import {
   Square,
   Trash2,
   XCircle,
+  FlaskConical,
+  TrendingUp,
+  Layers,
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -54,15 +59,15 @@ const LOG_TAIL_LINES = 200;
 function getStatusIcon(status: string) {
   switch (status) {
     case 'running':
-      return <PlayCircle className="h-4 w-4 text-green-500" />;
+      return <PlayCircle className="h-4 w-4 text-primary" />;
     case 'completed':
-      return <CheckCircle2 className="h-4 w-4 text-blue-500" />;
+      return <CheckCircle2 className="h-4 w-4 text-blue-400" />;
     case 'error':
-      return <XCircle className="h-4 w-4 text-red-500" />;
+      return <XCircle className="h-4 w-4 text-destructive" />;
     case 'paused':
-      return <PauseCircle className="h-4 w-4 text-yellow-500" />;
+      return <PauseCircle className="h-4 w-4 text-accent" />;
     default:
-      return <Circle className="h-4 w-4 text-gray-400" />;
+      return <Circle className="h-4 w-4 text-muted-foreground" />;
   }
 }
 
@@ -74,6 +79,11 @@ function getRunOrigin(run: RunInfo): 'Cloud' | 'Synced' | 'Local' {
 
 function computeBoltzScore(affinity: number, probability: number): number {
   return ((-affinity + 2) / 4) * probability;
+}
+
+function fmtBoltz(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return 'N/A';
+  return v.toFixed(3);
 }
 
 function getStatusBadgeVariant(status: RunInfo['status']) {
@@ -89,17 +99,22 @@ function getStatusBadgeVariant(status: RunInfo['status']) {
   }
 }
 
-function SummaryField({
+function MetricTile({
   label,
   value,
+  icon: Icon,
 }: {
   label: string;
   value: React.ReactNode;
+  icon?: React.ElementType;
 }) {
   return (
-    <div className="space-y-1 rounded-md border border-border bg-muted/25 px-3 py-3">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <div className="text-sm font-medium">{value}</div>
+    <div className="rounded-md border border-border bg-secondary/20 px-3 py-3">
+      <div className="flex items-center gap-2">
+        {Icon && <Icon className="h-3 w-3 text-muted-foreground" />}
+        <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground">{label}</p>
+      </div>
+      <div className="mt-1 font-data text-base font-medium tabular-nums">{value}</div>
     </div>
   );
 }
@@ -135,6 +150,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
   const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
   const [isLogLoading, setIsLogLoading] = useState(false);
   const [tablePage, setTablePage] = useState(1);
+  const [plotFilteredSmiles, setPlotFilteredSmiles] = useState<Set<string> | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const [runLogLines, setRunLogLines] = useState<string[]>([]);
@@ -251,6 +267,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
         setSelectedRun(null);
         setSelectedMolecule(null);
         setMolecules([]);
+        setPlotFilteredSmiles(null);
         setTablePage(1);
       }
     },
@@ -465,6 +482,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     setSelectedRun(run);
     setSelectedMolecule(null);
     setMolecules([]);
+      setPlotFilteredSmiles(null);
     setTablePage(1);
   }, []);
 
@@ -485,6 +503,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       setSelectedRun(importedRun);
       setSelectedMolecule(null);
       setMolecules([]);
+      setPlotFilteredSmiles(null);
       setTablePage(1);
     } catch (err) {
       console.error('Failed to import run:', err);
@@ -562,15 +581,21 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
 
   useEffect(() => {
     setTablePage(1);
+    setPlotFilteredSmiles(null);
   }, [selectedRun?.id]);
 
-  const totalPages = Math.max(1, Math.ceil(molecules.length / TABLE_PAGE_SIZE));
+  const displayedMolecules = useMemo(
+    () => (plotFilteredSmiles ? molecules.filter((molecule) => plotFilteredSmiles.has(molecule.smiles)) : molecules),
+    [molecules, plotFilteredSmiles]
+  );
+
+  const totalPages = Math.max(1, Math.ceil(displayedMolecules.length / TABLE_PAGE_SIZE));
   const safePage = Math.min(tablePage, totalPages);
   const pageStart = (safePage - 1) * TABLE_PAGE_SIZE;
-  const pageEnd = Math.min(pageStart + TABLE_PAGE_SIZE, molecules.length);
+  const pageEnd = Math.min(pageStart + TABLE_PAGE_SIZE, displayedMolecules.length);
   const pagedMolecules = useMemo(
-    () => molecules.slice(pageStart, pageEnd),
-    [molecules, pageStart, pageEnd]
+    () => displayedMolecules.slice(pageStart, pageEnd),
+    [displayedMolecules, pageStart, pageEnd]
   );
 
   useEffect(() => {
@@ -578,6 +603,12 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       setTablePage(safePage);
     }
   }, [safePage, tablePage]);
+
+  useEffect(() => {
+    if (!selectedMolecule) return;
+    if (displayedMolecules.some((molecule) => molecule.smiles === selectedMolecule.smiles)) return;
+    setSelectedMolecule(displayedMolecules[0] ?? null);
+  }, [displayedMolecules, selectedMolecule]);
 
   const affinityValues = molecules
     .filter((molecule) => molecule.boltzScores)
@@ -591,22 +622,24 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
 
   if (allRuns.length === 0) {
     return (
-      <div className="w-full p-6">
-        <div className="mx-auto w-full max-w-lg pt-8">
-          <Card className="w-full">
-            <CardHeader className="pb-2">
-              <div className="flex items-center gap-2">
-                <Beaker className="h-5 w-5 text-muted-foreground" />
-                <CardTitle className="text-base">No runs found</CardTitle>
+      <div className="flex h-full w-full items-center justify-center p-6">
+        <div className="mx-auto w-full max-w-md">
+          <Card className="border-border/60 bg-card/80">
+            <CardHeader className="pb-3">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
+                  <FlaskConical className="h-5 w-5 text-primary" />
+                </div>
+                <CardTitle className="font-display text-lg">No Runs Found</CardTitle>
               </div>
             </CardHeader>
-            <CardContent className="space-y-3 pt-2">
+            <CardContent className="space-y-4 pt-2">
               <p className="text-sm text-muted-foreground">
-                Start a run from the configuration view, or import an existing result directory.
+                Start a run from Configuration, or import an existing result directory.
               </p>
               <Button variant="outline" className="w-full gap-2" onClick={handleImportRun}>
                 <FolderOpen className="h-4 w-4" />
-                Import Existing Run Directory
+                Import Existing Run
               </Button>
             </CardContent>
           </Card>
@@ -616,14 +649,15 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
   }
 
   return (
-    <div className="flex min-h-full bg-background">
-      <div className="flex shrink-0 flex-col border-r border-border bg-card" style={{ width: sidebarWidth }}>
+    <div className="flex min-h-full">
+      {/* Run History Sidebar */}
+      <div className="flex shrink-0 flex-col border-r border-border bg-card/50" style={{ width: sidebarWidth }}>
         <div className="border-b border-border p-4">
           <div className="flex items-center gap-2">
-            <History className="h-4 w-4 text-muted-foreground" />
-            <h3 className="text-sm font-semibold">Run History</h3>
+            <History className="h-4 w-4 text-primary" />
+            <h3 className="font-display text-sm font-semibold">Run History</h3>
           </div>
-          <p className="mt-1 text-xs text-muted-foreground">
+          <p className="mt-1 font-data text-[10px] text-muted-foreground tabular-nums">
             {allRuns.length} run{allRuns.length !== 1 ? 's' : ''}
           </p>
           <Button
@@ -633,7 +667,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
             onClick={handleImportRun}
           >
             <FolderOpen className="h-3.5 w-3.5" />
-            Import Existing Run
+            Import Run
           </Button>
           <Button
             variant="outline"
@@ -643,7 +677,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
             disabled={!selectedRun || selectedRun.source === 'convex' || isSyncingCloud}
           >
             <CloudUpload className="h-3.5 w-3.5" />
-            {isSyncingCloud ? 'Syncing...' : 'Sync Selected Run'}
+            {isSyncingCloud ? 'Syncing...' : 'Sync to Cloud'}
           </Button>
         </div>
 
@@ -653,10 +687,10 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
               <div
                 key={run.id}
                 onClick={() => handleSelectRun(run)}
-                className={`w-full cursor-pointer rounded-md border p-3 text-left ${
+                className={`w-full cursor-pointer rounded-md border p-3 text-left transition-all ${
                   selectedRun?.id === run.id
-                    ? 'border-primary bg-primary/5'
-                    : 'border-transparent hover:border-border hover:bg-muted/35'
+                    ? 'border-primary/30 bg-primary/5 glow-subtle'
+                    : 'border-transparent hover:border-border hover:bg-secondary/30'
                 }`}
               >
                 <div className="flex items-start justify-between gap-2">
@@ -665,13 +699,13 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                       {getStatusIcon(run.status)}
                       <span className="truncate text-sm font-medium">{run.name}</span>
                     </div>
-                    <div className="mt-1">
-                      <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-medium">
+                    <div className="mt-1.5 flex items-center gap-2">
+                      <Badge variant="outline" className="h-5 px-1.5 font-data text-[9px] font-medium">
                         {getRunOrigin(run)}
                       </Badge>
-                    </div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      Step {run.currentStep}/{run.totalSteps}
+                      <span className="font-data text-[10px] text-muted-foreground tabular-nums">
+                        {run.currentStep}/{run.totalSteps}
+                      </span>
                     </div>
                   </div>
                   <div className="mt-0.5 flex shrink-0 items-center gap-1">
@@ -686,26 +720,21 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                           void handleStopRun(run);
                         }}
                       >
-                        <Square className="h-3.5 w-3.5 text-amber-600" />
+                        <Square className="h-3.5 w-3.5 text-accent" />
                       </Button>
-                    ) : null}
-                    {selectedRun?.id === run.id ? (
-                      <Badge variant="outline" className="text-[10px]">
-                        Open
-                      </Badge>
                     ) : null}
                     <Button
                       variant="ghost"
                       size="icon"
                       className="h-7 w-7"
                       disabled={run.source !== 'local' || deletingRunId === run.id || run.status === 'running'}
-                      title={run.source === 'convex' ? 'Cloud run cannot be deleted here' : 'Delete run from history'}
+                      title={run.source === 'convex' ? 'Cloud run cannot be deleted here' : 'Delete run'}
                       onClick={(event) => {
                         event.stopPropagation();
                         void handleDeleteRun(run);
                       }}
                     >
-                      <Trash2 className="h-3.5 w-3.5 text-red-600" />
+                      <Trash2 className="h-3.5 w-3.5 text-destructive/70" />
                     </Button>
                   </div>
                 </div>
@@ -715,36 +744,39 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
         </ScrollArea>
       </div>
 
+      {/* Sidebar resize handle */}
       <div
         role="separator"
         aria-orientation="vertical"
         aria-label="Resize run history sidebar"
-        className="w-1 shrink-0 cursor-col-resize bg-border/40 transition-colors hover:bg-primary/40"
+        className="w-1 shrink-0 cursor-col-resize bg-border/40 transition-colors hover:bg-primary/30"
         onPointerDown={startSidebarResize}
       />
 
+      {/* Main Dashboard Content */}
       {selectedRun ? (
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className="border-b border-border bg-card px-5 py-4">
+          {/* Dashboard header */}
+          <div className="border-b border-border bg-card/50 px-5 py-4">
             <div className="flex items-start justify-between gap-4">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-lg font-semibold">{selectedRun.name}</h2>
+              <div>
+                <div className="flex items-center gap-3">
+                  <h2 className="font-display text-xl font-semibold">{selectedRun.name}</h2>
                   <Badge variant={getStatusBadgeVariant(selectedRun.status)}>{selectedRun.status}</Badge>
-                  <Badge variant="outline">{selectedRun.source}</Badge>
+                  <Badge variant="outline" className="font-data text-[9px]">{selectedRun.source}</Badge>
                 </div>
-                <p className="text-sm text-muted-foreground">
+                <p className="mt-0.5 font-data text-xs text-muted-foreground tabular-nums">
                   Step {selectedRun.currentStep} of {selectedRun.totalSteps}
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isLoading}>
-                  <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+                  <RefreshCw className={`mr-2 h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
                   Refresh
                 </Button>
                 {selectedRun.source === 'local' && selectedRun.status === 'running' ? (
                   <Button variant="destructive" size="sm" onClick={() => void handleStopRun(selectedRun)}>
-                    <Square className="mr-2 h-4 w-4" />
+                    <Square className="mr-2 h-3.5 w-3.5" />
                     Stop
                   </Button>
                 ) : null}
@@ -752,56 +784,65 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
             </div>
           </div>
 
-          <div className="space-y-4 p-4">
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Run summary</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="stats-grid">
-                  <SummaryField
-                    label="Progress"
-                    value={<span className="tabular-nums">{selectedRun.currentStep} / {selectedRun.totalSteps}</span>}
-                  />
-                  <SummaryField label="Molecules" value={<span className="tabular-nums">{molecules.length}</span>} />
-                  <SummaryField label="Best affinity" value={bestAffinity?.toFixed(3) ?? 'N/A'} />
-                  <SummaryField label="Best probability" value={bestProbability?.toFixed(3) ?? 'N/A'} />
-                </div>
-                <div className="grid gap-3 xl:grid-cols-2">
-                  <SummaryField
-                    label="Result directory"
-                    value={<span className="break-all text-sm text-muted-foreground">{selectedRun.resultDir}</span>}
-                  />
-                  <SummaryField
-                    label="Checkpoint"
-                    value={
-                      <span className="break-all text-sm text-muted-foreground">
-                        {selectedRun.checkpointPath ?? 'No checkpoint recorded'}
-                      </span>
-                    }
-                  />
-                </div>
-              </CardContent>
-            </Card>
+          <div className="space-y-4 p-5">
+            {/* Metrics row */}
+            <div className="stats-grid">
+              <MetricTile
+                label="Progress"
+                value={<span>{selectedRun.currentStep} / {selectedRun.totalSteps}</span>}
+                icon={TrendingUp}
+              />
+              <MetricTile
+                label="Molecules"
+                value={molecules.length}
+                icon={FlaskConical}
+              />
+              <MetricTile
+                label="Best Affinity"
+                value={bestAffinity?.toFixed(3) ?? 'N/A'}
+                icon={Atom}
+              />
+              <MetricTile
+                label="Best Probability"
+                value={bestProbability?.toFixed(3) ?? 'N/A'}
+                icon={Layers}
+              />
+            </div>
 
+            {/* Paths */}
+            <div className="grid gap-3 xl:grid-cols-2">
+              <div className="rounded-md border border-border bg-secondary/15 px-3 py-2.5">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground">Result Directory</p>
+                <p className="mt-1 break-all font-data text-[11px] text-foreground/70">{selectedRun.resultDir}</p>
+              </div>
+              <div className="rounded-md border border-border bg-secondary/15 px-3 py-2.5">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground">Checkpoint</p>
+                <p className="mt-1 break-all font-data text-[11px] text-foreground/70">
+                  {selectedRun.checkpointPath ?? 'No checkpoint recorded'}
+                </p>
+              </div>
+            </div>
+
+            {/* Boltz metrics */}
             <BoltzMetricsPanel
               metrics={activeBoltzMetrics}
               isLoading={selectedRun.source === 'convex' ? convexMetricRows === undefined : isBoltzMetricsLoading}
             />
 
-            <Card>
+            {/* Logs */}
+            <Card className="border-border/60 bg-card/80">
               <CardHeader className="pb-3">
                 <div className="flex items-center gap-2">
                   <FileText className="h-4 w-4 text-muted-foreground" />
-                  <CardTitle className="text-base">Run logs</CardTitle>
+                  <CardTitle className="font-display text-base">Run Logs</CardTitle>
                 </div>
               </CardHeader>
               <CardContent>
                 {selectedRun.source === 'convex' ? (
-                  <p className="text-sm text-muted-foreground">Logs are only available for local runner runs.</p>
+                  <p className="text-sm text-muted-foreground">Logs are only available for local runs.</p>
                 ) : (
-                  <div className="max-h-52 overflow-auto rounded-md border border-border bg-muted/20 p-3">
-                    <pre className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-muted-foreground">
+                  <div className="max-h-52 overflow-auto rounded-md border border-border bg-background p-3">
+                    <pre className="whitespace-pre-wrap break-words font-data text-[10px] leading-relaxed text-muted-foreground">
                       {runLogLines.length > 0
                         ? runLogLines.join('\n')
                         : isLogLoading
@@ -813,85 +854,85 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
               </CardContent>
             </Card>
 
+            {/* Molecule details + 3D viewer */}
             <div className="grid gap-4 xl:grid-cols-[minmax(360px,420px)_minmax(0,1fr)]">
               <div className="space-y-4">
                 {selectedMolecule ? (
-                  <>
-                    <MoleculeCard molecule={selectedMolecule} />
-
-                    {selectedMolecule.boltzScores ? (
-                      <Card>
-                        <CardHeader className="pb-3">
-                          <CardTitle className="text-base">Boltz-2 scores</CardTitle>
-                        </CardHeader>
-                        <CardContent className="grid gap-3 md:grid-cols-3">
-                          {[
-                            {
-                              label: 'Ensemble',
-                              aff: selectedMolecule.boltzScores.affinity_ensemble,
-                              prob: selectedMolecule.boltzScores.probability_ensemble,
-                            },
-                            {
-                              label: 'Model 1',
-                              aff: selectedMolecule.boltzScores.affinity_model1,
-                              prob: selectedMolecule.boltzScores.probability_model1,
-                            },
-                            {
-                              label: 'Model 2',
-                              aff: selectedMolecule.boltzScores.affinity_model2,
-                              prob: selectedMolecule.boltzScores.probability_model2,
-                            },
-                          ].map((item) => (
-                            <div key={item.label} className="rounded-md border border-border bg-muted/25 p-3 text-sm">
-                              <p className="mb-2 font-medium">{item.label}</p>
-                              <div className="space-y-1 text-muted-foreground">
-                                <div className="flex justify-between">
-                                  <span>Affinity</span>
-                                  <span className="font-mono text-foreground">{item.aff.toFixed(3)}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                  <span>Probability</span>
-                                  <span className="font-mono text-foreground">{item.prob.toFixed(3)}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                  <span>Boltz score</span>
-                                  <span className="font-mono text-foreground">
-                                    {computeBoltzScore(item.aff, item.prob).toFixed(3)}
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </CardContent>
-                      </Card>
-                    ) : null}
-
-                    {selectedMolecule.trajectory.length > 0 ? (
-                      <Card>
-                        <CardHeader className="pb-3">
-                          <div className="flex items-center gap-2">
-                            <Atom className="h-4 w-4 text-muted-foreground" />
-                            <CardTitle className="text-base">Reaction pathway</CardTitle>
-                          </div>
-                        </CardHeader>
-                        <CardContent>
-                          <ReactionPathway trajectory={selectedMolecule.trajectory} />
-                        </CardContent>
-                      </Card>
-                    ) : null}
-                  </>
+                  <MoleculeCard molecule={selectedMolecule} />
                 ) : (
-                  <Card>
+                  <Card className="border-border/60 bg-card/80">
                     <CardContent className="py-8">
-                      <p className="text-sm text-muted-foreground">Select a molecule from the table to inspect it.</p>
+                      <p className="text-center text-sm text-muted-foreground">Select a molecule from the table to inspect it.</p>
                     </CardContent>
                   </Card>
                 )}
+
+                {selectedMolecule?.boltzScores ? (
+                  <Card className="border-border/60 bg-card/80">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="font-display text-base">Boltz-2 Scores</CardTitle>
+                    </CardHeader>
+                    <CardContent className="grid gap-3 md:grid-cols-3">
+                      {[
+                        {
+                          label: 'Ensemble',
+                          aff: selectedMolecule.boltzScores.affinity_ensemble,
+                          prob: selectedMolecule.boltzScores.probability_ensemble,
+                        },
+                        {
+                          label: 'Model 1',
+                          aff: selectedMolecule.boltzScores.affinity_model1,
+                          prob: selectedMolecule.boltzScores.probability_model1,
+                        },
+                        {
+                          label: 'Model 2',
+                          aff: selectedMolecule.boltzScores.affinity_model2,
+                          prob: selectedMolecule.boltzScores.probability_model2,
+                        },
+                      ].map((item) => (
+                        <div key={item.label} className="rounded-md border border-border bg-secondary/20 p-3 text-sm">
+                          <p className="mb-2 text-xs font-semibold text-muted-foreground">{item.label}</p>
+                          <div className="space-y-1.5 text-muted-foreground">
+                            <div className="flex justify-between">
+                              <span className="text-xs">Affinity</span>
+                              <span className="font-data text-xs text-foreground tabular-nums">{item.aff.toFixed(3)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-xs">Probability</span>
+                              <span className="font-data text-xs text-foreground tabular-nums">{item.prob.toFixed(3)}</span>
+                            </div>
+                            <div className="h-px bg-border/40" />
+                            <div className="flex justify-between">
+                              <span className="text-xs font-medium text-primary/80">Score</span>
+                              <span className="font-data text-xs font-medium text-primary tabular-nums">
+                                {computeBoltzScore(item.aff, item.prob).toFixed(3)}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+                ) : null}
+
+                {selectedMolecule && selectedMolecule.trajectory.length > 0 ? (
+                  <Card className="border-border/60 bg-card/80">
+                    <CardHeader className="pb-3">
+                      <div className="flex items-center gap-2">
+                        <Atom className="h-4 w-4 text-primary" />
+                        <CardTitle className="font-display text-base">Reaction Pathway</CardTitle>
+                      </div>
+                    </CardHeader>
+                    <CardContent>
+                      <ReactionPathway trajectory={selectedMolecule.trajectory} />
+                    </CardContent>
+                  </Card>
+                ) : null}
               </div>
 
-              <Card className="min-h-[420px] overflow-hidden">
+              <Card className="min-h-[420px] overflow-hidden border-border/60 bg-card/80">
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-base">Protein-ligand complex</CardTitle>
+                  <CardTitle className="font-display text-base">Protein–Ligand Complex</CardTitle>
                 </CardHeader>
                 <CardContent className="h-[520px] p-0">
                   <MolstarViewer
@@ -903,19 +944,36 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
               </Card>
             </div>
 
-            <Card>
+            <ParallelCoordinatesPanel
+              molecules={molecules}
+              isFiltered={plotFilteredSmiles !== null}
+              onFilteredSmilesChange={(smiles) => {
+                setPlotFilteredSmiles(smiles ? new Set(smiles) : null);
+                setTablePage(1);
+              }}
+            />
+
+            {/* Molecule table */}
+            <Card className="border-border/60 bg-card/80">
               <CardHeader className="pb-3">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
-                    <Beaker className="h-4 w-4 text-muted-foreground" />
-                    <CardTitle className="text-base">Generated molecules</CardTitle>
+                    <Beaker className="h-4 w-4 text-primary" />
+                    <CardTitle className="font-display text-base">Generated Molecules</CardTitle>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="outline">{molecules.length} total</Badge>
-                    <Badge variant="outline">
-                      Showing {molecules.length === 0 ? 0 : pageStart + 1}-{pageEnd}
+                    <Badge variant="outline" className="font-data text-[10px]">
+                      {plotFilteredSmiles ? `${displayedMolecules.length} filtered` : `${molecules.length} total`}
                     </Badge>
-                    <Badge variant="secondary">Page {safePage}/{totalPages}</Badge>
+                    {plotFilteredSmiles ? (
+                      <Badge variant="outline" className="font-data text-[10px]">
+                        {molecules.length} total
+                      </Badge>
+                    ) : null}
+                    <Badge variant="outline" className="font-data text-[10px]">
+                      {displayedMolecules.length === 0 ? 0 : pageStart + 1}–{pageEnd}
+                    </Badge>
+                    <Badge variant="secondary" className="font-data text-[10px]">{safePage}/{totalPages}</Badge>
                     <Button
                       variant="outline"
                       size="sm"
@@ -940,32 +998,68 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                   <Table>
                     <TableHeader>
                       <TableRow className="hover:bg-transparent">
-                        <TableHead className="w-12 text-xs">#</TableHead>
-                        <TableHead className="text-xs">SMILES</TableHead>
-                        <TableHead className="w-24 text-xs">Reward</TableHead>
-                        <TableHead className="w-24 text-xs">Affinity</TableHead>
-                        <TableHead className="w-24 text-xs">Probability</TableHead>
-                        <TableHead className="w-20 text-xs">Steps</TableHead>
+                        <TableHead className="w-10 font-data text-[10px]">#</TableHead>
+                        <TableHead className="min-w-[200px] font-data text-[10px]">SMILES</TableHead>
+                        <TableHead className="w-[4.5rem] font-data text-[10px]">Reward</TableHead>
+                        <TableHead className="w-[4.5rem] font-data text-[10px]" title="Ensemble affinity">
+                          Ens A
+                        </TableHead>
+                        <TableHead className="w-[4.5rem] font-data text-[10px]" title="Ensemble probability">
+                          Ens P
+                        </TableHead>
+                        <TableHead className="w-[4.5rem] font-data text-[10px]" title="Model 1 affinity">
+                          M1 A
+                        </TableHead>
+                        <TableHead className="w-[4.5rem] font-data text-[10px]" title="Model 1 probability">
+                          M1 P
+                        </TableHead>
+                        <TableHead className="w-[4.5rem] font-data text-[10px]" title="Model 2 affinity">
+                          M2 A
+                        </TableHead>
+                        <TableHead className="w-[4.5rem] font-data text-[10px]" title="Model 2 probability">
+                          M2 P
+                        </TableHead>
+                        <TableHead className="w-16 font-data text-[10px]">Steps</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {pagedMolecules.map((molecule, idx) => (
                         <TableRow
                           key={molecule.smiles}
-                          className={`cursor-pointer ${selectedMolecule?.smiles === molecule.smiles ? 'bg-primary/5' : ''}`}
+                          className={`cursor-pointer transition-colors ${selectedMolecule?.smiles === molecule.smiles ? 'bg-primary/5' : 'hover:bg-secondary/30'}`}
                           onClick={() => setSelectedMolecule(molecule)}
                         >
-                          <TableCell className="py-2 text-sm font-medium">{pageStart + idx + 1}</TableCell>
-                          <TableCell className="max-w-xs truncate py-2 font-mono text-xs">{molecule.smiles}</TableCell>
-                          <TableCell className="py-2 font-mono text-sm">{molecule.reward.toFixed(3)}</TableCell>
-                          <TableCell className="py-2 font-mono text-sm">
-                            {molecule.boltzScores?.affinity_ensemble.toFixed(3) ?? 'N/A'}
+                          <TableCell className="align-top py-2 font-data text-xs font-medium tabular-nums">
+                            {pageStart + idx + 1}
                           </TableCell>
-                          <TableCell className="py-2 font-mono text-sm">
-                            {molecule.boltzScores?.probability_ensemble.toFixed(3) ?? 'N/A'}
+                          <TableCell className="min-w-[12rem] max-w-none py-2 align-top">
+                            <SmilesCell smiles={molecule.smiles} />
                           </TableCell>
-                          <TableCell className="py-2 text-sm">
-                            <Badge variant="secondary">{molecule.trajectory.length}</Badge>
+                          <TableCell className="py-2 align-top font-data text-xs tabular-nums">
+                            {molecule.reward.toFixed(3)}
+                          </TableCell>
+                          <TableCell className="py-2 align-top font-data text-xs tabular-nums">
+                            {molecule.boltzScores ? fmtBoltz(molecule.boltzScores.affinity_ensemble) : 'N/A'}
+                          </TableCell>
+                          <TableCell className="py-2 align-top font-data text-xs tabular-nums">
+                            {molecule.boltzScores ? fmtBoltz(molecule.boltzScores.probability_ensemble) : 'N/A'}
+                          </TableCell>
+                          <TableCell className="py-2 align-top font-data text-xs tabular-nums">
+                            {molecule.boltzScores ? fmtBoltz(molecule.boltzScores.affinity_model1) : 'N/A'}
+                          </TableCell>
+                          <TableCell className="py-2 align-top font-data text-xs tabular-nums">
+                            {molecule.boltzScores ? fmtBoltz(molecule.boltzScores.probability_model1) : 'N/A'}
+                          </TableCell>
+                          <TableCell className="py-2 align-top font-data text-xs tabular-nums">
+                            {molecule.boltzScores ? fmtBoltz(molecule.boltzScores.affinity_model2) : 'N/A'}
+                          </TableCell>
+                          <TableCell className="py-2 align-top font-data text-xs tabular-nums">
+                            {molecule.boltzScores ? fmtBoltz(molecule.boltzScores.probability_model2) : 'N/A'}
+                          </TableCell>
+                          <TableCell className="py-2 align-top">
+                            <Badge variant="secondary" className="font-data text-[10px]">
+                              {molecule.trajectory.length}
+                            </Badge>
                           </TableCell>
                         </TableRow>
                       ))}
@@ -979,8 +1073,8 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       ) : (
         <div className="flex flex-1 items-center justify-center">
           <div className="space-y-3 text-center">
-            <History className="mx-auto h-10 w-10 text-muted-foreground/40" />
-            <p className="text-sm text-muted-foreground">Select a run from the sidebar to view details.</p>
+            <History className="mx-auto h-10 w-10 text-muted-foreground/30" />
+            <p className="text-sm text-muted-foreground">Select a run from the sidebar.</p>
           </div>
         </div>
       )}
