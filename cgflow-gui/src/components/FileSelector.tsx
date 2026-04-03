@@ -172,9 +172,9 @@ export default function FileSelector({
 
   return (
     <div className="space-y-2">
-      <Label className="text-sm font-medium text-foreground">
+      <Label className="text-xs font-medium text-muted-foreground">
         {label}
-        {optional && <span className="ml-1 text-muted-foreground">(optional)</span>}
+        {optional && <span className="ml-1 text-muted-foreground/60">(optional)</span>}
       </Label>
       
       <div ref={containerRef} className="relative">
@@ -221,7 +221,7 @@ export default function FileSelector({
         {isOpen && createPortal(
           <div
             id="file-selector-dropdown"
-            className="fixed overflow-hidden rounded-lg border border-border bg-card shadow-lg"
+            className="fixed overflow-hidden rounded-lg border border-border bg-card shadow-lg shadow-black/20"
             style={{
               top: dropdownPosition.top,
               left: dropdownPosition.left,
@@ -231,9 +231,9 @@ export default function FileSelector({
           >
             <div className="border-b border-border px-3 py-2">
               <p className="text-sm font-medium text-foreground">
-                {isAvailable ? 'Cloud files' : 'Cloud storage unavailable'}
+                {isAvailable ? 'Cloud Files' : 'Cloud Storage Unavailable'}
               </p>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-[11px] text-muted-foreground">
                 {isAvailable ? 'Pick a previously uploaded file or add a new one.' : 'Use the local file picker until Convex is connected.'}
               </p>
             </div>

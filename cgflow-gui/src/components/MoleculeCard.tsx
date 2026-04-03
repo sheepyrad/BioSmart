@@ -5,7 +5,6 @@ import type { MoleculeResult } from '@shared/types';
 import { Atom, Copy, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
-// RDKit.js type declaration
 declare global {
   interface Window {
     RDKit?: {
@@ -65,24 +64,24 @@ export default function MoleculeCard({ molecule }: MoleculeCardProps) {
   };
 
   return (
-    <Card className="overflow-hidden">
+    <Card className="overflow-hidden border-border/60 bg-card/80">
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Atom className="h-4 w-4 text-muted-foreground" />
-            <CardTitle className="text-base">Structure</CardTitle>
+            <Atom className="h-4 w-4 text-primary" />
+            <CardTitle className="font-display text-base">Structure</CardTitle>
           </div>
-          <Badge variant="success">
+          <Badge variant="success" className="font-data text-[10px] tabular-nums">
             Reward: {molecule.reward.toFixed(3)}
           </Badge>
         </div>
       </CardHeader>
       <CardContent>
-        <div className="mb-4 flex h-52 items-center justify-center overflow-hidden rounded-md border border-border bg-muted/35">
+        <div className="mb-4 flex h-52 items-center justify-center overflow-hidden rounded-md border border-border bg-background">
           {svgContent ? (
             <div
               dangerouslySetInnerHTML={{ __html: svgContent }}
-              className="[&_svg]:h-auto [&_svg]:max-w-full p-4"
+              className="[&_svg]:h-auto [&_svg]:max-w-full p-4 [&_svg_path]:stroke-foreground/80 [&_svg_rect]:fill-transparent"
             />
           ) : error ? (
             <div className="p-4 text-center">
@@ -90,7 +89,7 @@ export default function MoleculeCard({ molecule }: MoleculeCardProps) {
             </div>
           ) : (
             <div className="p-4 text-center">
-              <Atom className="mx-auto mb-2 h-8 w-8 text-muted-foreground/60" />
+              <Atom className="mx-auto mb-2 h-8 w-8 text-muted-foreground/40 animate-pulse" />
               <p className="text-sm text-muted-foreground">Loading structure...</p>
               <canvas ref={canvasRef} width={300} height={150} className="hidden" />
             </div>
@@ -99,7 +98,7 @@ export default function MoleculeCard({ molecule }: MoleculeCardProps) {
 
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <p className="text-sm font-medium text-foreground">SMILES</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground">SMILES</p>
             <Button
               variant="ghost"
               size="sm"
@@ -107,7 +106,7 @@ export default function MoleculeCard({ molecule }: MoleculeCardProps) {
               className="h-6 px-2 text-xs"
             >
               {copied ? (
-                <span className="flex items-center gap-1 text-accent">
+                <span className="flex items-center gap-1 text-primary">
                   <Check className="h-3 w-3" />
                   Copied
                 </span>
@@ -119,7 +118,7 @@ export default function MoleculeCard({ molecule }: MoleculeCardProps) {
               )}
             </Button>
           </div>
-          <div className="rounded-md border border-border bg-muted/35 p-3 font-mono text-xs break-all">
+          <div className="rounded-md border border-border bg-background p-3 font-data text-[11px] break-all leading-relaxed text-foreground/70">
             {molecule.smiles}
           </div>
         </div>

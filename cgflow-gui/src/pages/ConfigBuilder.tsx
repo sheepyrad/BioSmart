@@ -23,6 +23,11 @@ import {
   Save,
   Square,
   X,
+  Microscope,
+  Dna,
+  SlidersHorizontal,
+  Zap,
+  FileText,
 } from 'lucide-react';
 
 interface ConfigBuilderProps {
@@ -69,29 +74,11 @@ const normalizeBoltzWorker = (value: unknown): number => {
 };
 
 const AMINO_ACID_3_TO_1: Record<string, string> = {
-  ALA: 'A',
-  ARG: 'R',
-  ASN: 'N',
-  ASP: 'D',
-  CYS: 'C',
-  GLN: 'Q',
-  GLU: 'E',
-  GLY: 'G',
-  HIS: 'H',
-  ILE: 'I',
-  LEU: 'L',
-  LYS: 'K',
-  MET: 'M',
-  PHE: 'F',
-  PRO: 'P',
-  SER: 'S',
-  THR: 'T',
-  TRP: 'W',
-  TYR: 'Y',
-  VAL: 'V',
-  SEC: 'U',
-  PYL: 'O',
-  MSE: 'M',
+  ALA: 'A', ARG: 'R', ASN: 'N', ASP: 'D', CYS: 'C',
+  GLN: 'Q', GLU: 'E', GLY: 'G', HIS: 'H', ILE: 'I',
+  LEU: 'L', LYS: 'K', MET: 'M', PHE: 'F', PRO: 'P',
+  SER: 'S', THR: 'T', TRP: 'W', TYR: 'Y', VAL: 'V',
+  SEC: 'U', PYL: 'O', MSE: 'M',
 };
 
 interface ParsedProteinSequence {
@@ -137,17 +124,10 @@ function parseProteinSequencesFromPdb(pdbContent: string): ParsedProteinSequence
   return sequences;
 }
 
-function SectionHeading({
-  title,
-  description,
-}: {
-  title: string;
-  description?: string;
-}) {
+function SectionIcon({ icon: Icon }: { icon: React.ElementType }) {
   return (
-    <div className="space-y-1">
-      <h3 className="text-base font-semibold">{title}</h3>
-      {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
+    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10">
+      <Icon className="h-3.5 w-3.5 text-primary" />
     </div>
   );
 }
@@ -233,7 +213,7 @@ export default function ConfigBuilder({
           setLoadedPdbPath(config.protein_path);
         }
       } catch {
-        // Protein path may be unavailable in current environment (e.g. cloud path)
+        // Protein path may be unavailable in current environment
       }
     };
 
@@ -290,13 +270,11 @@ export default function ConfigBuilder({
     }
   }, [invoke]);
 
-  // File selection handlers - return path for FileSelector
   const handleSelectPdb = useCallback(async (): Promise<string | null> => {
     setIsLoading(true);
     try {
       const path = await invoke('file:select-pdb');
       if (path) {
-        // Also load the PDB content for the viewer
         const content = await invoke('file:read-pdb', path);
         setPdbContent(content);
         setLoadedPdbPath(path);
@@ -432,14 +410,34 @@ export default function ConfigBuilder({
           : 'secondary';
 
   return (
-    <div className="flex h-full min-h-0 bg-background">
-      <div className="relative shrink-0 border-r border-border bg-card" style={{ width: `${leftPanelWidth}%` }}>
+    <div className="flex h-full min-h-0">
+      {/* Left panel - Config form */}
+      <div
+        className="relative shrink-0 border-r border-border bg-background"
+        style={{ width: `${leftPanelWidth}%` }}
+      >
         <ScrollArea className="h-full">
-          <div className="space-y-5 p-5">
-            <Card>
+          <div className="space-y-4 p-5">
+            {/* Page header */}
+            <div className="mb-6">
+              <h2 className="font-display text-2xl font-semibold tracking-tight">
+                Run Configuration
+              </h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Prepare and launch molecular optimization jobs with Boltz-2.
+              </p>
+            </div>
+
+            {/* Config management */}
+            <Card className="border-border/60 bg-card/80">
               <CardHeader className="pb-4">
-                <CardTitle>Configuration</CardTitle>
-                <CardDescription>Load an existing setup or prepare a new run configuration.</CardDescription>
+                <div className="flex items-center gap-3">
+                  <SectionIcon icon={FileText} />
+                  <div>
+                    <CardTitle className="font-display text-base">Configuration</CardTitle>
+                    <CardDescription>Load an existing setup or prepare a new run.</CardDescription>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex gap-2">
@@ -450,16 +448,16 @@ export default function ConfigBuilder({
                     className="flex-1"
                   >
                     {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FolderOpen className="mr-2 h-4 w-4" />}
-                    Load Config
+                    Load
                   </Button>
                   <Button variant="outline" onClick={handleSaveConfig} className="flex-1">
                     <Save className="mr-2 h-4 w-4" />
-                    Save Config
+                    Save
                   </Button>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="config-name">Config name</Label>
+                  <Label htmlFor="config-name" className="text-xs font-medium text-muted-foreground">Config name</Label>
                   <Input
                     id="config-name"
                     value={configName}
@@ -469,7 +467,7 @@ export default function ConfigBuilder({
                 </div>
 
                 {isConvexAvailable ? (
-                  <div className="space-y-3 rounded-md border border-border bg-muted/25 p-3">
+                  <div className="space-y-3 rounded-md border border-primary/10 bg-primary/[0.03] p-3">
                     <div className="flex gap-2">
                       <Button
                         variant="default"
@@ -478,7 +476,7 @@ export default function ConfigBuilder({
                         className="flex-1"
                       >
                         <Cloud className="mr-2 h-4 w-4" />
-                        Save to Cloud
+                        Cloud Save
                       </Button>
                       <Button
                         variant="outline"
@@ -487,26 +485,28 @@ export default function ConfigBuilder({
                         disabled={!configs || configs.length === 0}
                       >
                         <Clock className="mr-2 h-4 w-4" />
-                        Load Last Used
+                        Last Used
                       </Button>
                     </div>
 
                     {configs && configs.length > 0 ? (
                       <div className="space-y-2">
-                        <p className="text-sm font-medium">Recent cloud configs</p>
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground">
+                          Recent
+                        </p>
                         <div className="space-y-1">
                           {configs.map((cfg) => (
                             <button
                               key={cfg._id}
                               onClick={() => handleLoadConvexConfig(cfg)}
-                              className={`flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm ${
+                              className={`flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm transition-all ${
                                 savedConfigId === cfg._id
-                                  ? 'border-primary bg-primary/5'
-                                  : 'border-transparent bg-card hover:border-border hover:bg-muted/35'
+                                  ? 'border-primary/30 bg-primary/5'
+                                  : 'border-transparent hover:border-border hover:bg-secondary/40'
                               }`}
                             >
                               <span className="truncate font-medium">{cfg.name}</span>
-                              <span className="ml-3 shrink-0 text-xs text-muted-foreground">
+                              <span className="ml-3 shrink-0 font-data text-[10px] text-muted-foreground">
                                 {cfg.lastUsedAt ? new Date(cfg.lastUsedAt).toLocaleDateString() : 'Saved'}
                               </span>
                             </button>
@@ -518,17 +518,23 @@ export default function ConfigBuilder({
                 ) : null}
 
                 {configPath ? (
-                  <div className="rounded-md border border-border bg-muted/25 px-3 py-2 text-xs text-muted-foreground">
+                  <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 font-data text-[11px] text-muted-foreground">
                     {configPath}
                   </div>
                 ) : null}
               </CardContent>
             </Card>
 
-            <Card>
+            {/* Input files */}
+            <Card className="border-border/60 bg-card/80">
               <CardHeader className="pb-4">
-                <CardTitle>Input files</CardTitle>
-                <CardDescription>Select the structure and optional MSA used to generate the Boltz input.</CardDescription>
+                <div className="flex items-center gap-3">
+                  <SectionIcon icon={Microscope} />
+                  <div>
+                    <CardTitle className="font-display text-base">Input Files</CardTitle>
+                    <CardDescription>Structure and optional MSA for Boltz input generation.</CardDescription>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
                 <FileSelector
@@ -545,17 +551,17 @@ export default function ConfigBuilder({
                 />
 
                 <div className="space-y-2">
-                  <Label>Generated Boltz YAML preview</Label>
-                  <div className="rounded-md border border-border bg-muted/25 p-3">
+                  <Label className="text-xs font-medium text-muted-foreground">Boltz YAML preview</Label>
+                  <div className="rounded-md border border-border bg-secondary/20 p-3">
                     {generatedBoltzYamlResult.error ? (
                       <p className="text-sm text-destructive">{generatedBoltzYamlResult.error}</p>
                     ) : generatedBoltzYamlResult.yaml ? (
-                      <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all font-mono text-xs leading-5 text-foreground">
+                      <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all font-data text-[11px] leading-5 text-foreground/80">
                         {generatedBoltzYamlResult.yaml}
                       </pre>
                     ) : (
                       <p className="text-sm text-muted-foreground">
-                        Choose a protein PDB to preview the generated Boltz YAML.
+                        Choose a protein PDB to preview.
                       </p>
                     )}
                   </div>
@@ -579,7 +585,7 @@ export default function ConfigBuilder({
                 />
 
                 <div className="space-y-2">
-                  <Label htmlFor="boltz-workers">Boltz workers</Label>
+                  <Label htmlFor="boltz-workers" className="text-xs font-medium text-muted-foreground">Boltz workers</Label>
                   <Input
                     id="boltz-workers"
                     type="number"
@@ -594,27 +600,33 @@ export default function ConfigBuilder({
                         },
                       }))
                     }
-                    className="tabular-nums"
+                    className="font-data tabular-nums"
                   />
                 </div>
               </CardContent>
             </Card>
 
-            <Card>
+            {/* Target residues */}
+            <Card className="border-border/60 bg-card/80">
               <CardHeader className="pb-4">
-                <CardTitle>Target residues</CardTitle>
-                <CardDescription>Pick residues in the viewer or enter them manually as `CHAIN:RESID`.</CardDescription>
+                <div className="flex items-center gap-3">
+                  <SectionIcon icon={Dna} />
+                  <div>
+                    <CardTitle className="font-display text-base">Target Residues</CardTitle>
+                    <CardDescription>Pick residues in the viewer or enter as CHAIN:RESID.</CardDescription>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center justify-between gap-2">
-                  <SectionHeading title="Selected residues" />
-                  <Badge variant="outline">{selectedResidues.length}</Badge>
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground">Selected</span>
+                  <Badge variant="outline" className="font-data text-[10px]">{selectedResidues.length}</Badge>
                 </div>
 
                 {selectedResidues.length > 0 ? (
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap gap-1.5">
                     {selectedResidues.map((residue) => (
-                      <Badge key={residue} variant="secondary" className="gap-1 pr-1">
+                      <Badge key={residue} variant="secondary" className="gap-1 pr-1 font-data text-[11px]">
                         {residue}
                         <button
                           onClick={() => handleRemoveResidue(residue)}
@@ -626,7 +638,7 @@ export default function ConfigBuilder({
                     ))}
                   </div>
                 ) : (
-                  <div className="rounded-md border border-dashed border-border bg-muted/20 px-3 py-4 text-sm text-muted-foreground">
+                  <div className="rounded-md border border-dashed border-border bg-secondary/20 px-3 py-4 text-center text-sm text-muted-foreground">
                     No residues selected yet.
                   </div>
                 )}
@@ -636,6 +648,7 @@ export default function ConfigBuilder({
                     value={newResidue}
                     onChange={(e) => setNewResidue(e.target.value)}
                     placeholder="A:123"
+                    className="font-data"
                     onKeyDown={(e) => e.key === 'Enter' && handleAddResidue()}
                   />
                   <Button variant="outline" size="icon" onClick={handleAddResidue}>
@@ -650,19 +663,26 @@ export default function ConfigBuilder({
               </CardContent>
             </Card>
 
-            <Card>
+            {/* Directories */}
+            <Card className="border-border/60 bg-card/80">
               <CardHeader className="pb-4">
-                <CardTitle>Directories</CardTitle>
-                <CardDescription>Choose where CGFlow writes results and where the environment files live.</CardDescription>
+                <div className="flex items-center gap-3">
+                  <SectionIcon icon={FolderOpen} />
+                  <div>
+                    <CardTitle className="font-display text-base">Directories</CardTitle>
+                    <CardDescription>Output and environment file locations.</CardDescription>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="result-dir">Result directory</Label>
+                  <Label htmlFor="result-dir" className="text-xs font-medium text-muted-foreground">Result directory</Label>
                   <div className="flex gap-2">
                     <Input
                       id="result-dir"
                       value={config.result_dir}
                       onChange={(e) => setConfig((prev) => ({ ...prev, result_dir: e.target.value }))}
+                      className="font-data text-xs"
                     />
                     <Button variant="outline" size="icon" onClick={handleSelectResultDir}>
                       <FolderOpen className="h-4 w-4" />
@@ -671,12 +691,13 @@ export default function ConfigBuilder({
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="env-dir">Environment directory</Label>
+                  <Label htmlFor="env-dir" className="text-xs font-medium text-muted-foreground">Environment directory</Label>
                   <div className="flex gap-2">
                     <Input
                       id="env-dir"
                       value={config.env_dir}
                       onChange={(e) => setConfig((prev) => ({ ...prev, env_dir: e.target.value }))}
+                      className="font-data text-xs"
                     />
                     <Button variant="outline" size="icon" onClick={handleSelectEnvDir}>
                       <FolderOpen className="h-4 w-4" />
@@ -686,14 +707,20 @@ export default function ConfigBuilder({
               </CardContent>
             </Card>
 
-            <Card>
+            {/* Optimization parameters */}
+            <Card className="border-border/60 bg-card/80">
               <CardHeader className="pb-4">
-                <CardTitle>Optimization parameters</CardTitle>
-                <CardDescription>Core sampling controls for the next run.</CardDescription>
+                <div className="flex items-center gap-3">
+                  <SectionIcon icon={SlidersHorizontal} />
+                  <div>
+                    <CardTitle className="font-display text-base">Optimization Parameters</CardTitle>
+                    <CardDescription>Core sampling controls.</CardDescription>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent className="field-grid">
                 <div className="space-y-2">
-                  <Label htmlFor="num-steps">Steps</Label>
+                  <Label htmlFor="num-steps" className="text-xs font-medium text-muted-foreground">Steps</Label>
                   <Input
                     id="num-steps"
                     type="number"
@@ -701,12 +728,12 @@ export default function ConfigBuilder({
                     onChange={(e) =>
                       setConfig((prev) => ({ ...prev, num_steps: parseInt(e.target.value) || 0 }))
                     }
-                    className="tabular-nums"
+                    className="font-data tabular-nums"
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="samples-per-step">Samples per step</Label>
+                  <Label htmlFor="samples-per-step" className="text-xs font-medium text-muted-foreground">Samples/step</Label>
                   <Input
                     id="samples-per-step"
                     type="number"
@@ -717,12 +744,12 @@ export default function ConfigBuilder({
                         num_sampling_per_step: parseInt(e.target.value) || 0,
                       }))
                     }
-                    className="tabular-nums"
+                    className="font-data tabular-nums"
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="max-atoms">Max atoms</Label>
+                  <Label htmlFor="max-atoms" className="text-xs font-medium text-muted-foreground">Max atoms</Label>
                   <Input
                     id="max-atoms"
                     type="number"
@@ -730,12 +757,12 @@ export default function ConfigBuilder({
                     onChange={(e) =>
                       setConfig((prev) => ({ ...prev, max_atoms: parseInt(e.target.value) || 0 }))
                     }
-                    className="tabular-nums"
+                    className="font-data tabular-nums"
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="seed">Seed</Label>
+                  <Label htmlFor="seed" className="text-xs font-medium text-muted-foreground">Seed</Label>
                   <Input
                     id="seed"
                     type="number"
@@ -743,23 +770,29 @@ export default function ConfigBuilder({
                     onChange={(e) =>
                       setConfig((prev) => ({ ...prev, seed: parseInt(e.target.value) || 0 }))
                     }
-                    className="tabular-nums"
+                    className="font-data tabular-nums"
                   />
                 </div>
               </CardContent>
             </Card>
 
-            <Card>
+            {/* Run controls */}
+            <Card className="border-border/60 bg-card/80">
               <CardHeader className="pb-4">
-                <CardTitle>Run controls</CardTitle>
-                <CardDescription>Start a new run or stop the active one.</CardDescription>
+                <div className="flex items-center gap-3">
+                  <SectionIcon icon={Zap} />
+                  <div>
+                    <CardTitle className="font-display text-base">Run Controls</CardTitle>
+                    <CardDescription>Launch or stop optimization.</CardDescription>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex gap-2">
                   <Button
                     onClick={handleStartRun}
                     disabled={isRunning || isLoading || !config.protein_path}
-                    className="flex-1"
+                    className="flex-1 glow-primary"
                   >
                     {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
                     Start Training
@@ -771,11 +804,11 @@ export default function ConfigBuilder({
                 </div>
 
                 {activeRun ? (
-                  <div className="space-y-3 rounded-md border border-border bg-muted/25 p-3">
+                  <div className="space-y-3 rounded-md border border-primary/15 bg-primary/[0.03] p-3 animate-fade-in">
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <p className="text-sm font-medium">{activeRun.name}</p>
-                        <p className="text-xs text-muted-foreground">
+                        <p className="font-data text-[11px] text-muted-foreground tabular-nums">
                           {activeRun.currentStep} of {activeRun.totalSteps} steps
                         </p>
                       </div>
@@ -783,15 +816,15 @@ export default function ConfigBuilder({
                     </div>
 
                     <div className="space-y-1">
-                      <div className="flex justify-between text-xs text-muted-foreground">
+                      <div className="flex justify-between font-data text-[10px] text-muted-foreground">
                         <span>Progress</span>
                         <span className="tabular-nums">
                           {activeRun.currentStep} / {activeRun.totalSteps}
                         </span>
                       </div>
-                      <div className="h-2 overflow-hidden rounded-full bg-muted">
+                      <div className="h-1.5 overflow-hidden rounded-full bg-secondary">
                         <div
-                          className="h-full bg-primary"
+                          className="h-full rounded-full bg-primary transition-all duration-500"
                           style={{
                             width: `${Math.min(
                               100,
@@ -811,9 +844,11 @@ export default function ConfigBuilder({
                     ) : null}
 
                     <div className="space-y-2">
-                      <p className="text-sm font-medium">Recent logs</p>
-                      <div className="max-h-40 overflow-auto rounded-md border border-border bg-card p-3">
-                        <pre className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-muted-foreground">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground">
+                        Recent Logs
+                      </p>
+                      <div className="max-h-40 overflow-auto rounded-md border border-border bg-background p-3">
+                        <pre className="whitespace-pre-wrap break-words font-data text-[10px] leading-relaxed text-muted-foreground">
                           {runOutput.length > 0 ? runOutput.slice(-60).join('\n') : 'No output yet.'}
                         </pre>
                       </div>
@@ -828,8 +863,10 @@ export default function ConfigBuilder({
             </Card>
           </div>
         </ScrollArea>
+
+        {/* Resize handle */}
         <div
-          className="absolute right-0 top-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-muted"
+          className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize bg-transparent transition-colors hover:bg-primary/20"
           onMouseDown={(event) => {
             event.preventDefault();
             const startX = event.clientX;
@@ -851,24 +888,25 @@ export default function ConfigBuilder({
           title="Drag to resize panel"
         >
           <div className="flex h-full items-center justify-center">
-            <GripVertical className="h-4 w-4 text-muted-foreground/60" />
+            <GripVertical className="h-4 w-4 text-muted-foreground/30" />
           </div>
         </div>
       </div>
 
+      {/* Right panel - 3D Viewer */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="border-b border-border bg-card px-5 py-4">
+        <div className="border-b border-border bg-card/50 px-5 py-4">
           <div className="flex items-start justify-between gap-4">
-            <div className="space-y-1">
-              <h2 className="text-base font-semibold">Protein structure</h2>
-              <p className="text-sm text-muted-foreground">
-                Select residues directly in the viewer to update the target list.
+            <div>
+              <h2 className="font-display text-lg font-semibold">Protein Structure</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Click residues in the viewer to update the target list.
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <Badge variant="outline">{selectedResidues.length} residues</Badge>
+              <Badge variant="outline" className="font-data text-[10px]">{selectedResidues.length} residues</Badge>
               {config.protein_path ? (
-                <Badge variant="secondary" className="max-w-[280px] truncate">
+                <Badge variant="secondary" className="max-w-[280px] truncate font-data text-[10px]">
                   {config.protein_path.split('/').pop()}
                 </Badge>
               ) : null}
@@ -876,7 +914,7 @@ export default function ConfigBuilder({
           </div>
         </div>
 
-        <div className="flex-1 bg-muted/10">
+        <div className="flex-1 bg-background">
           <MolstarViewer
             pdbContent={pdbContent}
             selectedResidues={selectedResidues}
