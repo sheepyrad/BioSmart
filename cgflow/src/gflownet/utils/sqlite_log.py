@@ -118,10 +118,11 @@ def read_all_results(path):
 
 class BoltzinaSQLiteLogHook:
     """
-    Separate database hook for storing SMILES, docking scores, and all boltz scores.
+    Separate database hook for storing SMILES, docking scores, and rich score outputs.
     Creates a separate database file:
     - boltzina_scores_{worker_id}.db for UniDockBoltzinaTask
     - boltz_scores_{worker_id}.db for BoltzTask
+    - flashbind_scores_{worker_id}.db for FlashBindTask
     """
     def __init__(self, log_dir, task) -> None:
         self.log = None  # Only initialized in __call__, which will occur inside the worker
@@ -137,6 +138,8 @@ class BoltzinaSQLiteLogHook:
         elif "Boltz" in task_class_name:
             # BoltzTask or BoltzMOOTask
             self.db_prefix = "boltz_scores"
+        elif "FlashBind" in task_class_name:
+            self.db_prefix = "flashbind_scores"
         else:
             # Default to boltzina for backward compatibility
             self.db_prefix = "boltzina_scores"
@@ -157,7 +160,13 @@ class BoltzinaSQLiteLogHook:
         # Get data from task
         smiles_list = self.task.batch_smiles
         docking_scores = self.task.batch_docking_scores
-        boltz_scores = self.task.batch_boltz_scores
+        score_rows = []
+        if hasattr(self.task, "batch_boltz_scores"):
+            score_rows = self.task.batch_boltz_scores
+        elif hasattr(self.task, "batch_flashbind_scores"):
+            score_rows = self.task.batch_flashbind_scores
+        else:
+            return {}
         
         # Get iteration from task or cond_info
         # Try to get from task first (set when batch data is computed)
@@ -170,7 +179,7 @@ class BoltzinaSQLiteLogHook:
             iteration = 0
 
         # Ensure all lists have the same length
-        min_len = min(len(smiles_list), len(docking_scores), len(boltz_scores))
+        min_len = min(len(smiles_list), len(docking_scores), len(score_rows))
         if min_len == 0:
             return {}
 
@@ -180,15 +189,14 @@ class BoltzinaSQLiteLogHook:
             smiles = smiles_list[i] if i < len(smiles_list) else ""
             docking_score = docking_scores[i] if i < len(docking_scores) else 0.0
             
-            # Extract boltz scores
-            boltz_result = boltz_scores[i] if i < len(boltz_scores) else {}
-            if isinstance(boltz_result, dict):
-                affinity_ensemble = boltz_result.get("affinity_ensemble", 0.0)
-                prob_ensemble = boltz_result.get("probability_ensemble", 0.0)
-                affinity_model1 = boltz_result.get("affinity_model1", 0.0)
-                prob_model1 = boltz_result.get("probability_model1", 0.0)
-                affinity_model2 = boltz_result.get("affinity_model2", 0.0)
-                prob_model2 = boltz_result.get("probability_model2", 0.0)
+            score_result = score_rows[i] if i < len(score_rows) else {}
+            if isinstance(score_result, dict):
+                affinity_ensemble = score_result.get("affinity_ensemble", score_result.get("flashbind_affinity", 0.0))
+                prob_ensemble = score_result.get("probability_ensemble", score_result.get("flashbind_binary", 0.0))
+                affinity_model1 = score_result.get("affinity_model1", score_result.get("flashbind_affinity", 0.0))
+                prob_model1 = score_result.get("probability_model1", score_result.get("flashbind_binary", 0.0))
+                affinity_model2 = score_result.get("affinity_model2", 0.0)
+                prob_model2 = score_result.get("probability_model2", 0.0)
             else:
                 # Fallback for old format
                 affinity_ensemble = 0.0
