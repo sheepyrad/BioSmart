@@ -38,7 +38,7 @@ flashbind:
 
   # Structural / representation inputs used by FlashBind predict.py
   pdb_dir: ./data/examples/flashbind/pdb
-  prots_json: ./data/examples/flashbind/prots.json
+  prots_json: ./data/examples/flashbind/prot.json
   # Fallback paths only. When auto_generate_*_repr is true, runtime uses
   # run-local files under {log_dir}/flashbind_oracle/repr/ instead.
   protein_repr: ./data/examples/flashbind/repr/esm3.lmdb
