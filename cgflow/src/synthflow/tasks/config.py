@@ -140,6 +140,34 @@ class BoltzTaskConfig:
 
 
 @dataclass
+class FlashBindTaskConfig:
+    """Config for FABind+ docking followed by FlashBind scoring."""
+
+    root: str = MISSING
+    protein_id: str = MISSING
+    pdb_dir: str = MISSING
+    protein_repr: str = MISSING
+    ligand_repr: str = MISSING
+    prots_json: str | None = None
+    fabind_checkpoint: str = MISSING
+    binary_checkpoints: list[str] = field(default_factory=list)
+    value_checkpoints: list[str] = field(default_factory=list)
+    fabind_conda_env: str = "fabind"
+    flashbind_conda_env: str = "flashaffinity"
+    fabind_num_threads: int = 8
+    fabind_batch_size: int = 4
+    fabind_post_optim: bool = True
+    devices: int = 1
+    accelerator: str = "gpu"
+    num_workers: int = 16
+    distance_threshold: float = 20.0
+    repr_n_jobs: int = -1
+    auto_generate_protein_repr: bool = True
+    auto_generate_ligand_repr: bool = True
+    reward_cache_path: str | None = None
+
+
+@dataclass
 class TasksConfig:
     moo: MOOTaskConfig = field(default_factory=MOOTaskConfig)
     constraint: ConstraintConfig = field(default_factory=ConstraintConfig)
@@ -147,3 +175,4 @@ class TasksConfig:
     pocket_conditional: PocketConditionalConfig = field(default_factory=PocketConditionalConfig)
     boltzina: BoltzinaTaskConfig = field(default_factory=BoltzinaTaskConfig)
     boltz: BoltzTaskConfig = field(default_factory=BoltzTaskConfig)
+    flashbind: FlashBindTaskConfig = field(default_factory=FlashBindTaskConfig)
