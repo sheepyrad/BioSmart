@@ -1,8 +1,25 @@
 """Utility functions for running commands in specific conda environments."""
 
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
+
+
+def huggingface_cache_environ(cache_root: str | Path) -> dict[str, str]:
+    """
+    Environment variables so Hugging Face libraries use one root on a large disk.
+
+    Sets HF_HOME plus common overrides (hub, datasets, transformers) under that root.
+    """
+    root = Path(cache_root).resolve()
+    return {
+        "HF_HOME": str(root),
+        "HF_HUB_CACHE": str(root / "hub"),
+        "HF_DATASETS_CACHE": str(root / "datasets"),
+        "TRANSFORMERS_CACHE": str(root / "transformers"),
+    }
 
 
 def run_in_conda_env(
@@ -61,12 +78,12 @@ def run_in_conda_env(
     ] + cmd
 
     # Merge with current environment if env is provided
-    import os
     if env is not None:
         full_env = os.environ.copy()
         full_env.update(env)
     else:
-        full_env = None
+        full_env = os.environ.copy()
+    _enable_ijit_compat_for_fabind(conda_env, full_env)
     
     return subprocess.run(
         conda_run_cmd,
@@ -136,12 +153,15 @@ def run_python_in_conda_env(
     if args:
         python_cmd.extend(args)
 
+    full_env = os.environ.copy()
+    _enable_ijit_compat_for_fabind(conda_env, full_env)
     return subprocess.run(
         python_cmd,
         cwd=cwd,
         check=check,
         capture_output=capture_output,
         text=text,
+        env=full_env,
     )
 
 
@@ -189,6 +209,67 @@ def _find_conda_base() -> Optional[Path]:
             return conda_base
 
     return None
+
+
+def _enable_ijit_compat_for_fabind(conda_env: str, env: dict[str, str]) -> None:
+    """
+    Work around missing iJIT symbols in some FABind torch environments.
+
+    Some Linux installs of older torch builds expect iJIT symbols that are not
+    present in newer OpenMP/runtime stacks. Preloading this tiny shim keeps torch
+    importable and does not affect FABind inference behavior.
+    """
+    if conda_env != "fabind":
+        return
+    stub_path = _ensure_ijit_stub()
+    if stub_path is None:
+        return
+    existing = env.get("LD_PRELOAD", "").strip()
+    if existing:
+        env["LD_PRELOAD"] = f"{stub_path}:{existing}"
+    else:
+        env["LD_PRELOAD"] = stub_path
+
+
+def _ensure_ijit_stub() -> Optional[str]:
+    cache_dir = Path.home() / ".cache" / "synthflow"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    so_path = cache_dir / "libittnotify_stub.so"
+    if so_path.exists():
+        return str(so_path)
+
+    c_src = """
+unsigned int iJIT_GetNewMethodID(void) {
+    static unsigned int i = 1U;
+    return i++;
+}
+int iJIT_NotifyEvent(int event_type, void* event_data) {
+    (void)event_type;
+    (void)event_data;
+    return 0;
+}
+int iJIT_IsProfilingActive(void) {
+    return 0;
+}
+"""
+    with tempfile.NamedTemporaryFile("w", suffix=".c", delete=False) as f:
+        f.write(c_src)
+        c_path = Path(f.name)
+    try:
+        subprocess.run(
+            ["gcc", "-shared", "-fPIC", "-o", str(so_path), str(c_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return str(so_path) if so_path.exists() else None
+    except Exception:
+        return None
+    finally:
+        try:
+            c_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 

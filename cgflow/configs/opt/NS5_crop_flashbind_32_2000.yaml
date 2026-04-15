@@ -2,14 +2,14 @@
 result_dir: "/media/data/conrad_hku/3DSynthFlow_boltz/result/opt/flashbind/NS5"
 
 # environment
-env_dir: ./data/envs/enamine_stock_new
+env_dir: ./data/envs/enamine_stock_apr2026
 max_atoms: 60 # maximum atom counts
 subsampling_ratio: 0.1 # Memory-variance trade-off
 
 # docking / pocket context for generation
-protein_path: ./data/examples/flashbind/NS5_crop.pdb
+protein_path: ./data/examples/flashbind/pdb/NS5.pdb
 center: null # can be inferred from ref_ligand_path if needed
-ref_ligand_path: ./data/examples/flashbind/NS5_crop_ligand.mol2
+ref_ligand_path: ./data/examples/flashbind/NS5_ligand.mol2
 size: [16, 16, 16]
 
 # opt
@@ -34,7 +34,7 @@ flashbind:
   root: ./src/FlashBind
 
   # Protein ID used for sample keys: {prot_id}_{ligand_id}
-  protein_id: NS5_crop
+  protein_id: NS5
 
   # Structural / representation inputs used by FlashBind predict.py
   pdb_dir: ./data/examples/flashbind/pdb
@@ -70,6 +70,8 @@ flashbind:
   num_workers: 16
   distance_threshold: 20.0
   repr_n_jobs: -1
+  # Hugging Face cache root (hub/, datasets/, transformers/ under this path). Large disk.
+  hf_cache: /media/data/conrad_hku/hf_cache
   auto_generate_protein_repr: true
   auto_generate_ligand_repr: true
 

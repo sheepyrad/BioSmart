@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import csv
 from collections import OrderedDict
 import hashlib
 import json
+import os
 from pathlib import Path
+import warnings
 
 import medchem as mc
 import numpy as np
 import torch
-from omegaconf import OmegaConf
+from omegaconf import MISSING, OmegaConf
 from rdkit import Chem
 from rdkit.Chem import QED
 
@@ -17,10 +20,45 @@ from gflownet.utils.sqlite_log import BoltzinaSQLiteLogHook
 from synthflow.config import Config
 from synthflow.pocket_specific.trainer import RxnFlow3DTrainer_single
 from synthflow.utils.boltz_reward_cache import BoltzRewardCache
-from synthflow.utils.conda_env import run_in_conda_env
+from synthflow.utils.conda_env import huggingface_cache_environ, run_in_conda_env
 
 from .docking import BaseDockingTask
 from .fabind import FabindDockingRunner, FabindPair
+
+
+def _cfg_bool(value: object, *, default: bool) -> bool:
+    """init_empty() leaves fields as MISSING; treat like FlashBindTaskConfig defaults."""
+    if value is MISSING or value is None:
+        return default
+    return bool(value)
+
+
+def _run_conda_repr_script(
+    cmd: list[str],
+    *,
+    conda_env: str,
+    cwd: Path,
+    failure_preamble: str,
+    auth_hint: str,
+    hf_cache: str | None = None,
+) -> None:
+    """Run a repr-generation script; on failure include subprocess output and setup hints."""
+    env = {**os.environ}
+    if hf_cache:
+        env.update(huggingface_cache_environ(hf_cache))
+    proc = run_in_conda_env(
+        cmd,
+        conda_env=conda_env,
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        env=env,
+    )
+    if proc.returncode == 0:
+        return
+    out = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
+    tail = out[-12000:] if len(out) > 12000 else out
+    raise RuntimeError(f"{failure_preamble} (exit {proc.returncode}).\n{auth_hint}\n---\n{tail}")
 
 
 class FlashBindScoringRunner:
@@ -40,10 +78,12 @@ class FlashBindScoringRunner:
         devices: int = 1,
         accelerator: str = "gpu",
         distance_threshold: float = 20.0,
+        hf_cache: str | None = None,
     ) -> None:
         self.flashbind_root = Path(flashbind_root)
         self.predict_script = self.flashbind_root / "scripts" / "predict.py"
         self.conda_env = conda_env
+        self.hf_cache = hf_cache
         self.structure_dir = Path(structure_dir)
         self.protein_repr = Path(protein_repr)
         self.ligand_repr = Path(ligand_repr)
@@ -162,7 +202,17 @@ class FlashBindScoringRunner:
             "--affinity_checkpoint",
             *[str(p) for p in checkpoints],
         ]
-        run_in_conda_env(cmd, conda_env=self.conda_env, cwd=self.flashbind_root)
+        env = {**os.environ}
+        # FlashBind scripts import `affinity` from <flashbind_root>/src.
+        src_path = str(self.flashbind_root / "src")
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        if existing_pythonpath:
+            env["PYTHONPATH"] = f"{src_path}:{existing_pythonpath}"
+        else:
+            env["PYTHONPATH"] = src_path
+        if self.hf_cache:
+            env.update(huggingface_cache_environ(self.hf_cache))
+        run_in_conda_env(cmd, conda_env=self.conda_env, cwd=self.flashbind_root, env=env)
 
         result_dir = out_dir / f"affinity_results_{ids_path.stem}"
         if len(checkpoints) > 1:
@@ -191,8 +241,13 @@ class FlashBindTask(BaseDockingTask):
         self.protein_id = str(fb_cfg.protein_id)
         self.prots_json = Path(fb_cfg.prots_json) if fb_cfg.prots_json else None
         self.repr_n_jobs = int(fb_cfg.repr_n_jobs)
-        self.auto_generate_protein_repr = bool(fb_cfg.auto_generate_protein_repr)
-        self.auto_generate_ligand_repr = bool(fb_cfg.auto_generate_ligand_repr)
+        self.auto_generate_protein_repr = _cfg_bool(fb_cfg.auto_generate_protein_repr, default=True)
+        self.auto_generate_ligand_repr = _cfg_bool(fb_cfg.auto_generate_ligand_repr, default=True)
+        hc = getattr(fb_cfg, "hf_cache", None) or getattr(fb_cfg, "hf_hub_cache", None)
+        if hc in (None, "", MISSING):
+            self.hf_cache: str | None = None
+        else:
+            self.hf_cache = str(Path(hc).resolve())
 
         self.batch_docking_scores: list[float] = []
         self.batch_flashbind_scores: list[dict[str, float]] = []
@@ -212,7 +267,7 @@ class FlashBindTask(BaseDockingTask):
             conda_env=str(fb_cfg.fabind_conda_env),
             num_threads=int(fb_cfg.fabind_num_threads),
             batch_size=int(fb_cfg.fabind_batch_size),
-            post_optim=bool(fb_cfg.fabind_post_optim),
+            post_optim=_cfg_bool(fb_cfg.fabind_post_optim, default=True),
         )
         self.flashbind_runner = FlashBindScoringRunner(
             flashbind_root=self.flashbind_root,
@@ -226,6 +281,7 @@ class FlashBindTask(BaseDockingTask):
             devices=int(fb_cfg.devices),
             accelerator=str(fb_cfg.accelerator),
             distance_threshold=float(fb_cfg.distance_threshold),
+            hf_cache=self.hf_cache,
         )
         self.protein_repr_path = Path(fb_cfg.protein_repr)
         self.default_ligand_repr_path = Path(fb_cfg.ligand_repr)
@@ -320,18 +376,51 @@ class FlashBindTask(BaseDockingTask):
             oracle_dir = self.flashbind_work_dir / f"oracle{self.oracle_idx}"
             artifacts = self.fabind_runner.run(uncached_pairs, oracle_idx=self.oracle_idx)
             ligand_repr_path = self._ensure_ligand_repr_for_pairs(uncached_pairs, oracle_dir)
-            affinity_map, binary_map = self.flashbind_runner.run(
-                oracle_dir=oracle_dir,
-                sample_ids=artifacts.sample_ids,
-                ligand_lmdb=artifacts.ligand_sdf_lmdb,
-                pocket_indices_lmdb=artifacts.pocket_indices_lmdb,
-                protein_repr=self.protein_repr_path,
-                ligand_repr=ligand_repr_path,
-            )
+            failed_sample_ids = self._load_failed_fabind_sample_ids(artifacts.preprocess_dir)
+            eligible_pairs = [p for p in uncached_pairs if p.sample_id not in failed_sample_ids]
+            affinity_map: dict[str, float] = {}
+            binary_map: dict[str, float] = {}
+            if eligible_pairs:
+                affinity_map, binary_map = self.flashbind_runner.run(
+                    oracle_dir=oracle_dir,
+                    sample_ids=[p.sample_id for p in eligible_pairs],
+                    ligand_lmdb=artifacts.ligand_sdf_lmdb,
+                    pocket_indices_lmdb=artifacts.pocket_indices_lmdb,
+                    protein_repr=self.protein_repr_path,
+                    ligand_repr=ligand_repr_path,
+                )
             for pair in uncached_pairs:
+                lilly_mask = 1.0
+                if pair.sample_id in failed_sample_ids:
+                    affinity = 0.0
+                    binary = 0.0
+                    flashbind_score = 0.0
+                    smiles = pair.smiles
+                    for idx in smiles_to_indices.get(smiles, []):
+                        affinity_scores[idx] = affinity
+                        binary_scores[idx] = binary
+                        lilly_masks[idx] = lilly_mask
+                        flashbind_scores[idx] = flashbind_score
+                        per_item_meta[idx] = {
+                            "status": "fabind_preprocess_fail",
+                            "flashbind_affinity": affinity,
+                            "flashbind_binary": binary,
+                            "flashbind_score": flashbind_score,
+                        }
+                    info = json.dumps(
+                        {
+                            "flashbind_affinity": affinity,
+                            "flashbind_binary": binary,
+                            "flashbind_score": flashbind_score,
+                            "lilly_pass": lilly_mask,
+                            "sample_id": pair.sample_id,
+                            "status": "fabind_preprocess_fail",
+                        }
+                    )
+                    new_cache_entries.append((smiles, flashbind_score, info))
+                    continue
                 affinity = float(affinity_map.get(pair.sample_id, 0.0))
                 binary = float(binary_map.get(pair.sample_id, 0.0))
-                lilly_mask = 1.0
                 flashbind_score = self._combine_flashbind_scores(affinity, binary, lilly_mask)
                 smiles = pair.smiles
                 for idx in smiles_to_indices.get(smiles, []):
@@ -382,6 +471,23 @@ class FlashBindTask(BaseDockingTask):
         digest = hashlib.sha1(smiles.encode("utf-8")).hexdigest()[:16]
         return f"lig_{digest}"
 
+    def _load_failed_fabind_sample_ids(self, preprocess_dir: Path) -> set[str]:
+        failed_csv = preprocess_dir / "failed_molecules.csv"
+        if not failed_csv.exists():
+            return set()
+        failed_sample_ids: set[str] = set()
+        try:
+            with failed_csv.open("r", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    ligand_id = str(row.get("ligand_id", "")).strip()
+                    if not ligand_id:
+                        continue
+                    failed_sample_ids.add(f"{self.protein_id}_{ligand_id}")
+        except Exception:
+            return set()
+        return failed_sample_ids
+
     @staticmethod
     def _lilly_pass(smiles: str) -> float:
         try:
@@ -403,7 +509,18 @@ class FlashBindTask(BaseDockingTask):
         return float(normalized_aff * affinity_prob * lily_mask)
 
     def _ensure_protein_repr(self) -> None:
-        if self.auto_generate_protein_repr:
+        # Prefer explicit flag; if the fallback LMDB path is missing but prots_json can
+        # build ESM3, behave like autogen (YAML lists those paths as "fallback only").
+        autogen = self.auto_generate_protein_repr
+        if (
+            not autogen
+            and not self.protein_repr_path.exists()
+            and self.prots_json is not None
+            and self.prots_json.exists()
+        ):
+            autogen = True
+
+        if autogen:
             # Always generate into run-local result directory, never project-root paths.
             self.protein_repr_path = self.generated_protein_repr_path
             if self.protein_repr_path.exists():
@@ -411,7 +528,13 @@ class FlashBindTask(BaseDockingTask):
         elif self.protein_repr_path.exists():
             return
         else:
-            raise FileNotFoundError(f"Protein repr not found: {self.protein_repr_path}")
+            raise FileNotFoundError(
+                "Protein repr not found: "
+                f"{self.protein_repr_path}. "
+                "Place a precomputed ESM3 LMDB at that path, or set "
+                "flashbind.auto_generate_protein_repr: true and flashbind.prots_json "
+                "so the pipeline can run FlashBind's esm3.py."
+            )
 
         if self.prots_json is None:
             raise FileNotFoundError(
@@ -424,7 +547,7 @@ class FlashBindTask(BaseDockingTask):
         if not esm3_script.exists():
             raise FileNotFoundError(f"ESM3 repr script not found: {esm3_script}")
         self.protein_repr_path.parent.mkdir(parents=True, exist_ok=True)
-        run_in_conda_env(
+        _run_conda_repr_script(
             [
                 "python",
                 str(esm3_script),
@@ -435,15 +558,29 @@ class FlashBindTask(BaseDockingTask):
             ],
             conda_env=self.flashbind_runner.conda_env,
             cwd=self.flashbind_root,
+            failure_preamble="ESM3 protein representation (esm3.py) failed",
+            auth_hint=(
+                "The ESM3 checkpoint is downloaded from Hugging Face (EvolutionaryScale/esm3-sm-open-v1). "
+                "If you see 401 Unauthorized, accept the model license on the Hub, then run "
+                "`huggingface-cli login` or set the environment variable HF_TOKEN. "
+                "See https://huggingface.co/EvolutionaryScale/esm3-sm-open-v1"
+            ),
+            hf_cache=self.hf_cache,
         )
         if not self.protein_repr_path.exists():
             raise FileNotFoundError(f"Failed to generate protein repr: {self.protein_repr_path}")
 
     def _ensure_ligand_repr_for_pairs(self, pairs: list[FabindPair], oracle_dir: Path) -> Path:
         if not self.auto_generate_ligand_repr:
-            if not self.default_ligand_repr_path.exists():
-                raise FileNotFoundError(f"Ligand repr file not found: {self.default_ligand_repr_path}")
-            return self.default_ligand_repr_path
+            if self.default_ligand_repr_path.exists():
+                return self.default_ligand_repr_path
+            # Keep runs robust when config fallback path is stale/missing.
+            warnings.warn(
+                "flashbind.auto_generate_ligand_repr is false, but configured ligand_repr is missing: "
+                f"{self.default_ligand_repr_path}. Falling back to runtime ligand representation generation.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
         ligand_json = oracle_dir / "smiles_for_torchdrug.json"
         ligand_lmdb = self.repr_dir / f"torchdrug_oracle{self.oracle_idx}.lmdb"
@@ -458,7 +595,7 @@ class FlashBindTask(BaseDockingTask):
         if not torchdrug_script.exists():
             raise FileNotFoundError(f"TorchDrug repr script not found: {torchdrug_script}")
 
-        run_in_conda_env(
+        _run_conda_repr_script(
             [
                 "python",
                 str(torchdrug_script),
@@ -471,6 +608,9 @@ class FlashBindTask(BaseDockingTask):
             ],
             conda_env=self.flashbind_runner.conda_env,
             cwd=self.flashbind_root,
+            failure_preamble="TorchDrug ligand representation (torchdrug.py) failed",
+            auth_hint="Check the conda env has torchdrug and dependencies; see FlashBind repr docs.",
+            hf_cache=self.hf_cache,
         )
         if not ligand_lmdb.exists():
             raise FileNotFoundError(f"Failed to generate ligand repr LMDB: {ligand_lmdb}")

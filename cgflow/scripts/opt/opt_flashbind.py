@@ -53,15 +53,40 @@ def parse_args() -> DictConfig:
     parser.add_argument("--flashbind_flashbind_conda_env", type=str, help="Conda env for FlashBind predict.py.")
     parser.add_argument("--flashbind_fabind_num_threads", type=int, help="Threads for FABind molecule preprocessing.")
     parser.add_argument("--flashbind_fabind_batch_size", type=int, help="FABind inference batch size.")
-    parser.add_argument("--flashbind_fabind_post_optim", action="store_true", help="Enable FABind post optimization.")
+    parser.add_argument(
+        "--flashbind_fabind_post_optim",
+        action="store_true",
+        default=None,
+        help="Enable FABind post optimization.",
+    )
     parser.add_argument("--flashbind_devices", type=int, help="FlashBind predict devices.")
     parser.add_argument("--flashbind_accelerator", type=str, help="FlashBind accelerator (gpu/cpu/tpu).")
     parser.add_argument("--flashbind_num_workers", type=int, help="FlashBind dataloader workers.")
     parser.add_argument("--flashbind_distance_threshold", type=float, help="FlashBind distance threshold.")
     parser.add_argument("--flashbind_repr_n_jobs", type=int, help="n_jobs for TorchDrug repr generation.")
-    parser.add_argument("--flashbind_auto_generate_protein_repr", action="store_true", help="Auto-generate protein repr if missing.")
-    parser.add_argument("--flashbind_auto_generate_ligand_repr", action="store_true", help="Auto-generate ligand repr each oracle batch.")
+    parser.add_argument(
+        "--flashbind_auto_generate_protein_repr",
+        action="store_true",
+        default=None,
+        help="Auto-generate protein repr if missing.",
+    )
+    parser.add_argument(
+        "--flashbind_auto_generate_ligand_repr",
+        action="store_true",
+        default=None,
+        help="Auto-generate ligand repr each oracle batch.",
+    )
     parser.add_argument("--flashbind_reward_cache_path", type=str, help="SMILES-level reward cache path.")
+    parser.add_argument(
+        "--flashbind_hf_cache",
+        type=str,
+        help="Hugging Face cache root (HF_HOME + hub/datasets/transformers subdirs for subprocesses).",
+    )
+    parser.add_argument(
+        "--flashbind_hf_hub_cache",
+        type=str,
+        help="Deprecated; same as --flashbind_hf_cache.",
+    )
 
     args = parser.parse_args()
 
@@ -149,24 +174,23 @@ if __name__ == "__main__":
         config.task.flashbind.repr_n_jobs = fb_param.repr_n_jobs
     if OmegaConf.select(param, "flashbind.reward_cache_path", default=None) is not None:
         config.task.flashbind.reward_cache_path = str(Path(fb_param.reward_cache_path).resolve())
+    _hf = OmegaConf.select(param, "flashbind.hf_cache", default=None) or OmegaConf.select(
+        param, "flashbind.hf_hub_cache", default=None
+    )
+    if _hf is not None:
+        config.task.flashbind.hf_cache = str(Path(_hf).resolve())
 
     # Preserve explicit CLI flag behavior for post optimization.
+    # init_empty() sets nested fields to MISSING; do not use those as OmegaConf defaults
+    # (bool(MISSING) is false and would disable FABind post-optim / repr autogen).
     config.task.flashbind.fabind_post_optim = bool(
-        OmegaConf.select(param, "flashbind.fabind_post_optim", default=config.task.flashbind.fabind_post_optim)
+        OmegaConf.select(param, "flashbind.fabind_post_optim", default=True)
     )
     config.task.flashbind.auto_generate_protein_repr = bool(
-        OmegaConf.select(
-            param,
-            "flashbind.auto_generate_protein_repr",
-            default=config.task.flashbind.auto_generate_protein_repr,
-        )
+        OmegaConf.select(param, "flashbind.auto_generate_protein_repr", default=True)
     )
     config.task.flashbind.auto_generate_ligand_repr = bool(
-        OmegaConf.select(
-            param,
-            "flashbind.auto_generate_ligand_repr",
-            default=config.task.flashbind.auto_generate_ligand_repr,
-        )
+        OmegaConf.select(param, "flashbind.auto_generate_ligand_repr", default=True)
     )
 
     # Optimization settings
