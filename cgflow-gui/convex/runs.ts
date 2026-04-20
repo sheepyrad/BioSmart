@@ -6,6 +6,7 @@ const runValidator = v.object({
   _creationTime: v.number(),
   configId: v.id('configs'),
   name: v.string(),
+  engine: v.union(v.literal('boltz'), v.literal('flashbind')),
   status: v.union(
     v.literal('idle'),
     v.literal('running'),
@@ -27,6 +28,7 @@ export const create = mutation({
   args: {
     configId: v.id('configs'),
     name: v.string(),
+    engine: v.union(v.literal('boltz'), v.literal('flashbind')),
     resultDir: v.string(),
     totalSteps: v.number(),
   },
@@ -36,6 +38,7 @@ export const create = mutation({
     return await ctx.db.insert('runs', {
       configId: args.configId,
       name: args.name,
+      engine: args.engine,
       status: 'idle',
       currentStep: 0,
       totalSteps: args.totalSteps,

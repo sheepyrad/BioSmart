@@ -13,6 +13,8 @@ import 'molstar/build/viewer/molstar.css';
 
 interface MolstarViewerProps {
   pdbContent: string | null;
+  ligandContent?: string | null;
+  ligandLabel?: string | null;
   selectedResidues: string[];
   onResidueSelect: (residues: string[]) => void;
   /** If true, clicking always toggles. If false, requires Ctrl/Cmd for multi-select */
@@ -21,6 +23,8 @@ interface MolstarViewerProps {
 
 export default function MolstarViewer({
   pdbContent,
+  ligandContent = null,
+  ligandLabel = null,
   selectedResidues,
   onResidueSelect,
   multiSelectMode = true, // Default to always toggle (multi-select)
@@ -161,7 +165,20 @@ export default function MolstarViewer({
     };
   }, [viewerError, molstarDisabledByEnv]);
 
-  // Load structure when pdbContent changes
+  function inferLigandFormat(content: string, label: string | null): 'mol' | 'sdf' | 'mol2' | 'pdb' | 'mmcif' {
+    const ext = (label ?? '').split('.').pop()?.toLowerCase();
+    if (ext === 'sdf') return 'sdf';
+    if (ext === 'mol2') return 'mol2';
+    if (ext === 'mol') return 'mol';
+    if (ext === 'pdb') return 'pdb';
+    if (ext === 'cif' || ext === 'mmcif') return 'mmcif';
+    if (content.includes('@<TRIPOS>MOLECULE')) return 'mol2';
+    if (content.includes('M  END')) return 'mol';
+    if (content.includes('$$$$')) return 'sdf';
+    return 'pdb';
+  }
+
+  // Load structures when contents change
   useEffect(() => {
     if (molstarDisabledByEnv || !pluginRef.current || !pdbContent || !isInitialized) return;
 
@@ -172,16 +189,30 @@ export default function MolstarViewer({
         // Clear existing structures
         await plugin.clear();
 
-        // Load PDB data from string
-        const data = await plugin.builders.data.rawData({
+        // Load protein structure from string
+        const proteinData = await plugin.builders.data.rawData({
           data: pdbContent,
-          label: 'structure',
+          label: 'protein-structure',
         });
 
         const trimmed = pdbContent.trim();
         const format = trimmed.startsWith('data_') || trimmed.includes('loop_') ? 'mmcif' : 'pdb';
-        const trajectory = await plugin.builders.structure.parseTrajectory(data, format as any);
-        await plugin.builders.structure.hierarchy.applyPreset(trajectory, 'default');
+        const proteinTrajectory = await plugin.builders.structure.parseTrajectory(proteinData, format as any);
+        await plugin.builders.structure.hierarchy.applyPreset(proteinTrajectory, 'default');
+
+        if (ligandContent) {
+          try {
+            const ligandData = await plugin.builders.data.rawData({
+              data: ligandContent,
+              label: ligandLabel ?? 'reference-ligand',
+            });
+            const ligandFormat = inferLigandFormat(ligandContent, ligandLabel);
+            const ligandTrajectory = await plugin.builders.structure.parseTrajectory(ligandData, ligandFormat as any);
+            await plugin.builders.structure.hierarchy.applyPreset(ligandTrajectory, 'default');
+          } catch (ligandError) {
+            console.warn('Failed to load reference ligand content into viewer:', ligandError);
+          }
+        }
 
         // Reset camera to fit structure
         plugin.canvas3d?.requestCameraReset();
@@ -191,7 +222,7 @@ export default function MolstarViewer({
     };
 
     loadStructure();
-  }, [pdbContent, isInitialized, molstarDisabledByEnv]);
+  }, [pdbContent, ligandContent, ligandLabel, isInitialized, molstarDisabledByEnv]);
 
   // Highlight selected residues
   useEffect(() => {

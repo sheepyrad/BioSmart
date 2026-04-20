@@ -16,17 +16,64 @@ import type {
   RewardCacheEntry,
   BoltzScore,
   TrajectoryStep,
+  OptimizationEngine,
 } from '../shared/types';
-import { OptConfigSchema } from '../shared/types';
+import {
+  OptConfigSchema,
+  RunnerImportPayloadSchema,
+  RunnerResumePayloadSchema,
+  RunnerStartPayloadSchema,
+} from '../shared/types';
 import { computeBoltzMetrics } from '../shared/boltzMetrics';
 import { getConvexSyncService } from './convex-sync';
 import { api } from '../convex/_generated/api';
+import {
+  getFlashbindComplexContent,
+  getFlashbindMetricRowsFromRunDir,
+  getFlashbindTopMolecules,
+} from './engines/flashbindAdapter';
+import { isPathContained, validateFilePath } from './pathSecurity';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CGFLOW_ROOT = path.resolve(__dirname, '../../cgflow');
-const OPT_SCRIPT = path.join(CGFLOW_ROOT, 'scripts/opt/opt_boltz.py');
+const OPT_BOLTZ_SCRIPT = path.join(CGFLOW_ROOT, 'scripts/opt/opt_boltz.py');
+const OPT_FLASHBIND_SCRIPT = path.join(CGFLOW_ROOT, 'scripts/opt/opt_flashbind.py');
 const CONDA_ENV_NAME = process.env.CGFLOW_CONDA_ENV?.trim() || 'cgflow';
+
+function normalizeEngine(engine: unknown): OptimizationEngine {
+  return engine === 'flashbind' ? 'flashbind' : 'boltz';
+}
+
+function getOptScriptForEngine(engine: OptimizationEngine): string {
+  return engine === 'flashbind' ? OPT_FLASHBIND_SCRIPT : OPT_BOLTZ_SCRIPT;
+}
+
+const DEFAULT_FLASHBIND_CONFIG = {
+  root: './src/FlashBind',
+  protein_id: '',
+  pdb_dir: '',
+  protein_repr: '',
+  ligand_repr: '',
+  prots_json: null as string | null,
+  fabind_checkpoint: '',
+  binary_checkpoints: [] as string[],
+  value_checkpoints: [] as string[],
+  fabind_conda_env: 'fabind',
+  flashbind_conda_env: 'flashaffinity',
+  fabind_num_threads: 8,
+  fabind_batch_size: 4,
+  fabind_post_optim: true,
+  devices: 1,
+  accelerator: 'gpu',
+  num_workers: 16,
+  distance_threshold: 20,
+  repr_n_jobs: -1,
+  auto_generate_protein_repr: true,
+  auto_generate_ligand_repr: true,
+  reward_cache_path: null as string | null,
+  hf_cache: null as string | null,
+};
 
 function spawnCgflowPython(args: string[], options: SpawnOptions): ChildProcess {
   return spawn(
@@ -64,6 +111,7 @@ interface RunnerStartPayload {
 
 type ConvexConfigCreateInput = {
   name: string;
+  engine: OptimizationEngine;
   resultDir: string;
   envDir: string;
   maxAtoms: number;
@@ -89,6 +137,29 @@ type ConvexConfigCreateInput = {
   boltzCacheDir: string | null;
   boltzUseMsaServer: boolean;
   boltzWorker: number;
+  flashbindRoot: string;
+  flashbindProteinId: string;
+  flashbindPdbDir: string;
+  flashbindProteinRepr: string;
+  flashbindLigandRepr: string;
+  flashbindProtsJson: string | null;
+  flashbindFabindCheckpoint: string;
+  flashbindBinaryCheckpoints: string[];
+  flashbindValueCheckpoints: string[];
+  flashbindFabindCondaEnv: string;
+  flashbindFlashbindCondaEnv: string;
+  flashbindFabindNumThreads: number;
+  flashbindFabindBatchSize: number;
+  flashbindFabindPostOptim: boolean;
+  flashbindDevices: number;
+  flashbindAccelerator: string;
+  flashbindNumWorkers: number;
+  flashbindDistanceThreshold: number;
+  flashbindReprNJobs: number;
+  flashbindAutoGenerateProteinRepr: boolean;
+  flashbindAutoGenerateLigandRepr: boolean;
+  flashbindRewardCachePath: string | null;
+  flashbindHfCache: string | null;
 };
 
 interface RunnerState {
@@ -110,6 +181,7 @@ async function initSQL() {
 }
 
 async function openDatabase(dbPath: string): Promise<SqlJsDatabase> {
+  validateFilePath(dbPath, 'read');
   const sql = await initSQL();
   const buffer = await fs.readFile(dbPath);
   return new sql.Database(buffer);
@@ -214,6 +286,7 @@ function parseConvexPath(value: string): { id: string; name?: string } | null {
 
 function defaultImportedConfig(resultDir: string): OptConfig {
   return {
+    engine: 'boltz',
     result_dir: resultDir,
     env_dir: './data/envs/enamine_stock_new',
     max_atoms: 60,
@@ -240,6 +313,7 @@ function defaultImportedConfig(resultDir: string): OptConfig {
       use_msa_server: false,
       worker: 1,
     },
+    flashbind: { ...DEFAULT_FLASHBIND_CONFIG },
   };
 }
 
@@ -281,6 +355,11 @@ function toArray2(value: unknown, fallback: [number, number]): [number, number] 
   return fallback;
 }
 
+function toStringArray(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return fallback;
+  return value.filter((item): item is string => typeof item === 'string');
+}
+
 function normalizeImportedConfig(raw: unknown, resultDir: string): OptConfig {
   const base = defaultImportedConfig(resultDir);
   if (!raw || typeof raw !== 'object') return base;
@@ -289,8 +368,13 @@ function normalizeImportedConfig(raw: unknown, resultDir: string): OptConfig {
   const boltzRaw =
     (record.boltz && typeof record.boltz === 'object' ? (record.boltz as Record<string, unknown>) : null) ??
     {};
+  const flashbindRaw =
+    (record.flashbind && typeof record.flashbind === 'object'
+      ? (record.flashbind as Record<string, unknown>)
+      : null) ?? {};
 
   const normalized: OptConfig = {
+    engine: normalizeEngine(record.engine),
     result_dir: (record.result_dir as string) || (record.resultDir as string) || base.result_dir,
     env_dir: (record.env_dir as string) || (record.envDir as string) || base.env_dir,
     max_atoms: toNumberOrDefault(record.max_atoms ?? record.maxAtoms, base.max_atoms),
@@ -355,6 +439,181 @@ function normalizeImportedConfig(raw: unknown, resultDir: string): OptConfig {
         )
       ),
     },
+    flashbind: {
+      root:
+        (flashbindRaw.root as string) ||
+        (record.flashbindRoot as string) ||
+        base.flashbind?.root ||
+        DEFAULT_FLASHBIND_CONFIG.root,
+      protein_id:
+        (flashbindRaw.protein_id as string) ||
+        (flashbindRaw.proteinId as string) ||
+        (record.flashbindProteinId as string) ||
+        base.flashbind?.protein_id ||
+        DEFAULT_FLASHBIND_CONFIG.protein_id,
+      pdb_dir:
+        (flashbindRaw.pdb_dir as string) ||
+        (flashbindRaw.pdbDir as string) ||
+        (record.flashbindPdbDir as string) ||
+        base.flashbind?.pdb_dir ||
+        DEFAULT_FLASHBIND_CONFIG.pdb_dir,
+      protein_repr:
+        (flashbindRaw.protein_repr as string) ||
+        (flashbindRaw.proteinRepr as string) ||
+        (record.flashbindProteinRepr as string) ||
+        base.flashbind?.protein_repr ||
+        DEFAULT_FLASHBIND_CONFIG.protein_repr,
+      ligand_repr:
+        (flashbindRaw.ligand_repr as string) ||
+        (flashbindRaw.ligandRepr as string) ||
+        (record.flashbindLigandRepr as string) ||
+        base.flashbind?.ligand_repr ||
+        DEFAULT_FLASHBIND_CONFIG.ligand_repr,
+      prots_json: toOptionalString(
+        flashbindRaw.prots_json ??
+          flashbindRaw.protsJson ??
+          record.flashbindProtsJson ??
+          base.flashbind?.prots_json
+      ),
+      fabind_checkpoint:
+        (flashbindRaw.fabind_checkpoint as string) ||
+        (flashbindRaw.fabindCheckpoint as string) ||
+        (record.flashbindFabindCheckpoint as string) ||
+        base.flashbind?.fabind_checkpoint ||
+        DEFAULT_FLASHBIND_CONFIG.fabind_checkpoint,
+      binary_checkpoints: toStringArray(
+        flashbindRaw.binary_checkpoints ??
+          flashbindRaw.binaryCheckpoints ??
+          record.flashbindBinaryCheckpoints,
+        base.flashbind?.binary_checkpoints ?? DEFAULT_FLASHBIND_CONFIG.binary_checkpoints
+      ),
+      value_checkpoints: toStringArray(
+        flashbindRaw.value_checkpoints ??
+          flashbindRaw.valueCheckpoints ??
+          record.flashbindValueCheckpoints,
+        base.flashbind?.value_checkpoints ?? DEFAULT_FLASHBIND_CONFIG.value_checkpoints
+      ),
+      fabind_conda_env:
+        (flashbindRaw.fabind_conda_env as string) ||
+        (flashbindRaw.fabindCondaEnv as string) ||
+        (record.flashbindFabindCondaEnv as string) ||
+        base.flashbind?.fabind_conda_env ||
+        DEFAULT_FLASHBIND_CONFIG.fabind_conda_env,
+      flashbind_conda_env:
+        (flashbindRaw.flashbind_conda_env as string) ||
+        (flashbindRaw.flashbindCondaEnv as string) ||
+        (record.flashbindFlashbindCondaEnv as string) ||
+        base.flashbind?.flashbind_conda_env ||
+        DEFAULT_FLASHBIND_CONFIG.flashbind_conda_env,
+      fabind_num_threads: Math.max(
+        1,
+        Math.floor(
+          toNumberOrDefault(
+            flashbindRaw.fabind_num_threads ??
+              flashbindRaw.fabindNumThreads ??
+              record.flashbindFabindNumThreads,
+            base.flashbind?.fabind_num_threads ?? DEFAULT_FLASHBIND_CONFIG.fabind_num_threads
+          )
+        )
+      ),
+      fabind_batch_size: Math.max(
+        1,
+        Math.floor(
+          toNumberOrDefault(
+            flashbindRaw.fabind_batch_size ??
+              flashbindRaw.fabindBatchSize ??
+              record.flashbindFabindBatchSize,
+            base.flashbind?.fabind_batch_size ?? DEFAULT_FLASHBIND_CONFIG.fabind_batch_size
+          )
+        )
+      ),
+      fabind_post_optim:
+        typeof (
+          flashbindRaw.fabind_post_optim ??
+          flashbindRaw.fabindPostOptim ??
+          record.flashbindFabindPostOptim
+        ) === 'boolean'
+          ? Boolean(
+              flashbindRaw.fabind_post_optim ??
+                flashbindRaw.fabindPostOptim ??
+                record.flashbindFabindPostOptim
+            )
+          : base.flashbind?.fabind_post_optim ?? DEFAULT_FLASHBIND_CONFIG.fabind_post_optim,
+      devices: Math.max(
+        1,
+        Math.floor(
+          toNumberOrDefault(
+            flashbindRaw.devices ?? record.flashbindDevices,
+            base.flashbind?.devices ?? DEFAULT_FLASHBIND_CONFIG.devices
+          )
+        )
+      ),
+      accelerator:
+        (flashbindRaw.accelerator as string) ||
+        (record.flashbindAccelerator as string) ||
+        base.flashbind?.accelerator ||
+        DEFAULT_FLASHBIND_CONFIG.accelerator,
+      num_workers: Math.max(
+        1,
+        Math.floor(
+          toNumberOrDefault(
+            flashbindRaw.num_workers ?? flashbindRaw.numWorkers ?? record.flashbindNumWorkers,
+            base.flashbind?.num_workers ?? DEFAULT_FLASHBIND_CONFIG.num_workers
+          )
+        )
+      ),
+      distance_threshold: toNumberOrDefault(
+        flashbindRaw.distance_threshold ??
+          flashbindRaw.distanceThreshold ??
+          record.flashbindDistanceThreshold,
+        base.flashbind?.distance_threshold ?? DEFAULT_FLASHBIND_CONFIG.distance_threshold
+      ),
+      repr_n_jobs: Math.floor(
+        toNumberOrDefault(
+          flashbindRaw.repr_n_jobs ?? flashbindRaw.reprNJobs ?? record.flashbindReprNJobs,
+          base.flashbind?.repr_n_jobs ?? DEFAULT_FLASHBIND_CONFIG.repr_n_jobs
+        )
+      ),
+      auto_generate_protein_repr:
+        typeof (
+          flashbindRaw.auto_generate_protein_repr ??
+          flashbindRaw.autoGenerateProteinRepr ??
+          record.flashbindAutoGenerateProteinRepr
+        ) === 'boolean'
+          ? Boolean(
+              flashbindRaw.auto_generate_protein_repr ??
+                flashbindRaw.autoGenerateProteinRepr ??
+                record.flashbindAutoGenerateProteinRepr
+            )
+          : base.flashbind?.auto_generate_protein_repr ??
+            DEFAULT_FLASHBIND_CONFIG.auto_generate_protein_repr,
+      auto_generate_ligand_repr:
+        typeof (
+          flashbindRaw.auto_generate_ligand_repr ??
+          flashbindRaw.autoGenerateLigandRepr ??
+          record.flashbindAutoGenerateLigandRepr
+        ) === 'boolean'
+          ? Boolean(
+              flashbindRaw.auto_generate_ligand_repr ??
+                flashbindRaw.autoGenerateLigandRepr ??
+                record.flashbindAutoGenerateLigandRepr
+            )
+          : base.flashbind?.auto_generate_ligand_repr ??
+            DEFAULT_FLASHBIND_CONFIG.auto_generate_ligand_repr,
+      reward_cache_path: toOptionalString(
+        flashbindRaw.reward_cache_path ??
+          flashbindRaw.rewardCachePath ??
+          record.flashbindRewardCachePath ??
+          base.flashbind?.reward_cache_path
+      ),
+      hf_cache: toOptionalString(
+        flashbindRaw.hf_cache ??
+          flashbindRaw.hfCache ??
+          flashbindRaw.hf_hub_cache ??
+          record.flashbindHfCache ??
+          base.flashbind?.hf_cache
+      ),
+    },
   };
 
   const parsed = OptConfigSchema.safeParse(normalized);
@@ -363,6 +622,7 @@ function normalizeImportedConfig(raw: unknown, resultDir: string): OptConfig {
 
 async function readJson<T>(filePath: string, fallback: T): Promise<T> {
   try {
+    validateFilePath(filePath, 'read');
     const raw = await fs.readFile(filePath, 'utf-8');
     return JSON.parse(raw) as T;
   } catch {
@@ -386,6 +646,7 @@ function isProcessAlive(pid: number | null) {
 
 async function readTail(filePath: string, lines = 500): Promise<string[]> {
   try {
+    validateFilePath(filePath, 'read');
     const content = await fs.readFile(filePath, 'utf-8');
     const all = content.split('\n');
     return all.slice(-lines).filter((l) => l.length > 0);
@@ -400,6 +661,7 @@ async function ensureDir(dirPath: string) {
 
 async function pathExists(targetPath: string): Promise<boolean> {
   try {
+    validateFilePath(targetPath, 'read');
     await fs.access(targetPath);
     return true;
   } catch {
@@ -409,6 +671,7 @@ async function pathExists(targetPath: string): Promise<boolean> {
 
 async function listSubdirectories(parentDir: string): Promise<string[]> {
   try {
+    validateFilePath(parentDir, 'read');
     const entries = await fs.readdir(parentDir, { withFileTypes: true });
     return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
   } catch {
@@ -428,6 +691,7 @@ async function findFirstMatchingFile(
     if (!item) break;
     let entries: any[];
     try {
+      validateFilePath(item.dir, 'read');
       entries = await fs.readdir(item.dir, { withFileTypes: true });
     } catch {
       continue;
@@ -521,6 +785,7 @@ async function generateBoltzBaseYamlFromPdb(
   outputPath: string,
   msaPath?: string | null
 ): Promise<void> {
+  validateFilePath(pdbPath, 'read');
   const pdbContent = await fs.readFile(pdbPath, 'utf-8');
   const sequences = parseProteinSequencesFromPdb(pdbContent);
   if (sequences.length === 0) {
@@ -560,6 +825,7 @@ function toFiniteOrNull(value: unknown): number | null {
 
 async function getBoltzMetricRowsFromRunDir(resultDir: string): Promise<BoltzMetricInputRow[]> {
   const trainDir = path.join(resultDir, 'train');
+  validateFilePath(trainDir, 'read');
   let boltzFiles: string[] = [];
   try {
     const entries = await fs.readdir(trainDir);
@@ -619,6 +885,7 @@ async function getBoltzMetricRowsFromRunDir(resultDir: string): Promise<BoltzMet
 async function readRunProgressFromLog(resultDir: string): Promise<{ currentStep: number; totalSteps: number }> {
   const logPath = path.join(resultDir, 'train.log');
   try {
+    validateFilePath(logPath, 'read');
     const content = await fs.readFile(logPath, 'utf-8');
     const matches = content.matchAll(/iteration\s+(\d+)/gi);
     let maxIteration = 0;
@@ -634,6 +901,7 @@ async function readRunProgressFromLog(resultDir: string): Promise<{ currentStep:
 
 async function getLatestCheckpoint(resultDir: string): Promise<string | null> {
   try {
+    validateFilePath(resultDir, 'read');
     const files = await fs.readdir(resultDir);
     const checkpoints = files
       .filter((file) => file.startsWith('model_state_') && file.endsWith('.pt'))
@@ -672,6 +940,7 @@ async function loadMoleculesFromArtifacts(resultDir: string, limit: number): Pro
       let smiles = '';
       if (await pathExists(yamlPath)) {
         try {
+          validateFilePath(yamlPath, 'read');
           const yamlContent = await fs.readFile(yamlPath, 'utf-8');
           const parsedYaml = YAML.parse(yamlContent) as any;
           const sequences = Array.isArray(parsedYaml?.sequences) ? parsedYaml.sequences : [];
@@ -702,6 +971,7 @@ async function loadMoleculesFromArtifacts(resultDir: string, limit: number): Pro
       let probabilityModel2: number | null = null;
       if (await pathExists(affinityPath)) {
         try {
+          validateFilePath(affinityPath, 'read');
           const affinityRaw = await fs.readFile(affinityPath, 'utf-8');
           const affinity = JSON.parse(affinityRaw) as Record<string, unknown>;
           affinityEnsemble = toFiniteOrNull(affinity.affinity_pred_value);
@@ -797,6 +1067,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
         run.status = 'paused';
         run.error = 'Runner restarted; previous process not found.';
       }
+      run.engine = normalizeEngine(run.engine);
       run.source = 'local';
       state.runs.set(run.id, run);
     }
@@ -845,6 +1116,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
 
   function convexConfigToOpt(config: any): OptConfig {
     return {
+      engine: normalizeEngine(config.engine),
       result_dir: config.resultDir,
       env_dir: config.envDir,
       max_atoms: config.maxAtoms,
@@ -871,12 +1143,53 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
         use_msa_server: config.boltzUseMsaServer ?? false,
         worker: Math.max(1, Math.floor(config.boltzWorker ?? 1)),
       },
+      flashbind: {
+        root: config.flashbindRoot ?? DEFAULT_FLASHBIND_CONFIG.root,
+        protein_id: config.flashbindProteinId ?? DEFAULT_FLASHBIND_CONFIG.protein_id,
+        pdb_dir: config.flashbindPdbDir ?? DEFAULT_FLASHBIND_CONFIG.pdb_dir,
+        protein_repr: config.flashbindProteinRepr ?? DEFAULT_FLASHBIND_CONFIG.protein_repr,
+        ligand_repr: config.flashbindLigandRepr ?? DEFAULT_FLASHBIND_CONFIG.ligand_repr,
+        prots_json: config.flashbindProtsJson ?? DEFAULT_FLASHBIND_CONFIG.prots_json,
+        fabind_checkpoint:
+          config.flashbindFabindCheckpoint ?? DEFAULT_FLASHBIND_CONFIG.fabind_checkpoint,
+        binary_checkpoints:
+          config.flashbindBinaryCheckpoints ?? DEFAULT_FLASHBIND_CONFIG.binary_checkpoints,
+        value_checkpoints:
+          config.flashbindValueCheckpoints ?? DEFAULT_FLASHBIND_CONFIG.value_checkpoints,
+        fabind_conda_env:
+          config.flashbindFabindCondaEnv ?? DEFAULT_FLASHBIND_CONFIG.fabind_conda_env,
+        flashbind_conda_env:
+          config.flashbindFlashbindCondaEnv ?? DEFAULT_FLASHBIND_CONFIG.flashbind_conda_env,
+        fabind_num_threads:
+          config.flashbindFabindNumThreads ?? DEFAULT_FLASHBIND_CONFIG.fabind_num_threads,
+        fabind_batch_size:
+          config.flashbindFabindBatchSize ?? DEFAULT_FLASHBIND_CONFIG.fabind_batch_size,
+        fabind_post_optim:
+          config.flashbindFabindPostOptim ?? DEFAULT_FLASHBIND_CONFIG.fabind_post_optim,
+        devices: config.flashbindDevices ?? DEFAULT_FLASHBIND_CONFIG.devices,
+        accelerator: config.flashbindAccelerator ?? DEFAULT_FLASHBIND_CONFIG.accelerator,
+        num_workers: config.flashbindNumWorkers ?? DEFAULT_FLASHBIND_CONFIG.num_workers,
+        distance_threshold:
+          config.flashbindDistanceThreshold ?? DEFAULT_FLASHBIND_CONFIG.distance_threshold,
+        repr_n_jobs: config.flashbindReprNJobs ?? DEFAULT_FLASHBIND_CONFIG.repr_n_jobs,
+        auto_generate_protein_repr:
+          config.flashbindAutoGenerateProteinRepr ??
+          DEFAULT_FLASHBIND_CONFIG.auto_generate_protein_repr,
+        auto_generate_ligand_repr:
+          config.flashbindAutoGenerateLigandRepr ??
+          DEFAULT_FLASHBIND_CONFIG.auto_generate_ligand_repr,
+        reward_cache_path:
+          config.flashbindRewardCachePath ?? DEFAULT_FLASHBIND_CONFIG.reward_cache_path,
+        hf_cache: config.flashbindHfCache ?? DEFAULT_FLASHBIND_CONFIG.hf_cache,
+      },
     };
   }
 
   function optConfigToConvexCreateInput(config: OptConfig, name: string): ConvexConfigCreateInput {
+    const flashbind = config.flashbind ?? DEFAULT_FLASHBIND_CONFIG;
     return {
       name,
+      engine: normalizeEngine(config.engine),
       resultDir: config.result_dir,
       envDir: config.env_dir,
       maxAtoms: config.max_atoms,
@@ -902,11 +1215,35 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       boltzCacheDir: config.boltz.cache_dir,
       boltzUseMsaServer: config.boltz.use_msa_server,
       boltzWorker: Math.max(1, Math.floor(config.boltz.worker ?? 1)),
+      flashbindRoot: flashbind.root,
+      flashbindProteinId: flashbind.protein_id,
+      flashbindPdbDir: flashbind.pdb_dir,
+      flashbindProteinRepr: flashbind.protein_repr,
+      flashbindLigandRepr: flashbind.ligand_repr,
+      flashbindProtsJson: flashbind.prots_json,
+      flashbindFabindCheckpoint: flashbind.fabind_checkpoint,
+      flashbindBinaryCheckpoints: flashbind.binary_checkpoints,
+      flashbindValueCheckpoints: flashbind.value_checkpoints,
+      flashbindFabindCondaEnv: flashbind.fabind_conda_env,
+      flashbindFlashbindCondaEnv: flashbind.flashbind_conda_env,
+      flashbindFabindNumThreads: flashbind.fabind_num_threads,
+      flashbindFabindBatchSize: flashbind.fabind_batch_size,
+      flashbindFabindPostOptim: flashbind.fabind_post_optim,
+      flashbindDevices: flashbind.devices,
+      flashbindAccelerator: flashbind.accelerator,
+      flashbindNumWorkers: flashbind.num_workers,
+      flashbindDistanceThreshold: flashbind.distance_threshold,
+      flashbindReprNJobs: flashbind.repr_n_jobs,
+      flashbindAutoGenerateProteinRepr: flashbind.auto_generate_protein_repr,
+      flashbindAutoGenerateLigandRepr: flashbind.auto_generate_ligand_repr,
+      flashbindRewardCachePath: flashbind.reward_cache_path,
+      flashbindHfCache: flashbind.hf_cache,
     };
   }
 
   async function detectResultDir(baseDir: string, startedAt: number): Promise<string | null> {
     try {
+    validateFilePath(baseDir, 'read');
       const entries = await fs.readdir(baseDir, { withFileTypes: true });
       const dirs = entries
         .filter((d) => d.isDirectory())
@@ -919,6 +1256,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
 
       let best: { name: string; path: string; mtimeMs: number } | null = null;
       for (const dir of dirs) {
+      validateFilePath(dir.path, 'read');
         const stats = await fs.stat(dir.path);
         if (!best || stats.mtimeMs > best.mtimeMs) {
           best = { ...dir, mtimeMs: stats.mtimeMs };
@@ -1063,19 +1401,22 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     const runMetaDir = path.join(runsDir, runId);
     await ensureDir(runMetaDir);
 
+    const engine = normalizeEngine(config.engine);
     const inputsDir = path.join(runMetaDir, 'inputs');
     const resolvedConfig = await resolveConfigPaths(config, inputsDir);
-    if (!resolvedConfig.protein_path) {
-      throw new Error('protein_path is required to generate Boltz base YAML.');
-    }
     await ensureDir(inputsDir);
-    const generatedBoltzYamlPath = path.join(inputsDir, 'boltz_base.generated.yaml');
-    await generateBoltzBaseYamlFromPdb(
-      resolvedConfig.protein_path,
-      generatedBoltzYamlPath,
-      resolvedConfig.boltz.msa_path
-    );
-    resolvedConfig.boltz.base_yaml = generatedBoltzYamlPath;
+    if (engine === 'boltz') {
+      if (!resolvedConfig.protein_path) {
+        throw new Error('protein_path is required to generate Boltz base YAML.');
+      }
+      const generatedBoltzYamlPath = path.join(inputsDir, 'boltz_base.generated.yaml');
+      await generateBoltzBaseYamlFromPdb(
+        resolvedConfig.protein_path,
+        generatedBoltzYamlPath,
+        resolvedConfig.boltz.msa_path
+      );
+      resolvedConfig.boltz.base_yaml = generatedBoltzYamlPath;
+    }
     const resolvedConfigPath = path.join(runMetaDir, 'config.resolved.yaml');
     await fs.writeFile(resolvedConfigPath, YAML.stringify(resolvedConfig), 'utf-8');
 
@@ -1093,6 +1434,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       lastUpdatedAt: new Date(runStartedAt).toISOString(),
       checkpointPath: null,
       error: null,
+      engine,
       pid: null,
       configId: payload.configId ?? null,
       convexRunId: null,
@@ -1109,6 +1451,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       const convexRunId = await convexSync.createRun(
         payload.configId,
         runInfo.name,
+        runInfo.engine ?? 'boltz',
         runInfo.resultDir,
         runInfo.totalSteps
       );
@@ -1119,7 +1462,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     }
 
     const args = [
-      OPT_SCRIPT,
+      getOptScriptForEngine(engine),
       '--config',
       resolvedConfigPath,
       '--result_dir',
@@ -1271,7 +1614,13 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       throw new Error(`Run ${runId} not found`);
     }
 
-    const args = [OPT_SCRIPT, '--config', run.configPath, '--resume_from', checkpointPath];
+    const args = [
+      getOptScriptForEngine(normalizeEngine(run.engine)),
+      '--config',
+      run.configPath,
+      '--resume_from',
+      checkpointPath,
+    ];
     if (oracleIdx !== undefined) {
       args.push('--resume_oracle_idx', String(oracleIdx));
     }
@@ -1400,6 +1749,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
   }
 
   async function importExistingRun(resultDir: string, name?: string | null): Promise<RunRecord> {
+    validateFilePath(resultDir, 'read');
     const stats = await fs.stat(resultDir).catch(() => null);
     if (!stats?.isDirectory()) {
       throw new Error(`Result directory does not exist: ${resultDir}`);
@@ -1413,6 +1763,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     let importedConfig: OptConfig | null = null;
     if (await pathExists(configPathCandidate)) {
       try {
+        validateFilePath(configPathCandidate, 'read');
         const configRaw = await fs.readFile(configPathCandidate, 'utf-8');
         importedConfig = normalizeImportedConfig(YAML.parse(configRaw), resultDir);
       } catch {
@@ -1432,6 +1783,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       lastUpdatedAt: new Date().toISOString(),
       checkpointPath,
       error: null,
+      engine: importedConfig?.engine ?? 'boltz',
       pid: null,
       configId: null,
       convexRunId: null,
@@ -1452,6 +1804,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
         const convexRunId = await convexSync.createRun(
           convexConfigId as any,
           run.name,
+          run.engine ?? 'boltz',
           run.resultDir,
           run.totalSteps
         );
@@ -1517,6 +1870,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       let configForCloud: OptConfig | null = null;
       if (run.configPath && run.configPath.endsWith('.yaml')) {
         try {
+          validateFilePath(run.configPath, 'read');
           const configRaw = await fs.readFile(run.configPath, 'utf-8');
           configForCloud = normalizeImportedConfig(YAML.parse(configRaw), run.resultDir);
         } catch {
@@ -1535,6 +1889,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       const convexRunId = await convexSync.createRun(
         run.configId!,
         run.name,
+        run.engine ?? 'boltz',
         run.resultDir,
         run.totalSteps
       );
@@ -1571,6 +1926,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
 
     let files: string[] = [];
     try {
+      validateFilePath(trainDir, 'read');
       files = await fs.readdir(trainDir);
     } catch {
       return trajMap;
@@ -1619,6 +1975,14 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
   async function getTopMolecules(runId: string, limit = 50): Promise<MoleculeResult[]> {
     const run = state.runs.get(runId);
     if (!run) return [];
+    const runEngine = normalizeEngine(run.engine);
+    if (runEngine === 'flashbind') {
+      return await getFlashbindTopMolecules(run.resultDir, limit, {
+        openDatabase,
+        queryAll,
+        pathExists,
+      });
+    }
 
     const rewardCachePath = path.join(run.resultDir, 'boltz_reward_cache.db');
     const trainDir = path.join(run.resultDir, 'train');
@@ -1745,8 +2109,15 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
   async function getBoltzMetrics(runId: string): Promise<BoltzMetricSeries | null> {
     const run = state.runs.get(runId);
     if (!run) return null;
-
-    const rows = await getBoltzMetricRowsFromRunDir(run.resultDir);
+    const runEngine = normalizeEngine(run.engine);
+    const rows =
+      runEngine === 'flashbind'
+        ? await getFlashbindMetricRowsFromRunDir(run.resultDir, {
+            openDatabase,
+            queryAll,
+            pathExists,
+          })
+        : await getBoltzMetricRowsFromRunDir(run.resultDir);
     if (rows.length === 0) return null;
     return computeBoltzMetrics(rows);
   }
@@ -1754,6 +2125,10 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
   async function getComplexContent(runId: string, oracleIdx: number, molIdx: number): Promise<string | null> {
     const run = state.runs.get(runId);
     if (!run) return null;
+    const runEngine = normalizeEngine(run.engine);
+    if (runEngine === 'flashbind') {
+      return await getFlashbindComplexContent(run.resultDir, oracleIdx, molIdx);
+    }
     const basePath = path.join(
       run.resultDir,
       'boltz_cofold',
@@ -1761,6 +2136,10 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       `mol_${molIdx}`,
       'boltz_output'
     );
+    if (!isPathContained(basePath, [run.resultDir])) {
+      return null;
+    }
+    validateFilePath(basePath, 'read');
     try {
       const structurePath = await findFirstMatchingFile(
         basePath,
@@ -1768,33 +2147,16 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
         6
       );
       if (structurePath) {
+        if (!isPathContained(structurePath, [run.resultDir])) {
+          return null;
+        }
+        validateFilePath(structurePath, 'read');
         return await fs.readFile(structurePath, 'utf-8');
       }
     } catch {
       return null;
     }
     return null;
-  }
-
-  async function deleteRun(runId: string): Promise<void> {
-    const run = state.runs.get(runId);
-    if (!run) {
-      throw new Error('Run not found');
-    }
-    if (run.status === 'running' && state.processes.has(runId)) {
-      throw new Error('Cannot delete an active run. Stop it first.');
-    }
-
-    state.runs.delete(runId);
-    state.outputs.delete(runId);
-    stopResultDirRefresh(runId);
-    artifactMapCache.delete(run.resultDir);
-    if (run.convexRunId) {
-      convexSync.stopSync(runId);
-    }
-
-    await fs.rm(path.join(runsDir, runId), { recursive: true, force: true }).catch(() => undefined);
-    await persistRuns();
   }
 
   // ========================================================================
@@ -1808,10 +2170,14 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       return;
     }
 
-    // CORS
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    const isDev = process.env.NODE_ENV === 'development';
+    const requestOrigin = req.headers.origin;
+    if (isDev && requestOrigin && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(requestOrigin)) {
+      res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    }
 
     if (req.method === 'OPTIONS') {
       res.statusCode = 204;
@@ -1844,6 +2210,29 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       });
     };
 
+    const readJsonBody = async (): Promise<unknown> => {
+      const body = await readBody();
+      if (!body.trim()) return {};
+      try {
+        return JSON.parse(body);
+      } catch {
+        throw new Error('Invalid JSON body');
+      }
+    };
+
+    const parseIntegerQueryParam = (
+      paramName: string,
+      options: { min?: number; max?: number } = {}
+    ): { value: number | null; valid: boolean } => {
+      const raw = url.searchParams.get(paramName);
+      if (raw == null) return { value: null, valid: true };
+      const parsed = Number.parseInt(raw, 10);
+      if (!Number.isInteger(parsed)) return { value: null, valid: false };
+      if (options.min != null && parsed < options.min) return { value: null, valid: false };
+      if (options.max != null && parsed > options.max) return { value: null, valid: false };
+      return { value: parsed, valid: true };
+    };
+
     // Health
     if (req.method === 'GET' && url.pathname === '/health') {
       sendJson(200, {
@@ -1860,7 +2249,6 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
-        'Access-Control-Allow-Origin': '*',
       });
       res.write('\n');
       sseClients.add(res);
@@ -1877,10 +2265,27 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     }
 
     if (req.method === 'POST' && url.pathname === '/runs') {
-      const body = await readBody();
-      const payload = JSON.parse(body) as RunnerStartPayload;
+      let rawPayload: unknown;
       try {
-        const run = await startRun(payload);
+        rawPayload = await readJsonBody();
+      } catch (err) {
+        sendJson(400, { error: err instanceof Error ? err.message : 'Invalid request body' });
+        return;
+      }
+      const parsedPayload = RunnerStartPayloadSchema.safeParse(rawPayload);
+      if (!parsedPayload.success) {
+        sendJson(400, {
+          error: 'Invalid start payload',
+          details: parsedPayload.error.issues,
+        });
+        return;
+      }
+      try {
+        if (parsedPayload.data.config) {
+          validateFilePath(parsedPayload.data.config.result_dir, 'write');
+          validateFilePath(parsedPayload.data.config.env_dir, 'read');
+        }
+        const run = await startRun(parsedPayload.data as RunnerStartPayload);
         sendJson(200, run);
       } catch (err) {
         sendText(500, err instanceof Error ? err.message : 'Failed to start run');
@@ -1889,10 +2294,24 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     }
 
     if (req.method === 'POST' && url.pathname === '/runs/import') {
-      const body = await readBody();
-      const payload = JSON.parse(body) as { resultDir: string; name?: string | null };
+      let rawPayload: unknown;
       try {
-        const run = await importExistingRun(payload.resultDir, payload.name);
+        rawPayload = await readJsonBody();
+      } catch (err) {
+        sendJson(400, { error: err instanceof Error ? err.message : 'Invalid request body' });
+        return;
+      }
+      const parsedPayload = RunnerImportPayloadSchema.safeParse(rawPayload);
+      if (!parsedPayload.success) {
+        sendJson(400, {
+          error: 'Invalid import payload',
+          details: parsedPayload.error.issues,
+        });
+        return;
+      }
+      try {
+        validateFilePath(parsedPayload.data.resultDir, 'read');
+        const run = await importExistingRun(parsedPayload.data.resultDir, parsedPayload.data.name);
         sendJson(200, run);
       } catch (err) {
         sendText(500, err instanceof Error ? err.message : 'Failed to import run');
@@ -1947,10 +2366,37 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       }
 
       if (req.method === 'POST' && pathParts[2] === 'resume') {
-        const body = await readBody();
-        const data = JSON.parse(body) as { checkpointPath: string; oracleIdx?: number };
+        let rawPayload: unknown;
         try {
-          const run = await resumeRun(runId, data.checkpointPath, data.oracleIdx);
+          rawPayload = await readJsonBody();
+        } catch (err) {
+          sendJson(400, { error: err instanceof Error ? err.message : 'Invalid request body' });
+          return;
+        }
+        const parsedPayload = RunnerResumePayloadSchema.safeParse(rawPayload);
+        if (!parsedPayload.success) {
+          sendJson(400, {
+            error: 'Invalid resume payload',
+            details: parsedPayload.error.issues,
+          });
+          return;
+        }
+        try {
+          const runForValidation = state.runs.get(runId);
+          if (!runForValidation) {
+            sendJson(404, { error: 'Run not found' });
+            return;
+          }
+          validateFilePath(parsedPayload.data.checkpointPath, 'read');
+          if (!isPathContained(parsedPayload.data.checkpointPath, [runForValidation.resultDir])) {
+            sendJson(400, { error: 'checkpointPath must be inside the run result directory' });
+            return;
+          }
+          const run = await resumeRun(
+            runId,
+            parsedPayload.data.checkpointPath,
+            parsedPayload.data.oracleIdx
+          );
           sendJson(200, run);
         } catch (err) {
           sendText(500, err instanceof Error ? err.message : 'Failed to resume run');
@@ -1985,6 +2431,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
           return;
         }
         try {
+          validateFilePath(run.resultDir, 'read');
           const files = await fs.readdir(run.resultDir);
           const checkpoints = files
             .filter((f) => f.startsWith('model_state_') && f.endsWith('.pt'))
@@ -2003,14 +2450,24 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
           sendJson(404, { error: 'Run not found' });
           return;
         }
-        const tail = Number(url.searchParams.get('tail') ?? '500');
+        const tailQuery = parseIntegerQueryParam('tail', { min: 1, max: 50000 });
+        if (!tailQuery.valid) {
+          sendJson(400, { error: 'Invalid tail parameter' });
+          return;
+        }
+        const tail = tailQuery.value ?? 500;
         const lines = run.logPath ? await readTail(run.logPath, tail) : [];
         sendJson(200, { lines });
         return;
       }
 
       if (req.method === 'GET' && pathParts[2] === 'molecules') {
-        const limit = Number(url.searchParams.get('limit') ?? '50');
+        const limitQuery = parseIntegerQueryParam('limit', { min: 1, max: 10000 });
+        if (!limitQuery.valid) {
+          sendJson(400, { error: 'Invalid limit parameter' });
+          return;
+        }
+        const limit = limitQuery.value ?? 50;
         const molecules = await getTopMolecules(runId, limit);
         sendJson(200, molecules);
         return;
@@ -2027,12 +2484,14 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       }
 
       if (req.method === 'GET' && pathParts[2] === 'complex') {
-        const oracleIdx = Number(url.searchParams.get('oracleIdx'));
-        const molIdx = Number(url.searchParams.get('molIdx'));
-        if (Number.isNaN(oracleIdx) || Number.isNaN(molIdx)) {
+        const oracleIdxQuery = parseIntegerQueryParam('oracleIdx', { min: 0 });
+        const molIdxQuery = parseIntegerQueryParam('molIdx', { min: 0 });
+        if (!oracleIdxQuery.valid || !molIdxQuery.valid || oracleIdxQuery.value == null || molIdxQuery.value == null) {
           sendJson(400, { error: 'Missing oracleIdx or molIdx' });
           return;
         }
+        const oracleIdx = oracleIdxQuery.value;
+        const molIdx = molIdxQuery.value;
         const content = await getComplexContent(runId, oracleIdx, molIdx);
         if (!content) {
           sendJson(404, { error: 'Complex not found' });

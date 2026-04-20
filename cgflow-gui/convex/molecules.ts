@@ -6,8 +6,12 @@ const moleculeValidator = v.object({
   _id: v.id('molecules'),
   _creationTime: v.number(),
   runId: v.id('runs'),
+  engine: v.union(v.literal('boltz'), v.literal('flashbind')),
   smiles: v.string(),
   reward: v.number(),
+  normalizedAffinity: v.union(v.number(), v.null()),
+  normalizedProbability: v.union(v.number(), v.null()),
+  normalizedScore: v.union(v.number(), v.null()),
   trajectory: v.string(),
   affinityEnsemble: v.union(v.number(), v.null()),
   probabilityEnsemble: v.union(v.number(), v.null()),
@@ -25,8 +29,12 @@ const moleculeValidator = v.object({
 export const upsert = mutation({
   args: {
     runId: v.id('runs'),
+    engine: v.union(v.literal('boltz'), v.literal('flashbind')),
     smiles: v.string(),
     reward: v.number(),
+    normalizedAffinity: v.union(v.number(), v.null()),
+    normalizedProbability: v.union(v.number(), v.null()),
+    normalizedScore: v.union(v.number(), v.null()),
     trajectory: v.string(),
     affinityEnsemble: v.union(v.number(), v.null()),
     probabilityEnsemble: v.union(v.number(), v.null()),
@@ -52,6 +60,9 @@ export const upsert = mutation({
       // Update existing
       await ctx.db.patch(existing._id, {
         reward: args.reward,
+        normalizedAffinity: args.normalizedAffinity,
+        normalizedProbability: args.normalizedProbability,
+        normalizedScore: args.normalizedScore,
         trajectory: args.trajectory,
         affinityEnsemble: args.affinityEnsemble,
         probabilityEnsemble: args.probabilityEnsemble,
@@ -80,8 +91,12 @@ export const batchUpsert = mutation({
     molecules: v.array(
       v.object({
         runId: v.id('runs'),
+        engine: v.union(v.literal('boltz'), v.literal('flashbind')),
         smiles: v.string(),
         reward: v.number(),
+        normalizedAffinity: v.union(v.number(), v.null()),
+        normalizedProbability: v.union(v.number(), v.null()),
+        normalizedScore: v.union(v.number(), v.null()),
         trajectory: v.string(),
         affinityEnsemble: v.union(v.number(), v.null()),
         probabilityEnsemble: v.union(v.number(), v.null()),
@@ -110,6 +125,9 @@ export const batchUpsert = mutation({
       if (existing) {
         await ctx.db.patch(existing._id, {
           reward: mol.reward,
+          normalizedAffinity: mol.normalizedAffinity,
+          normalizedProbability: mol.normalizedProbability,
+          normalizedScore: mol.normalizedScore,
           trajectory: mol.trajectory,
           affinityEnsemble: mol.affinityEnsemble,
           probabilityEnsemble: mol.probabilityEnsemble,
