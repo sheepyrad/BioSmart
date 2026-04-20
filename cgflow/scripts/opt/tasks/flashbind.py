@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import time
 import warnings
 
 import medchem as mc
@@ -238,6 +239,8 @@ class FlashBindTask(BaseDockingTask):
         self.flashbind_root = Path(fb_cfg.root)
         self.flashbind_work_dir = Path(cfg.log_dir) / "flashbind_oracle"
         self.flashbind_work_dir.mkdir(parents=True, exist_ok=True)
+        self.flashbind_metrics_log_path = Path(cfg.log_dir) / "flashbind_metrics.log"
+        self.flashbind_metrics_log_path.parent.mkdir(parents=True, exist_ok=True)
         self.protein_id = str(fb_cfg.protein_id)
         self.prots_json = Path(fb_cfg.prots_json) if fb_cfg.prots_json else None
         self.repr_n_jobs = int(fb_cfg.repr_n_jobs)
@@ -295,6 +298,31 @@ class FlashBindTask(BaseDockingTask):
         self.reward_cache = BoltzRewardCache(cache_path)
         self._ensure_protein_repr()
 
+    def _flashbind_log(
+        self,
+        message: str,
+        *,
+        file_detail_lines: list[str] | None = None,
+        terminal: bool = False,
+    ) -> None:
+        """Append timestamped lines to flashbind_metrics.log."""
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with open(self.flashbind_metrics_log_path, "a", encoding="utf-8") as f:
+                head, *tail = message.split("\n")
+                f.write(f"[{ts}] {head}\n")
+                for part in tail:
+                    f.write(f"[{ts}]   {part}\n")
+                if file_detail_lines:
+                    for line in file_detail_lines:
+                        f.write(f"[{ts}]   {line}\n")
+        except Exception as e:
+            print(f"Warning: failed to write flashbind metrics log {self.flashbind_metrics_log_path}: {e}")
+
+        if terminal:
+            head = message.split("\n", 1)[0]
+            print(f"[{ts}] {head}", flush=True)
+
     def calc_affinities(self, mols: list[Chem.Mol]) -> list[float]:
         self._ensure_flashbind_scores(mols)
         return self._last_flashbind_scores
@@ -304,6 +332,9 @@ class FlashBindTask(BaseDockingTask):
             return
 
         n = len(mols)
+        total_generated = n
+        none_molecule_count = 0
+        smiles_parse_error_count = 0
         affinity_scores = [0.0] * n
         binary_scores = [0.0] * n
         lilly_masks = [0.0] * n
@@ -315,16 +346,44 @@ class FlashBindTask(BaseDockingTask):
         smiles_to_indices: dict[str, list[int]] = {}
         for idx, mol in enumerate(mols):
             if mol is None:
+                none_molecule_count += 1
+                per_item_meta[idx] = {"status": "none"}
                 continue
             try:
                 smiles = Chem.MolToSmiles(mol)
-            except Exception:
+            except Exception as e:
+                smiles_parse_error_count += 1
+                self._flashbind_log(f"Error processing molecule {idx}: {e}")
+                per_item_meta[idx] = {"status": "smiles_parse_error"}
                 continue
             self.batch_smiles[idx] = smiles
             smiles_to_indices.setdefault(smiles, []).append(idx)
 
         cached_results = self.reward_cache.get_hits(list(smiles_to_indices.keys()))
         uncached_smiles = [s for s in smiles_to_indices if s not in cached_results]
+        uncached_status_by_smiles: dict[str, str] = {}
+
+        n_unique_smiles = len(smiles_to_indices)
+        n_cached_entries = len(cached_results)
+        n_uncached_entries = len(uncached_smiles)
+        n_smiles_slots = sum(len(idcs) for idcs in smiles_to_indices.values())
+        slot_hits = sum(len(smiles_to_indices.get(s, [])) for s in cached_results)
+        slot_hit_pct = (100.0 * slot_hits / n_smiles_slots) if n_smiles_slots > 0 else 0.0
+        self._flashbind_log(
+            (
+                f"FlashBind batch | oracle_idx={self.oracle_idx} | batch_size={total_generated:,} | "
+                f"smiles_slots={n_smiles_slots:,} | unique_smiles={n_unique_smiles:,} | "
+                f"cached_entries={n_cached_entries:,} | uncached_entries={n_uncached_entries:,} | "
+                f"slot_hit_rate={slot_hits:,}/{n_smiles_slots:,} ({slot_hit_pct:.1f}%)"
+            ),
+            file_detail_lines=[
+                f"Number of unique SMILES: {n_unique_smiles:,}",
+                f"Cached entries: {n_cached_entries:,}",
+                f"Uncached entries: {n_uncached_entries:,}",
+                f"Slot hit rate: {slot_hits:,}/{n_smiles_slots:,} ({slot_hit_pct:.1f}%)",
+            ],
+            terminal=True,
+        )
 
         # Cached: hydrate affinity/binary directly.
         for smiles, (reward, info_str) in cached_results.items():
@@ -355,6 +414,7 @@ class FlashBindTask(BaseDockingTask):
         for smiles in uncached_smiles:
             lily_mask = self._lilly_pass(smiles)
             if lily_mask == 0.0:
+                uncached_status_by_smiles[smiles] = "lilly_fail"
                 for idx in smiles_to_indices.get(smiles, []):
                     affinity_scores[idx] = 0.0
                     binary_scores[idx] = 0.0
@@ -392,6 +452,7 @@ class FlashBindTask(BaseDockingTask):
             for pair in uncached_pairs:
                 lilly_mask = 1.0
                 if pair.sample_id in failed_sample_ids:
+                    uncached_status_by_smiles[pair.smiles] = "fabind_preprocess_fail"
                     affinity = 0.0
                     binary = 0.0
                     flashbind_score = 0.0
@@ -423,6 +484,7 @@ class FlashBindTask(BaseDockingTask):
                 binary = float(binary_map.get(pair.sample_id, 0.0))
                 flashbind_score = self._combine_flashbind_scores(affinity, binary, lilly_mask)
                 smiles = pair.smiles
+                uncached_status_by_smiles[smiles] = "success"
                 for idx in smiles_to_indices.get(smiles, []):
                     affinity_scores[idx] = affinity
                     binary_scores[idx] = binary
@@ -447,6 +509,12 @@ class FlashBindTask(BaseDockingTask):
 
         if new_cache_entries:
             self.reward_cache.insert_entries(new_cache_entries)
+            n_new = len(new_cache_entries)
+            cache_sz = self.reward_cache.get_db_size(fast=True)
+            self._flashbind_log(
+                f"Reward cache updated | new_entries={n_new:,} | cache_size={cache_sz:,}",
+                file_detail_lines=[f"new_entries={n_new:,}", f"total_cache_size={cache_sz:,}"],
+            )
 
         self._last_affinity_scores = affinity_scores
         self._last_binary_scores = binary_scores
@@ -464,6 +532,31 @@ class FlashBindTask(BaseDockingTask):
             }
             for i in range(n)
         ]
+
+        evaluated_this_iteration = len(uncached_smiles)
+        lilly_pass_count = sum(1 for status in uncached_status_by_smiles.values() if status != "lilly_fail")
+        failed_count = sum(
+            1 for status in uncached_status_by_smiles.values() if status in {"fabind_preprocess_fail", "failed", "error"}
+        )
+        success_count = sum(1 for status in uncached_status_by_smiles.values() if status == "success")
+        self._flashbind_log(
+            (
+                "[FlashBind Iteration Summary] "
+                f"generated={total_generated:,}, none={none_molecule_count:,}, "
+                f"smiles_parse_error={smiles_parse_error_count:,}, evaluated={evaluated_this_iteration:,}, "
+                f"lilly_pass={lilly_pass_count:,}, failed={failed_count:,}, success={success_count:,}"
+            ),
+            file_detail_lines=[
+                f"generated={total_generated:,}",
+                f"none={none_molecule_count:,}",
+                f"smiles_parse_error={smiles_parse_error_count:,}",
+                f"evaluated_uncached={evaluated_this_iteration:,}",
+                f"lilly_pass={lilly_pass_count:,}",
+                f"failed={failed_count:,}",
+                f"success={success_count:,}",
+            ],
+            terminal=True,
+        )
         self._scores_ready = True
 
     @staticmethod
