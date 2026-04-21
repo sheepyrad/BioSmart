@@ -1,41 +1,125 @@
 import { z } from 'zod';
 
+const SENSITIVE_PATH_PREFIXES = ['/etc', '/proc'] as const;
+
+function hasSensitivePathPrefix(value: string): boolean {
+  return SENSITIVE_PATH_PREFIXES.some(
+    (prefix) => value === prefix || value.startsWith(`${prefix}/`)
+  );
+}
+
+function isSafePathString(value: string): boolean {
+  if (value.includes('\0')) return false;
+  if (value.includes('..')) return false;
+  if (/[\x01-\x1f\x7f]/.test(value)) return false;
+  const normalized = value.replace(/\\/g, '/').trim();
+  if (hasSensitivePathPrefix(normalized)) return false;
+  return true;
+}
+
+export const safePathSchema = z
+  .string()
+  .min(1)
+  .max(4096)
+  .refine(isSafePathString, {
+    message: 'Invalid or unsafe path',
+  });
+
+const nullableSafePathSchema = safePathSchema.nullable();
+
+export const positiveInt = z.number().int().min(1).max(100_000);
+export const portNumber = z.number().int().min(1).max(65535);
+export const tailLines = z.number().int().min(1).max(10_000);
+export const runnerIndex = z.number().int().min(0).max(1_000_000_000);
+export const runnerLimit = z.number().int().min(1).max(10_000);
+export const configNameSchema = z.string().trim().min(1).max(255);
+
+const targetResidueSchema = z.string().regex(/^[A-Z]:\d+$/, {
+  message: 'target_residues must match CHAIN:RESID (e.g. A:123)',
+});
+
 // ============================================================================
 // Config Schema (matches NS5_crop_boltz.yaml structure)
 // ============================================================================
 
+export const OptimizationEngineSchema = z.enum(['boltz', 'flashbind']);
+
 export const BoltzConfigSchema = z.object({
-  base_yaml: z.string(),
-  target_residues: z.array(z.string()),
-  msa_path: z.string().nullable(),
-  cache_dir: z.string().nullable(),
+  base_yaml: safePathSchema,
+  target_residues: z.array(targetResidueSchema),
+  msa_path: nullableSafePathSchema,
+  cache_dir: nullableSafePathSchema,
   use_msa_server: z.boolean(),
-  worker: z.number().int().min(1).optional().default(1),
+  worker: z.number().int().min(1).max(1024).optional().default(1),
 });
 
-export const OptConfigSchema = z.object({
-  result_dir: z.string(),
-  env_dir: z.string(),
-  max_atoms: z.number(),
-  subsampling_ratio: z.number(),
-  protein_path: z.string(),
+export const FlashBindConfigSchema = z.object({
+  root: safePathSchema,
+  protein_id: z.string(),
+  pdb_dir: safePathSchema,
+  protein_repr: safePathSchema,
+  ligand_repr: safePathSchema,
+  prots_json: nullableSafePathSchema,
+  fabind_checkpoint: safePathSchema,
+  binary_checkpoints: z.array(safePathSchema),
+  value_checkpoints: z.array(safePathSchema),
+  fabind_conda_env: z.string(),
+  flashbind_conda_env: z.string(),
+  fabind_num_threads: z.number().int().min(1).max(256),
+  fabind_batch_size: z.number().int().min(1).max(4096),
+  fabind_post_optim: z.boolean(),
+  devices: z.number().int().min(1).max(64),
+  accelerator: z.string(),
+  num_workers: z.number().int().min(1).max(1024),
+  distance_threshold: z.number().min(0).max(1000),
+  repr_n_jobs: z.number().int().min(-1).max(1024),
+  auto_generate_protein_repr: z.boolean(),
+  auto_generate_ligand_repr: z.boolean(),
+  reward_cache_path: nullableSafePathSchema,
+  hf_cache: nullableSafePathSchema,
+});
+
+const BaseOptConfigSchema = z.object({
+  result_dir: safePathSchema,
+  env_dir: safePathSchema,
+  max_atoms: z.number().int().min(1).max(100_000),
+  subsampling_ratio: z.number().min(0).max(1),
+  protein_path: safePathSchema,
   center: z.tuple([z.number(), z.number(), z.number()]).nullable(),
-  ref_ligand_path: z.string().nullable(),
+  ref_ligand_path: nullableSafePathSchema,
   size: z.tuple([z.number(), z.number(), z.number()]),
-  num_steps: z.number(),
-  num_sampling_per_step: z.number(),
+  num_steps: z.number().int().min(1).max(100_000),
+  num_sampling_per_step: z.number().int().min(1).max(100_000),
   temperature: z.tuple([z.number(), z.number()]),
-  seed: z.number(),
-  pose_model: z.string(),
-  pose_steps: z.number(),
-  sampling_tau: z.number(),
-  random_action_prob: z.number(),
-  replay_warmup_step: z.number(),
-  replay_capacity: z.number(),
-  boltz: BoltzConfigSchema,
+  seed: z.number().int().min(0).max(2_147_483_647),
+  pose_model: safePathSchema,
+  pose_steps: z.number().int().min(1).max(100_000),
+  sampling_tau: z.number().min(0).max(100),
+  random_action_prob: z.number().min(0).max(1),
+  replay_warmup_step: z.number().int().min(0).max(100_000),
+  replay_capacity: z.number().int().min(1).max(1_000_000),
 });
 
+const BoltzOptConfigSchema = BaseOptConfigSchema.extend({
+  engine: z.literal('boltz').optional().default('boltz'),
+  boltz: BoltzConfigSchema,
+  flashbind: FlashBindConfigSchema.optional(),
+});
+
+const FlashBindOptConfigSchema = BaseOptConfigSchema.extend({
+  engine: z.literal('flashbind'),
+  boltz: BoltzConfigSchema,
+  flashbind: FlashBindConfigSchema,
+});
+
+export const OptConfigSchema = z.discriminatedUnion('engine', [
+  BoltzOptConfigSchema,
+  FlashBindOptConfigSchema,
+]);
+
+export type OptimizationEngine = z.infer<typeof OptimizationEngineSchema>;
 export type BoltzConfig = z.infer<typeof BoltzConfigSchema>;
+export type FlashBindConfig = z.infer<typeof FlashBindConfigSchema>;
 export type OptConfig = z.infer<typeof OptConfigSchema>;
 
 // ============================================================================
@@ -54,16 +138,17 @@ export type RunStatus = z.infer<typeof RunStatusSchema>;
 
 export const RunInfoSchema = z.object({
   id: z.string(),
-  name: z.string(),
-  configPath: z.string(),
-  resultDir: z.string(),
+  name: configNameSchema,
+  configPath: safePathSchema,
+  resultDir: safePathSchema,
   status: RunStatusSchema,
-  currentStep: z.number(),
-  totalSteps: z.number(),
+  currentStep: z.number().int().min(0).max(100_000),
+  totalSteps: z.number().int().min(0).max(100_000),
   startedAt: z.string().nullable(),
   lastUpdatedAt: z.string().nullable(),
-  checkpointPath: z.string().nullable(),
+  checkpointPath: nullableSafePathSchema,
   error: z.string().nullable(),
+  engine: OptimizationEngineSchema.optional(),
   configId: z.string().nullable().optional(),
   convexRunId: z.string().nullable().optional(),
   source: z.enum(['local', 'convex']).optional(),
@@ -96,6 +181,14 @@ export const BoltzScoreSchema = z.object({
 });
 
 export type BoltzScore = z.infer<typeof BoltzScoreSchema>;
+
+export const NormalizedScoreSchema = z.object({
+  affinity: z.number(),
+  probability: z.number(),
+  score: z.number(),
+});
+
+export type NormalizedScore = z.infer<typeof NormalizedScoreSchema>;
 
 export interface BoltzMetricInputRow {
   iteration: number;
@@ -142,12 +235,35 @@ export const MoleculeResultSchema = z.object({
   reward: z.number(),
   trajectory: z.array(TrajectoryStepSchema),
   boltzScores: BoltzScoreSchema.nullable(),
-  complexPath: z.string().nullable(), // Path to Boltz-2 predicted complex
-  oracleIdx: z.number().nullable().optional(),
-  molIdx: z.number().nullable().optional(),
+  normalizedScores: NormalizedScoreSchema.nullable().optional(),
+  complexPath: nullableSafePathSchema, // Path to Boltz-2 predicted complex
+  engine: OptimizationEngineSchema.optional(),
+  oracleIdx: runnerIndex.nullable().optional(),
+  molIdx: runnerIndex.nullable().optional(),
 });
 
 export type MoleculeResult = z.infer<typeof MoleculeResultSchema>;
+
+// ============================================================================
+// Runner API payload/query schemas
+// ============================================================================
+
+export const RunnerStartPayloadSchema = z.object({
+  config: OptConfigSchema.optional(),
+  configPath: nullableSafePathSchema.optional(),
+  configId: z.string().nullable().optional(),
+  name: configNameSchema.nullable().optional(),
+});
+
+export const RunnerResumePayloadSchema = z.object({
+  checkpointPath: safePathSchema,
+  oracleIdx: runnerIndex.optional(),
+});
+
+export const RunnerImportPayloadSchema = z.object({
+  resultDir: safePathSchema,
+  name: configNameSchema.nullable().optional(),
+});
 
 // ============================================================================
 // IPC Channel Definitions
@@ -156,10 +272,13 @@ export type MoleculeResult = z.infer<typeof MoleculeResultSchema>;
 export interface IpcChannels {
   // File operations
   'file:select-pdb': () => Promise<string | null>;
+  'file:select-ligand': () => Promise<string | null>;
+  'file:select-json': () => Promise<string | null>;
   'file:select-msa': () => Promise<string | null>;
   'file:select-yaml': () => Promise<string | null>;
   'file:select-directory': () => Promise<string | null>;
   'file:read-pdb': (path: string) => Promise<string>;
+  'file:read-text': (path: string) => Promise<string>;
   'file:read-yaml': (path: string) => Promise<OptConfig>;
   'file:write-yaml': (path: string, config: OptConfig) => Promise<void>;
   'file:exists': (path: string) => Promise<boolean>;
@@ -178,7 +297,6 @@ export interface IpcChannels {
   'run:delete': (runId: string) => Promise<void>;
   'run:get-checkpoints': (runId: string) => Promise<string[]>;
   'run:get-output': (runId: string, tail?: number) => Promise<string[]>;
-  'run:delete': (runId: string) => Promise<void>;
   'run:import-existing': (resultDir: string, name?: string | null) => Promise<RunInfo>;
   'run:sync-to-cloud': (runId: string) => Promise<RunInfo>;
   'run:get-boltz-metrics': (runId: string) => Promise<BoltzMetricSeries | null>;
@@ -191,6 +309,8 @@ export interface IpcChannels {
 
   // Boltz complex files
   'boltz:get-complex': (runId: string, oracleIdx: number, molIdx: number) => Promise<string | null>;
+  'boltz:get-complex-path': (runId: string, oracleIdx: number, molIdx: number) => Promise<string | null>;
+  'boltz:read-complex': (complexPath: string) => Promise<string>;
 }
 
 // Type-safe IPC invoke helper type

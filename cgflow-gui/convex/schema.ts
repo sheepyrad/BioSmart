@@ -5,6 +5,7 @@ export default defineSchema({
   // Run configurations
   configs: defineTable({
     name: v.string(),
+    engine: v.union(v.literal('boltz'), v.literal('flashbind')),
     resultDir: v.string(),
     envDir: v.string(),
     maxAtoms: v.number(),
@@ -31,6 +32,30 @@ export default defineSchema({
     boltzCacheDir: v.union(v.string(), v.null()),
     boltzUseMsaServer: v.boolean(),
     boltzWorker: v.number(),
+    // FlashBind config
+    flashbindRoot: v.string(),
+    flashbindProteinId: v.string(),
+    flashbindPdbDir: v.string(),
+    flashbindProteinRepr: v.string(),
+    flashbindLigandRepr: v.string(),
+    flashbindProtsJson: v.union(v.string(), v.null()),
+    flashbindFabindCheckpoint: v.string(),
+    flashbindBinaryCheckpoints: v.array(v.string()),
+    flashbindValueCheckpoints: v.array(v.string()),
+    flashbindFabindCondaEnv: v.string(),
+    flashbindFlashbindCondaEnv: v.string(),
+    flashbindFabindNumThreads: v.number(),
+    flashbindFabindBatchSize: v.number(),
+    flashbindFabindPostOptim: v.boolean(),
+    flashbindDevices: v.number(),
+    flashbindAccelerator: v.string(),
+    flashbindNumWorkers: v.number(),
+    flashbindDistanceThreshold: v.number(),
+    flashbindReprNJobs: v.number(),
+    flashbindAutoGenerateProteinRepr: v.boolean(),
+    flashbindAutoGenerateLigandRepr: v.boolean(),
+    flashbindRewardCachePath: v.union(v.string(), v.null()),
+    flashbindHfCache: v.union(v.string(), v.null()),
     // Metadata
     createdAt: v.number(),
     updatedAt: v.number(),
@@ -43,6 +68,7 @@ export default defineSchema({
   runs: defineTable({
     configId: v.id('configs'),
     name: v.string(),
+    engine: v.union(v.literal('boltz'), v.literal('flashbind')),
     status: v.union(
       v.literal('idle'),
       v.literal('running'),
@@ -85,8 +111,12 @@ export default defineSchema({
   // Generated molecules (synced from SQLite)
   molecules: defineTable({
     runId: v.id('runs'),
+    engine: v.union(v.literal('boltz'), v.literal('flashbind')),
     smiles: v.string(),
     reward: v.number(),
+    normalizedAffinity: v.union(v.number(), v.null()),
+    normalizedProbability: v.union(v.number(), v.null()),
+    normalizedScore: v.union(v.number(), v.null()),
     trajectory: v.string(), // JSON string
     // Boltz scores
     affinityEnsemble: v.union(v.number(), v.null()),

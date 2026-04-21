@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import type { MoleculeResult } from '@shared/types';
 import { Atom, Copy, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import DOMPurify from 'dompurify';
 
 declare global {
   interface Window {
@@ -37,7 +38,12 @@ export default function MoleculeCard({ molecule }: MoleculeCardProps) {
           const mol = RDKit.get_mol(molecule.smiles);
           if (mol) {
             const svg = mol.get_svg(300, 200);
-            setSvgContent(svg);
+            const sanitizedSvg = DOMPurify.sanitize(svg, {
+              USE_PROFILES: { svg: true, html: false, mathMl: false },
+              FORBID_TAGS: ['script'],
+              FORBID_ATTR: ['onclick', 'onload', 'onerror', 'onmouseover', 'onmouseout', 'onmousemove', 'onmousedown', 'onmouseup', 'onfocus', 'onblur', 'onchange', 'onsubmit', 'onkeydown', 'onkeyup', 'onkeypress'],
+            });
+            setSvgContent(sanitizedSvg);
             setError(null);
             mol.delete();
           } else {

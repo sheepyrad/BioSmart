@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, session } from 'electron';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs/promises';
@@ -8,8 +8,10 @@ import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
 import { ConvexHttpClient } from 'convex/browser';
 import { startRunnerServer } from './runner';
 import { api } from '../convex/_generated/api';
+import { OptConfigSchema } from '../shared/types';
 import type {
   OptConfig,
+  OptimizationEngine,
   RunInfo,
   GeneratedObject,
   BoltzScore,
@@ -17,6 +19,7 @@ import type {
   MoleculeResult,
   TrajectoryStep,
 } from '../shared/types';
+import { isPathContained, sanitizePath, validateFilePath } from './pathSecurity';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -32,10 +35,29 @@ let isQuitting = false;
 
 // Path to cgflow scripts
 const CGFLOW_ROOT = path.resolve(__dirname, '../../cgflow');
-const OPT_SCRIPT = path.join(CGFLOW_ROOT, 'scripts/opt/opt_boltz.py');
+const OPT_BOLTZ_SCRIPT = path.join(CGFLOW_ROOT, 'scripts/opt/opt_boltz.py');
+const OPT_FLASHBIND_SCRIPT = path.join(CGFLOW_ROOT, 'scripts/opt/opt_flashbind.py');
 const CONDA_ENV_NAME = process.env.CGFLOW_CONDA_ENV?.trim() || 'cgflow';
 const CONVEX_URL = process.env.VITE_CONVEX_URL ?? process.env.CONVEX_URL;
 const convexClient = CONVEX_URL ? new ConvexHttpClient(CONVEX_URL) : null;
+const GENERATED_CONFIG_DIR = path.join(CGFLOW_ROOT, 'configs', 'opt');
+const SQLITE_EXTENSIONS = new Set(['.db', '.sqlite', '.sqlite3']);
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "connect-src 'self' https://*.convex.cloud http://127.0.0.1:45731",
+  "font-src 'self'",
+].join('; ');
+
+function normalizeEngine(engine: unknown): OptimizationEngine {
+  return engine === 'flashbind' ? 'flashbind' : 'boltz';
+}
+
+function getOptScriptForEngine(engine: OptimizationEngine): string {
+  return engine === 'flashbind' ? OPT_FLASHBIND_SCRIPT : OPT_BOLTZ_SCRIPT;
+}
 
 function spawnCgflowPython(args: string[], options: SpawnOptions): ChildProcess {
   return spawn(
@@ -161,16 +183,74 @@ async function resolveConfigConvexPaths(config: OptConfig, destDir: string): Pro
   resolved.ref_ligand_path = await resolveOne(resolved.ref_ligand_path);
   resolved.pose_model = (await resolveOne(resolved.pose_model)) ?? resolved.pose_model;
   resolved.boltz.msa_path = await resolveOne(resolved.boltz.msa_path);
+
+  // Resolve FlashBind paths if present
+  if (resolved.flashbind) {
+    resolved.flashbind.prots_json = await resolveOne(resolved.flashbind.prots_json);
+  }
+
   return resolved;
 }
 
 function configHasConvexPaths(config: OptConfig): boolean {
-  return [
+  const paths = [
     config.protein_path,
     config.ref_ligand_path,
     config.pose_model,
     config.boltz.msa_path,
-  ].some((value) => isConvexPath(value ?? null));
+  ];
+
+  // Add FlashBind paths if present
+  if (config.flashbind) {
+    paths.push(config.flashbind.prots_json);
+  }
+
+  return paths.some((value) => isConvexPath(value ?? null));
+}
+
+function getAllowedConfigWriteDirs(): string[] {
+  return [
+    path.join(CGFLOW_ROOT, 'configs'),
+    GENERATED_CONFIG_DIR,
+    path.join(app.getPath('userData'), 'configs'),
+  ].map((baseDir) => sanitizePath(baseDir));
+}
+
+function resolveAndValidatePath(filePath: string, operation: 'read' | 'write'): string {
+  validateFilePath(filePath, operation);
+  return sanitizePath(filePath);
+}
+
+function resolveRunResultDir(runIdOrDir: string): string {
+  const run = activeRuns.get(runIdOrDir);
+  const candidate = run?.info.resultDir ?? runIdOrDir;
+  return resolveAndValidatePath(candidate, 'read');
+}
+
+function resolveAndValidateDbPath(dbPath: string): string {
+  const resolved = resolveAndValidatePath(dbPath, 'read');
+  const extension = path.extname(resolved).toLowerCase();
+  if (!SQLITE_EXTENSIONS.has(extension)) {
+    throw new Error(`Unsupported database file extension: ${extension || '(none)'}`);
+  }
+
+  const activeRunDirs = Array.from(activeRuns.values()).map(({ info }) => info.resultDir);
+  const allowedDbBaseDirs = [CGFLOW_ROOT, app.getPath('userData'), ...activeRunDirs];
+  if (!isPathContained(resolved, allowedDbBaseDirs)) {
+    throw new Error(`Database path is outside allowed directories: ${resolved}`);
+  }
+  return resolved;
+}
+
+function configureContentSecurityPolicy() {
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [CONTENT_SECURITY_POLICY],
+      },
+    });
+  });
 }
 
 // ============================================================================
@@ -189,6 +269,7 @@ function createWindow() {
       preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   });
 
@@ -212,6 +293,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  configureContentSecurityPolicy();
   await initSQL();
   const parsedRunnerPort = Number.parseInt(
     process.env.CGFLOW_RUNNER_PORT ?? process.env.VITE_RUNNER_PORT ?? '',
@@ -286,6 +368,25 @@ ipcMain.handle('file:select-pdb', async () => {
   return result.canceled ? null : result.filePaths[0] ?? null;
 });
 
+ipcMain.handle('file:select-ligand', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [
+      { name: 'Ligand Files', extensions: ['mol2', 'sdf', 'mol', 'pdb', 'cif', 'mmcif'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  });
+  return result.canceled ? null : result.filePaths[0] ?? null;
+});
+
+ipcMain.handle('file:select-json', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [{ name: 'JSON Files', extensions: ['json'] }],
+  });
+  return result.canceled ? null : result.filePaths[0] ?? null;
+});
+
 ipcMain.handle('file:select-msa', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openFile'],
@@ -313,17 +414,33 @@ ipcMain.handle('file:read-pdb', async (_event, filePath: string) => {
   if (isConvexPath(filePath)) {
     return await readConvexFileText(filePath);
   }
-  return fs.readFile(filePath, 'utf-8');
+  const safeFilePath = resolveAndValidatePath(filePath, 'read');
+  return fs.readFile(safeFilePath, 'utf-8');
+});
+
+ipcMain.handle('file:read-text', async (_event, filePath: string) => {
+  if (isConvexPath(filePath)) {
+    return await readConvexFileText(filePath);
+  }
+  const safeFilePath = resolveAndValidatePath(filePath, 'read');
+  return await fs.readFile(safeFilePath, 'utf-8');
 });
 
 ipcMain.handle('file:read-yaml', async (_event, filePath: string) => {
-  const content = await fs.readFile(filePath, 'utf-8');
+  const safeFilePath = resolveAndValidatePath(filePath, 'read');
+  const content = await fs.readFile(safeFilePath, 'utf-8');
   return YAML.parse(content) as OptConfig;
 });
 
 ipcMain.handle('file:write-yaml', async (_event, filePath: string, config: OptConfig) => {
+  const safeFilePath = resolveAndValidatePath(filePath, 'write');
+  const allowedConfigDirs = getAllowedConfigWriteDirs();
+  if (!isPathContained(safeFilePath, allowedConfigDirs)) {
+    throw new Error(`YAML writes are restricted to config directories: ${allowedConfigDirs.join(', ')}`);
+  }
   const content = YAML.stringify(config);
-  await fs.writeFile(filePath, content, 'utf-8');
+  await fs.mkdir(path.dirname(safeFilePath), { recursive: true });
+  await fs.writeFile(safeFilePath, content, 'utf-8');
 });
 
 ipcMain.handle('file:exists', async (_event, filePath: string) => {
@@ -338,7 +455,8 @@ ipcMain.handle('file:exists', async (_event, filePath: string) => {
     }
   }
   try {
-    await fs.access(filePath);
+    const safeFilePath = resolveAndValidatePath(filePath, 'read');
+    await fs.access(safeFilePath);
     return true;
   } catch {
     return false;
@@ -361,23 +479,46 @@ ipcMain.handle('run:start', async (_event, payload: { config: OptConfig; configP
   const runId = generateRunId();
   const resolvedInputsDir = path.join(app.getPath('userData'), 'inputs', runId);
   const hasConvexPaths = configHasConvexPaths(payload.config);
-  const config = hasConvexPaths
-    ? await resolveConfigConvexPaths(payload.config, resolvedInputsDir)
-    : payload.config;
-  let configPath = payload.configPath ?? null;
-  if (!configPath || hasConvexPaths) {
-    const path = `./configs/opt/generated_${Date.now()}.yaml`;
-    const content = YAML.stringify(config);
-    await fs.writeFile(path, content, 'utf-8');
-    configPath = path;
+  const parsedConfig = OptConfigSchema.safeParse(
+    hasConvexPaths ? await resolveConfigConvexPaths(payload.config, resolvedInputsDir) : payload.config
+  );
+  if (!parsedConfig.success) {
+    throw new Error(`Invalid optimization config: ${parsedConfig.error.message}`);
   }
+  const config = parsedConfig.data;
+  resolveAndValidatePath(config.result_dir, 'write');
+  resolveAndValidatePath(config.env_dir, 'write');
+
+  let configPath = payload.configPath ?? null;
+  if (configPath) {
+    if (isConvexPath(configPath)) {
+      throw new Error('Convex config paths are not supported for local process execution');
+    }
+    configPath = resolveAndValidatePath(configPath, 'read');
+  }
+
+  if (!configPath || hasConvexPaths) {
+    await fs.mkdir(GENERATED_CONFIG_DIR, { recursive: true });
+    const generatedConfigPath = path.join(GENERATED_CONFIG_DIR, `generated_${Date.now()}.yaml`);
+    const allowedConfigDirs = getAllowedConfigWriteDirs();
+    if (!isPathContained(generatedConfigPath, allowedConfigDirs)) {
+      throw new Error(`Generated config path is outside allowed config directories: ${generatedConfigPath}`);
+    }
+    const content = YAML.stringify(config);
+    await fs.writeFile(generatedConfigPath, content, 'utf-8');
+    configPath = generatedConfigPath;
+  }
+  if (!configPath) {
+    throw new Error('Failed to resolve config path');
+  }
+  const safeConfigPath = configPath;
   const timestamp = new Date().toISOString().replace(/[:.]/g, '').substring(0, 15);
   const resultDir = path.join(config.result_dir, timestamp);
 
   const runInfo: RunInfo = {
     id: runId,
     name: payload.name || `Run ${timestamp}`,
-    configPath,
+    configPath: safeConfigPath,
     resultDir,
     status: 'running',
     currentStep: 0,
@@ -386,11 +527,12 @@ ipcMain.handle('run:start', async (_event, payload: { config: OptConfig; configP
     lastUpdatedAt: new Date().toISOString(),
     checkpointPath: null,
     error: null,
+    engine: normalizeEngine(config.engine),
   };
 
   const args = [
-    OPT_SCRIPT,
-    '--config', configPath,
+    getOptScriptForEngine(runInfo.engine ?? 'boltz'),
+    '--config', safeConfigPath,
     '--result_dir', config.result_dir,
     '--env_dir', config.env_dir,
   ];
@@ -487,10 +629,20 @@ ipcMain.handle('run:resume', async (_event, runId: string, checkpointPath: strin
   }
 
   const { info } = run;
+  const safeConfigPath = resolveAndValidatePath(info.configPath, 'read');
+  const safeCheckpointPath = resolveAndValidatePath(checkpointPath, 'read');
+  const allowedCheckpointDirs = [info.resultDir];
+  if (info.checkpointPath) {
+    allowedCheckpointDirs.push(path.dirname(info.checkpointPath));
+  }
+  if (!isPathContained(safeCheckpointPath, allowedCheckpointDirs)) {
+    throw new Error('Checkpoint path is outside allowed checkpoint directories');
+  }
+
   const args = [
-    OPT_SCRIPT,
-    '--config', info.configPath,
-    '--resume_from', checkpointPath,
+    getOptScriptForEngine(normalizeEngine(info.engine)),
+    '--config', safeConfigPath,
+    '--resume_from', safeCheckpointPath,
   ];
 
   if (oracleIdx !== undefined) {
@@ -580,8 +732,7 @@ ipcMain.handle('run:delete', async (_event, runId: string) => {
 });
 
 ipcMain.handle('run:get-checkpoints', async (_event, runIdOrDir: string) => {
-  const run = activeRuns.get(runIdOrDir);
-  const resultDir = run?.info.resultDir ?? runIdOrDir;
+  const resultDir = resolveRunResultDir(runIdOrDir);
   try {
     const files = await fs.readdir(resultDir);
     return files
@@ -594,8 +745,7 @@ ipcMain.handle('run:get-checkpoints', async (_event, runIdOrDir: string) => {
 });
 
 ipcMain.handle('run:get-output', async (_event, runIdOrDir: string, tail = 200) => {
-  const run = activeRuns.get(runIdOrDir);
-  const resultDir = run?.info.resultDir ?? runIdOrDir;
+  const resultDir = resolveRunResultDir(runIdOrDir);
   const candidatePaths = [
     path.join(resultDir, 'train.log'),
     path.join(resultDir, 'run.log'),
@@ -619,7 +769,8 @@ ipcMain.handle('run:get-output', async (_event, runIdOrDir: string, tail = 200) 
 // ============================================================================
 
 ipcMain.handle('db:get-generated-objects', async (_event, dbPath: string, limit = 100, offset = 0) => {
-  const db = await openDatabase(dbPath);
+  const safeDbPath = resolveAndValidateDbPath(dbPath);
+  const db = await openDatabase(safeDbPath);
   try {
     const rows = queryAll<GeneratedObject>(
       db,
@@ -633,7 +784,8 @@ ipcMain.handle('db:get-generated-objects', async (_event, dbPath: string, limit 
 });
 
 ipcMain.handle('db:get-boltz-scores', async (_event, dbPath: string, limit = 100, offset = 0) => {
-  const db = await openDatabase(dbPath);
+  const safeDbPath = resolveAndValidateDbPath(dbPath);
+  const db = await openDatabase(safeDbPath);
   try {
     const rows = queryAll<BoltzScore>(
       db,
@@ -649,7 +801,8 @@ ipcMain.handle('db:get-boltz-scores', async (_event, dbPath: string, limit = 100
 });
 
 ipcMain.handle('db:get-reward-cache', async (_event, dbPath: string, limit = 100) => {
-  const db = await openDatabase(dbPath);
+  const safeDbPath = resolveAndValidateDbPath(dbPath);
+  const db = await openDatabase(safeDbPath);
   try {
     const rows = queryAll<RewardCacheEntry>(
       db,
@@ -663,16 +816,18 @@ ipcMain.handle('db:get-reward-cache', async (_event, dbPath: string, limit = 100
 });
 
 ipcMain.handle('db:get-top-molecules', async (_event, runIdOrDir: string, limit = 50) => {
-  const run = activeRuns.get(runIdOrDir);
-  const resultDir = run?.info.resultDir ?? runIdOrDir;
+  const resultDir = resolveRunResultDir(runIdOrDir);
   const rewardCachePath = path.join(resultDir, 'boltz_reward_cache.db');
   const trainDir = path.join(resultDir, 'train');
+  if (!isPathContained(rewardCachePath, [resultDir]) || !isPathContained(trainDir, [resultDir])) {
+    throw new Error('Derived database paths must remain within result directory');
+  }
 
   const results: MoleculeResult[] = [];
 
   // Get top molecules from reward cache
   try {
-    const rewardDb = await openDatabase(rewardCachePath);
+    const rewardDb = await openDatabase(resolveAndValidateDbPath(rewardCachePath));
     const topEntries = queryAll<RewardCacheEntry>(
       rewardDb,
       `SELECT smiles, reward, info FROM entries ORDER BY reward DESC LIMIT ?`,
@@ -685,7 +840,10 @@ ipcMain.handle('db:get-top-molecules', async (_event, runIdOrDir: string, limit 
     let trajMap = new Map<string, string>();
     
     try {
-      const genDb = await openDatabase(generatedDbPath);
+      if (!isPathContained(generatedDbPath, [resultDir])) {
+        throw new Error('Generated object DB path escaped result directory');
+      }
+      const genDb = await openDatabase(resolveAndValidateDbPath(generatedDbPath));
       const placeholders = topEntries.map(() => '?').join(',');
       const trajRows = queryAll<{ smi: string; traj: string }>(
         genDb,
@@ -703,7 +861,10 @@ ipcMain.handle('db:get-top-molecules', async (_event, runIdOrDir: string, limit 
     let boltzMap = new Map<string, BoltzScore>();
     
     try {
-      const boltzDb = await openDatabase(boltzDbPath);
+      if (!isPathContained(boltzDbPath, [resultDir])) {
+        throw new Error('Boltz score DB path escaped result directory');
+      }
+      const boltzDb = await openDatabase(resolveAndValidateDbPath(boltzDbPath));
       const placeholders = topEntries.map(() => '?').join(',');
       const boltzRows = queryAll<BoltzScore>(
         boltzDb,
@@ -748,7 +909,11 @@ ipcMain.handle('db:get-top-molecules', async (_event, runIdOrDir: string, limit 
 // ============================================================================
 
 ipcMain.handle('boltz:get-complex-path', async (_event, resultDir: string, oracleIdx: number, molIdx: number) => {
-  const basePath = path.join(resultDir, 'boltz_cofold', `oracle${oracleIdx}`, `mol_${molIdx}`, 'boltz_output');
+  const safeResultDir = resolveAndValidatePath(resultDir, 'read');
+  const basePath = path.join(safeResultDir, 'boltz_cofold', `oracle${oracleIdx}`, `mol_${molIdx}`, 'boltz_output');
+  if (!isPathContained(basePath, [safeResultDir])) {
+    throw new Error('Complex path escaped result directory');
+  }
   
   try {
     const files = await fs.readdir(basePath);
@@ -765,20 +930,28 @@ ipcMain.handle('boltz:get-complex-path', async (_event, resultDir: string, oracl
 });
 
 ipcMain.handle('boltz:read-complex', async (_event, complexPath: string) => {
-  return fs.readFile(complexPath, 'utf-8');
+  const safeComplexPath = resolveAndValidatePath(complexPath, 'read');
+  return fs.readFile(safeComplexPath, 'utf-8');
 });
 
 // Convenience: get complex content directly by runId or resultDir
 ipcMain.handle('boltz:get-complex', async (_event, runIdOrDir: string, oracleIdx: number, molIdx: number) => {
-  const run = activeRuns.get(runIdOrDir);
-  const resultDir = run?.info.resultDir ?? runIdOrDir;
+  const resultDir = resolveRunResultDir(runIdOrDir);
   const basePath = path.join(resultDir, 'boltz_cofold', `oracle${oracleIdx}`, `mol_${molIdx}`, 'boltz_output');
+  if (!isPathContained(basePath, [resultDir])) {
+    throw new Error('Complex path escaped result directory');
+  }
 
   try {
     const files = await fs.readdir(basePath);
     const structureFile = files.find((f) => f.endsWith('.cif') || f.endsWith('.pdb'));
     if (structureFile) {
-      return fs.readFile(path.join(basePath, structureFile), 'utf-8');
+      const structurePath = path.join(basePath, structureFile);
+      if (!isPathContained(structurePath, [resultDir])) {
+        throw new Error('Resolved complex file escaped result directory');
+      }
+      const safeStructurePath = resolveAndValidatePath(structurePath, 'read');
+      return fs.readFile(safeStructurePath, 'utf-8');
     }
   } catch {
     // Directory may not exist

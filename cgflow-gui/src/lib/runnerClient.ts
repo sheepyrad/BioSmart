@@ -1,4 +1,12 @@
-import type { BoltzMetricSeries, MoleculeResult, OptConfig, RunInfo } from '@shared/types';
+import { z } from 'zod';
+import {
+  MoleculeResultSchema,
+  RunInfoSchema,
+  type BoltzMetricSeries,
+  type MoleculeResult,
+  type OptConfig,
+  type RunInfo,
+} from '@shared/types';
 
 const DEFAULT_RUNNER_URL =
   import.meta.env.VITE_RUNNER_URL || 'http://127.0.0.1:45731';
@@ -18,6 +26,44 @@ type RunnerEventMap = {
   'run:checkpoint-saved': { runId: string; checkpointPath: string };
   'run:error': { runId: string; error: string };
 };
+
+const RunnerOutputEventSchema = z.object({
+  runId: z.string(),
+  output: z.string(),
+});
+const RunnerCheckpointSavedEventSchema = z.object({
+  runId: z.string(),
+  checkpointPath: z.string(),
+});
+const RunnerErrorEventSchema = z.object({
+  runId: z.string(),
+  error: z.string(),
+});
+const RunnerEventSchemaMap = {
+  'run:output': RunnerOutputEventSchema,
+  'run:status-changed': RunInfoSchema,
+  'run:checkpoint-saved': RunnerCheckpointSavedEventSchema,
+  'run:error': RunnerErrorEventSchema,
+} as const;
+
+const OutputResponseSchema = z.object({ lines: z.array(z.string()) });
+const BoltzMetricSeriesSchema = z.object({
+  pointCount: z.number(),
+  bestProb: z.array(z.number()),
+  top10AvgProb: z.array(z.number()),
+  top100AvgProb: z.array(z.number()),
+  thresholds: z.array(z.number()),
+  thresholdCounts: z.record(z.array(z.number())),
+});
+
+async function parseJsonResponse<T>(res: Response, schema: z.ZodSchema<T>, label: string): Promise<T> {
+  const json: unknown = await res.json();
+  const parsed = schema.safeParse(json);
+  if (!parsed.success) {
+    throw new Error(`Invalid ${label} response`);
+  }
+  return parsed.data;
+}
 
 class RunnerClient {
   private baseUrl: string;
@@ -48,14 +94,14 @@ class RunnerClient {
   async listRuns(): Promise<RunInfo[]> {
     const res = await fetch(`${this.baseUrl}/runs`);
     if (!res.ok) throw new Error('Failed to list runs');
-    return (await res.json()) as RunInfo[];
+    return await parseJsonResponse(res, z.array(RunInfoSchema), 'list runs');
   }
 
   async getRun(runId: string): Promise<RunInfo | null> {
     const res = await fetch(`${this.baseUrl}/runs/${encodeURIComponent(runId)}`);
     if (res.status === 404) return null;
     if (!res.ok) throw new Error('Failed to get run');
-    return (await res.json()) as RunInfo;
+    return await parseJsonResponse(res, RunInfoSchema, 'get run');
   }
 
   async startRun(payload: RunnerStartPayload): Promise<RunInfo> {
@@ -68,7 +114,7 @@ class RunnerClient {
       const text = await res.text();
       throw new Error(text || 'Failed to start run');
     }
-    return (await res.json()) as RunInfo;
+    return await parseJsonResponse(res, RunInfoSchema, 'start run');
   }
 
   async stopRun(runId: string): Promise<void> {
@@ -88,19 +134,19 @@ class RunnerClient {
       const text = await res.text();
       throw new Error(text || 'Failed to resume run');
     }
-    return (await res.json()) as RunInfo;
+    return await parseJsonResponse(res, RunInfoSchema, 'resume run');
   }
 
   async getCheckpoints(runId: string): Promise<string[]> {
     const res = await fetch(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/checkpoints`);
     if (!res.ok) throw new Error('Failed to get checkpoints');
-    return (await res.json()) as string[];
+    return await parseJsonResponse(res, z.array(z.string()), 'checkpoints');
   }
 
   async getOutput(runId: string, tail = 500): Promise<string[]> {
     const res = await fetch(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/output?tail=${tail}`);
     if (!res.ok) throw new Error('Failed to get output');
-    const data = (await res.json()) as { lines: string[] };
+    const data = await parseJsonResponse(res, OutputResponseSchema, 'output');
     return data.lines;
   }
 
@@ -117,7 +163,7 @@ class RunnerClient {
   async getTopMolecules(runId: string, limit = 50): Promise<MoleculeResult[]> {
     const res = await fetch(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/molecules?limit=${limit}`);
     if (!res.ok) throw new Error('Failed to get molecules');
-    return (await res.json()) as MoleculeResult[];
+    return await parseJsonResponse(res, z.array(MoleculeResultSchema), 'molecules');
   }
 
   async getComplex(runId: string, oracleIdx: number, molIdx: number): Promise<string | null> {
@@ -139,7 +185,7 @@ class RunnerClient {
       const text = await res.text();
       throw new Error(text || 'Failed to import run');
     }
-    return (await res.json()) as RunInfo;
+    return await parseJsonResponse(res, RunInfoSchema, 'import run');
   }
 
   async syncRunToCloud(runId: string): Promise<RunInfo> {
@@ -150,14 +196,14 @@ class RunnerClient {
       const text = await res.text();
       throw new Error(text || 'Failed to sync run to cloud');
     }
-    return (await res.json()) as RunInfo;
+    return await parseJsonResponse(res, RunInfoSchema, 'sync run');
   }
 
   async getBoltzMetrics(runId: string): Promise<BoltzMetricSeries | null> {
     const res = await fetch(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/boltz-metrics`);
     if (res.status === 404) return null;
     if (!res.ok) throw new Error('Failed to get boltz metrics');
-    return (await res.json()) as BoltzMetricSeries | null;
+    return await parseJsonResponse(res, BoltzMetricSeriesSchema, 'boltz metrics');
   }
 
   on<K extends RunnerEventName>(event: K, handler: (data: RunnerEventMap[K]) => void): () => void {
@@ -183,10 +229,15 @@ class RunnerClient {
 
     const forward = <K extends RunnerEventName>(event: K) => (e: MessageEvent) => {
       try {
-        const data = JSON.parse(e.data) as RunnerEventMap[K];
+        const parsedData: unknown = JSON.parse(e.data);
+        const parsedEvent = RunnerEventSchemaMap[event].safeParse(parsedData);
+        if (!parsedEvent.success) {
+          console.warn('Invalid runner event payload', event, parsedEvent.error.issues);
+          return;
+        }
         const handlers = this.listeners.get(event);
         if (handlers) {
-          for (const h of handlers) h(data as any);
+          for (const h of handlers) h(parsedEvent.data as RunnerEventMap[K]);
         }
       } catch (err) {
         console.warn('Failed to parse runner event', event, err);

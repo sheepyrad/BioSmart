@@ -48,6 +48,28 @@ export const webFallback: {
     return null;
   },
 
+  'file:select-ligand': async () => {
+    const file = await selectFile('.mol2,.sdf,.mol,.pdb,.cif,.mmcif');
+    if (file) {
+      const content = await readFileAsText(file);
+      const fakePath = `web://${file.name}`;
+      fileStore.set(fakePath, { file, content });
+      return fakePath;
+    }
+    return null;
+  },
+
+  'file:select-json': async () => {
+    const file = await selectFile('.json');
+    if (file) {
+      const content = await readFileAsText(file);
+      const fakePath = `web://${file.name}`;
+      fileStore.set(fakePath, { file, content });
+      return fakePath;
+    }
+    return null;
+  },
+
   'file:select-msa': async () => {
     const file = await selectFile('.a3m');
     if (file) {
@@ -77,6 +99,14 @@ export const webFallback: {
   },
 
   'file:read-pdb': async (path: string) => {
+    const stored = fileStore.get(path);
+    if (stored) {
+      return stored.content;
+    }
+    throw new Error(`File not found: ${path}`);
+  },
+
+  'file:read-text': async (path: string) => {
     const stored = fileStore.get(path);
     if (stored) {
       return stored.content;

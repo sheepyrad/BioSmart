@@ -9,6 +9,8 @@ import type { EChartsOption } from 'echarts';
 interface BoltzMetricsPanelProps {
   metrics: BoltzMetricSeries | null;
   isLoading?: boolean;
+  title?: string;
+  emptyMessage?: string;
 }
 
 const GRID_COLOR = 'rgba(255,255,255,0.06)';
@@ -73,7 +75,12 @@ function getMaxValue(values: number[]): number {
   return max;
 }
 
-export default function BoltzMetricsPanel({ metrics, isLoading = false }: BoltzMetricsPanelProps) {
+export default function BoltzMetricsPanel({
+  metrics,
+  isLoading = false,
+  title = 'Score Trends',
+  emptyMessage = 'No score metric data available yet.',
+}: BoltzMetricsPanelProps) {
   const [mode, setMode] = useState<'all' | '10k'>('all');
   const visibleCount = useMemo(() => {
     if (!metrics) return 0;
@@ -112,7 +119,7 @@ export default function BoltzMetricsPanel({ metrics, isLoading = false }: BoltzM
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <TrendingUp className="h-4 w-4 text-primary" />
-            <CardTitle className="font-display text-base">Boltz Score Trends</CardTitle>
+            <CardTitle className="font-display text-base">{title}</CardTitle>
           </div>
           <div className="flex gap-1">
             <Button
@@ -139,7 +146,7 @@ export default function BoltzMetricsPanel({ metrics, isLoading = false }: BoltzM
           <div className="h-44 w-full skeleton rounded" />
         ) : !metrics || metrics.pointCount === 0 || !mainSeries || !thresholdSeries ? (
           <p className="text-sm text-muted-foreground">
-            No Boltz metric data available yet.
+            {emptyMessage}
           </p>
         ) : (
           <>

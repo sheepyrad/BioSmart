@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, type PointerEvent as ReactPointerEvent } from 'react';
+import { z } from 'zod';
 import { useQuery } from 'convex/react';
 import { api } from '../../convex/_generated/api';
 import { useConvexRuns, useConvexAvailable } from '@/hooks/useConvex';
@@ -55,6 +56,7 @@ const SIDEBAR_MAX_WIDTH = 520;
 const SIDEBAR_DEFAULT_WIDTH = 256;
 const HIDDEN_RUN_IDS_KEY = 'cgflow.hiddenRunIds';
 const LOG_TAIL_LINES = 200;
+const HiddenRunIdsSchema = z.array(z.string());
 
 function getStatusIcon(status: string) {
   switch (status) {
@@ -123,6 +125,7 @@ interface ConvexRun {
   _id: string;
   configId: string;
   name: string;
+  engine: 'boltz' | 'flashbind';
   status: 'idle' | 'running' | 'paused' | 'completed' | 'error';
   currentStep: number;
   totalSteps: number;
@@ -159,8 +162,11 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     try {
       const raw = window.localStorage.getItem(HIDDEN_RUN_IDS_KEY);
       if (!raw) return new Set();
-      const parsed = JSON.parse(raw) as string[];
-      return new Set(Array.isArray(parsed) ? parsed : []);
+      const parsed = HiddenRunIdsSchema.safeParse(JSON.parse(raw));
+      if (!parsed.success) {
+        return new Set();
+      }
+      return new Set(parsed.data);
     } catch {
       return new Set();
     }
@@ -202,6 +208,16 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
         smiles: row.smiles,
         reward: row.reward,
         trajectory,
+        normalizedScores:
+          row.normalizedAffinity !== null ||
+          row.normalizedProbability !== null ||
+          row.normalizedScore !== null
+            ? {
+                affinity: row.normalizedAffinity ?? 0,
+                probability: row.normalizedProbability ?? 0,
+                score: row.normalizedScore ?? row.reward,
+              }
+            : undefined,
         boltzScores: hasScores
           ? {
               iteration: row.iteration ?? 0,
@@ -216,19 +232,20 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
             }
           : null,
         complexPath: null,
+        engine: row.engine ?? selectedRun?.engine ?? 'boltz',
         oracleIdx: row.oracleIdx ?? null,
         molIdx: row.molIdx ?? null,
       } as MoleculeResult;
     });
-  }, [convexMoleculeRows]);
+  }, [convexMoleculeRows, selectedRun?.engine]);
 
   const convexMetricInputRows = useMemo<BoltzMetricInputRow[]>(() => {
     if (!convexMetricRows) return [];
     return convexMetricRows.map((row: any) => ({
       iteration: row.iteration ?? 0,
       smiles: row.smiles,
-      affinityModel1: row.affinityModel1 ?? null,
-      probabilityModel1: row.probabilityModel1 ?? null,
+      affinityModel1: row.affinityModel1 ?? row.normalizedAffinity ?? null,
+      probabilityModel1: row.probabilityModel1 ?? row.normalizedProbability ?? null,
     }));
   }, [convexMetricRows]);
 
@@ -313,6 +330,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     lastUpdatedAt: run.lastUpdatedAt ? new Date(run.lastUpdatedAt).toISOString() : null,
     checkpointPath: run.checkpointPath,
     error: run.error,
+  engine: run.engine,
     source: 'convex',
   });
 
@@ -332,6 +350,8 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     ...localRuns,
     ...convexRunList.filter((run) => !localConvexIds.has(run.id)),
   ];
+  const selectedEngine = selectedRun?.engine ?? 'boltz';
+  const selectedEngineLabel = selectedEngine === 'flashbind' ? 'FlashBind' : 'Boltz';
 
   useEffect(() => {
     if (!selectedRun) return;
@@ -764,6 +784,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                   <h2 className="font-display text-xl font-semibold">{selectedRun.name}</h2>
                   <Badge variant={getStatusBadgeVariant(selectedRun.status)}>{selectedRun.status}</Badge>
                   <Badge variant="outline" className="font-data text-[9px]">{selectedRun.source}</Badge>
+                  <Badge variant="secondary" className="font-data text-[9px]">{selectedEngineLabel}</Badge>
                 </div>
                 <p className="mt-0.5 font-data text-xs text-muted-foreground tabular-nums">
                   Step {selectedRun.currentStep} of {selectedRun.totalSteps}
@@ -827,6 +848,8 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
             <BoltzMetricsPanel
               metrics={activeBoltzMetrics}
               isLoading={selectedRun.source === 'convex' ? convexMetricRows === undefined : isBoltzMetricsLoading}
+              title={`${selectedEngineLabel} Score Trends`}
+              emptyMessage={`No ${selectedEngineLabel} metric data available yet.`}
             />
 
             {/* Logs */}
@@ -870,7 +893,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                 {selectedMolecule?.boltzScores ? (
                   <Card className="border-border/60 bg-card/80">
                     <CardHeader className="pb-3">
-                      <CardTitle className="font-display text-base">Boltz-2 Scores</CardTitle>
+                      <CardTitle className="font-display text-base">{selectedEngineLabel} Scores</CardTitle>
                     </CardHeader>
                     <CardContent className="grid gap-3 md:grid-cols-3">
                       {[

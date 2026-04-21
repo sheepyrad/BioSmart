@@ -9,7 +9,14 @@ import { useIpcInvoke, useIpcEvent, useRunOutput } from '@/hooks/useIpc';
 import { useConvexConfigs } from '@/hooks/useConvexConfigs';
 import MolstarViewer from '@/components/MolstarViewer';
 import FileSelector from '@/components/FileSelector';
-import type { OptConfig, RunInfo, BoltzConfig } from '@shared/types';
+import type {
+  OptConfig,
+  RunInfo,
+  BoltzConfig,
+  FlashBindConfig,
+  OptimizationEngine,
+} from '@shared/types';
+import { OptConfigSchema } from '@shared/types';
 import { convexConfigToOpt, optConfigToConvex } from '@/lib/configMapping';
 import YAML from 'yaml';
 import {
@@ -45,7 +52,34 @@ const defaultBoltzConfig: BoltzConfig = {
   worker: 1,
 };
 
+const defaultFlashBindConfig: FlashBindConfig = {
+  root: './src/FlashBind',
+  protein_id: '',
+  pdb_dir: '',
+  protein_repr: '',
+  ligand_repr: '',
+  prots_json: null,
+  fabind_checkpoint: '',
+  binary_checkpoints: [],
+  value_checkpoints: [],
+  fabind_conda_env: 'fabind',
+  flashbind_conda_env: 'flashaffinity',
+  fabind_num_threads: 8,
+  fabind_batch_size: 4,
+  fabind_post_optim: true,
+  devices: 1,
+  accelerator: 'gpu',
+  num_workers: 16,
+  distance_threshold: 20,
+  repr_n_jobs: -1,
+  auto_generate_protein_repr: true,
+  auto_generate_ligand_repr: true,
+  reward_cache_path: null,
+  hf_cache: null,
+};
+
 const defaultConfig: OptConfig = {
+  engine: 'boltz',
   result_dir: './result/opt/unidock_boltz/custom',
   env_dir: './data/envs/enamine_stock_new',
   max_atoms: 60,
@@ -65,12 +99,65 @@ const defaultConfig: OptConfig = {
   replay_warmup_step: 10,
   replay_capacity: 6400,
   boltz: defaultBoltzConfig,
+  flashbind: defaultFlashBindConfig,
 };
 
 const normalizeBoltzWorker = (value: unknown): number => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return 1;
   return Math.max(1, Math.floor(parsed));
+};
+
+const normalizeEngine = (value: unknown): OptimizationEngine => {
+  return value === 'flashbind' ? 'flashbind' : 'boltz';
+};
+
+const normalizeFlashbindConfig = (value: unknown): FlashBindConfig => {
+  const incoming = (value as Partial<FlashBindConfig> | null) ?? {};
+  return {
+    ...defaultFlashBindConfig,
+    ...incoming,
+    binary_checkpoints: Array.isArray(incoming.binary_checkpoints)
+      ? incoming.binary_checkpoints.filter((v): v is string => typeof v === 'string')
+      : defaultFlashBindConfig.binary_checkpoints,
+    value_checkpoints: Array.isArray(incoming.value_checkpoints)
+      ? incoming.value_checkpoints.filter((v): v is string => typeof v === 'string')
+      : defaultFlashBindConfig.value_checkpoints,
+  };
+};
+
+const getPathFilename = (input: string | null | undefined): string => {
+  if (!input) return '';
+  if (input.startsWith('convex://')) {
+    const parts = input.split('::');
+    return parts[1] ?? '';
+  }
+  // Normalize backslashes to forward slashes for cross-platform compatibility
+  const normalized = input.replace(/\\/g, '/');
+  return normalized.split('/').pop() ?? '';
+};
+
+const getFilenameStem = (filename: string): string => {
+  const idx = filename.lastIndexOf('.');
+  if (idx <= 0) return filename;
+  return filename.slice(0, idx);
+};
+
+const isFlashbindSafeFilename = (filename: string): boolean => /^[A-Za-z0-9.-]+$/.test(filename);
+const TARGET_RESIDUE_PATTERN = /^[A-Z]:\d+$/;
+
+const hasUnsafeRelativePath = (value: string): boolean => value.includes('..');
+
+const parseBoundedIntegerInput = (
+  rawValue: string,
+  currentValue: number,
+  min: number,
+  max: number
+): number => {
+  if (rawValue.trim() === '') return currentValue;
+  const parsed = Number.parseInt(rawValue, 10);
+  if (!Number.isFinite(parsed)) return currentValue;
+  return Math.max(min, Math.min(max, parsed));
 };
 
 const AMINO_ACID_3_TO_1: Record<string, string> = {
@@ -146,11 +233,15 @@ export default function ConfigBuilder({
   const [savedConfigId, setSavedConfigId] = useState<string | null>(null);
   const [pdbContent, setPdbContent] = useState<string | null>(null);
   const [loadedPdbPath, setLoadedPdbPath] = useState<string | null>(null);
+  const [ligandContent, setLigandContent] = useState<string | null>(null);
+  const [loadedLigandPath, setLoadedLigandPath] = useState<string | null>(null);
   const [selectedResidues, setSelectedResidues] = useState<string[]>([]);
   const [newResidue, setNewResidue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [leftPanelWidth, setLeftPanelWidth] = useState(50);
+  const isFlashBindEngine = config.engine === 'flashbind';
 
   useEffect(() => {
     onConfigChange(config);
@@ -185,6 +276,7 @@ export default function ConfigBuilder({
   );
 
   useEffect(() => {
+    if (isFlashBindEngine) return;
     setConfig((prev) => ({
       ...prev,
       boltz: {
@@ -192,7 +284,13 @@ export default function ConfigBuilder({
         target_residues: selectedResidues,
       },
     }));
-  }, [selectedResidues]);
+  }, [isFlashBindEngine, selectedResidues]);
+
+  useEffect(() => {
+    if (!isFlashBindEngine) return;
+    if (selectedResidues.length === 0) return;
+    setSelectedResidues([]);
+  }, [isFlashBindEngine, selectedResidues.length]);
 
   useEffect(() => {
     let cancelled = false;
@@ -223,6 +321,35 @@ export default function ConfigBuilder({
     };
   }, [config.protein_path, pdbContent, loadedPdbPath, invoke]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const maybeLoadLigandContent = async () => {
+      if (!config.ref_ligand_path) {
+        if (!cancelled) {
+          setLigandContent(null);
+          setLoadedLigandPath(null);
+        }
+        return;
+      }
+      if (ligandContent && loadedLigandPath === config.ref_ligand_path) return;
+      try {
+        const content = await invoke('file:read-text', config.ref_ligand_path);
+        if (!cancelled) {
+          setLigandContent(content);
+          setLoadedLigandPath(config.ref_ligand_path);
+        }
+      } catch {
+        // Ligand path may be unavailable in current environment
+      }
+    };
+
+    void maybeLoadLigandContent();
+    return () => {
+      cancelled = true;
+    };
+  }, [config.ref_ligand_path, ligandContent, loadedLigandPath, invoke]);
+
   const generatedBoltzYamlResult = useMemo(() => {
     if (!pdbContent) {
       return { yaml: '', error: null as string | null };
@@ -252,6 +379,7 @@ export default function ConfigBuilder({
         const loadedConfig = await invoke('file:read-yaml', path);
         const normalizedConfig: OptConfig = {
           ...loadedConfig,
+          engine: normalizeEngine((loadedConfig as Partial<OptConfig>).engine),
           boltz: {
             ...loadedConfig.boltz,
             worker: normalizeBoltzWorker(
@@ -259,10 +387,13 @@ export default function ConfigBuilder({
                 (loadedConfig.boltz as unknown as { worker?: unknown; boltz_worker?: unknown })?.boltz_worker
             ),
           },
+          flashbind: normalizeFlashbindConfig((loadedConfig as Partial<OptConfig>).flashbind),
         };
         setConfig(normalizedConfig);
         setConfigPath(path);
-        setSelectedResidues(normalizedConfig.boltz.target_residues);
+        setSelectedResidues(
+          normalizedConfig.engine === 'boltz' ? normalizedConfig.boltz.target_residues : []
+        );
         setSavedConfigId(null);
       }
     } finally {
@@ -289,9 +420,33 @@ export default function ConfigBuilder({
     return await invoke('file:select-msa');
   }, [invoke]);
 
+  const handleSelectProtsJson = useCallback(async (): Promise<string | null> => {
+    return await invoke('file:select-json');
+  }, [invoke]);
+
+  const handleSelectLigand = useCallback(async (): Promise<string | null> => {
+    setIsLoading(true);
+    try {
+      const path = await invoke('file:select-ligand');
+      if (path) {
+        const content = await invoke('file:read-text', path);
+        setLigandContent(content);
+        setLoadedLigandPath(path);
+      }
+      return path;
+    } finally {
+      setIsLoading(false);
+    }
+  }, [invoke]);
+
   const handleSelectResultDir = useCallback(async () => {
     const path = await invoke('file:select-directory');
     if (path) {
+      if (hasUnsafeRelativePath(path)) {
+        setStartError('Result directory cannot contain ".." path traversal sequences.');
+        return;
+      }
+      setStartError(null);
       setConfig((prev) => ({ ...prev, result_dir: path }));
     }
   }, [invoke]);
@@ -299,6 +454,11 @@ export default function ConfigBuilder({
   const handleSelectEnvDir = useCallback(async () => {
     const path = await invoke('file:select-directory');
     if (path) {
+      if (hasUnsafeRelativePath(path)) {
+        setStartError('Environment directory cannot contain ".." path traversal sequences.');
+        return;
+      }
+      setStartError(null);
       setConfig((prev) => ({ ...prev, env_dir: path }));
     }
   }, [invoke]);
@@ -308,8 +468,15 @@ export default function ConfigBuilder({
   }, []);
 
   const handleAddResidue = useCallback(() => {
-    if (newResidue && !selectedResidues.includes(newResidue)) {
-      setSelectedResidues((prev) => [...prev, newResidue]);
+    const normalized = newResidue.trim().toUpperCase();
+    if (!normalized) return;
+    if (!TARGET_RESIDUE_PATTERN.test(normalized)) {
+      setStartError('Residue must match CHAIN:RESID (for example A:123).');
+      return;
+    }
+    setStartError(null);
+    if (!selectedResidues.includes(normalized)) {
+      setSelectedResidues((prev) => [...prev, normalized]);
       setNewResidue('');
     }
   }, [newResidue, selectedResidues]);
@@ -347,6 +514,7 @@ export default function ConfigBuilder({
       const loaded = convexConfigToOpt(convexConfig);
       const normalizedLoaded: OptConfig = {
         ...loaded,
+        engine: normalizeEngine((loaded as Partial<OptConfig>).engine),
         boltz: {
           ...loaded.boltz,
           worker: normalizeBoltzWorker(
@@ -354,12 +522,15 @@ export default function ConfigBuilder({
               (loaded.boltz as unknown as { worker?: unknown; boltz_worker?: unknown })?.boltz_worker
           ),
         },
+        flashbind: normalizeFlashbindConfig((loaded as Partial<OptConfig>).flashbind),
       };
       setConfig(normalizedLoaded);
       setConfigName(convexConfig.name);
       setSavedConfigId(convexConfig._id);
       setConfigPath(null);
-      setSelectedResidues(normalizedLoaded.boltz.target_residues);
+      setSelectedResidues(
+        normalizedLoaded.engine === 'boltz' ? normalizedLoaded.boltz.target_residues : []
+      );
     },
     []
   );
@@ -372,17 +543,77 @@ export default function ConfigBuilder({
   }, [configs, handleLoadConvexConfig]);
 
   const handleStartRun = useCallback(async () => {
+    if (isFlashBindEngine) {
+      const proteinId = config.flashbind?.protein_id?.trim() ?? '';
+      if (!proteinId) {
+        setStartError('FlashBind requires `protein_id`.');
+        return;
+      }
+      const protsJsonPath = config.flashbind?.prots_json;
+      if (!protsJsonPath) {
+        setStartError('FlashBind requires `prots_json`.');
+        return;
+      }
+
+      const proteinFilename = getPathFilename(config.protein_path);
+      const protsJsonFilename = getPathFilename(protsJsonPath);
+      const filenamesToCheck = [
+        { label: 'protein file', value: proteinFilename },
+        { label: 'prots_json file', value: protsJsonFilename },
+      ];
+      for (const item of filenamesToCheck) {
+        if (!item.value) {
+          setStartError(`FlashBind requires a valid ${item.label} name.`);
+          return;
+        }
+        if (!isFlashbindSafeFilename(item.value) || item.value.includes('_')) {
+          setStartError(
+            `FlashBind ${item.label} "${item.value}" is invalid. Use only letters/numbers/dot/hyphen; no spaces, symbols, or underscores (_).`
+          );
+          return;
+        }
+      }
+
+      const proteinStem = getFilenameStem(proteinFilename);
+      if (proteinStem !== proteinId) {
+        setStartError(
+          `FlashBind requires protein_id (${proteinId}) to match protein filename stem (${proteinStem}).`
+        );
+        return;
+      }
+    }
+
+    const trimmedConfigName = configName.trim();
+    if (trimmedConfigName.length > 255) {
+      setStartError('Configuration name must be 255 characters or fewer.');
+      return;
+    }
+    if (hasUnsafeRelativePath(config.result_dir) || hasUnsafeRelativePath(config.env_dir)) {
+      setStartError('Directory paths cannot contain ".." path traversal sequences.');
+      return;
+    }
+
+    const parsedConfig = OptConfigSchema.safeParse(config);
+    if (!parsedConfig.success) {
+      setValidationErrors(
+        parsedConfig.error.issues.map((issue) => `${issue.path.join('.') || 'config'}: ${issue.message}`)
+      );
+      setStartError('Configuration validation failed. Fix the errors below.');
+      return;
+    }
+
     setIsLoading(true);
     setStartError(null);
+    setValidationErrors([]);
     try {
       if (savedConfigId && isConvexAvailable) {
         await updateConfig(savedConfigId as any, { lastUsedAt: Date.now() });
       }
       const runInfo = await invoke('run:start', {
-        config,
+        config: parsedConfig.data,
         configPath,
         configId: savedConfigId,
-        name: configName.trim() || undefined,
+        name: trimmedConfigName || undefined,
       });
       onRunStarted(runInfo);
     } catch (error) {
@@ -391,7 +622,17 @@ export default function ConfigBuilder({
     } finally {
       setIsLoading(false);
     }
-  }, [invoke, config, configPath, onRunStarted, savedConfigId, isConvexAvailable, updateConfig, configName]);
+  }, [
+    config,
+    configName,
+    configPath,
+    invoke,
+    isConvexAvailable,
+    isFlashBindEngine,
+    onRunStarted,
+    savedConfigId,
+    updateConfig,
+  ]);
 
   const handleStopRun = useCallback(async () => {
     if (activeRun) {
@@ -424,9 +665,51 @@ export default function ConfigBuilder({
                 Run Configuration
               </h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                Prepare and launch molecular optimization jobs with Boltz-2.
+                Prepare and launch molecular optimization jobs with {isFlashBindEngine ? 'FlashBind' : 'Boltz-2'}.
               </p>
             </div>
+
+            <Card className="border-border/60 bg-card/80">
+              <CardHeader className="pb-3">
+                <CardTitle className="font-display text-base">Optimization Engine</CardTitle>
+                <CardDescription>Choose the scoring backend for this run.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    variant={config.engine === 'boltz' ? 'default' : 'outline'}
+                    onClick={() =>
+                      setConfig((prev) => ({
+                        ...prev,
+                        engine: 'boltz',
+                        boltz: {
+                          ...prev.boltz,
+                          target_residues:
+                            selectedResidues.length > 0
+                              ? selectedResidues
+                              : prev.boltz.target_residues,
+                        },
+                      }))
+                    }
+                  >
+                    Boltz
+                  </Button>
+                  <Button
+                    variant={config.engine === 'flashbind' ? 'default' : 'outline'}
+                    onClick={() =>
+                      setConfig((prev) => ({
+                        ...prev,
+                        engine: 'flashbind',
+                        flashbind: prev.flashbind ?? defaultFlashBindConfig,
+                        boltz: { ...prev.boltz, target_residues: [] },
+                      }))
+                    }
+                  >
+                    FlashBind
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
 
             {/* Config management */}
             <Card className="border-border/60 bg-card/80">
@@ -461,7 +744,8 @@ export default function ConfigBuilder({
                   <Input
                     id="config-name"
                     value={configName}
-                    onChange={(e) => setConfigName(e.target.value)}
+                    maxLength={255}
+                    onChange={(e) => setConfigName(e.target.value.slice(0, 255))}
                     placeholder="Name this configuration"
                   />
                 </div>
@@ -532,7 +816,9 @@ export default function ConfigBuilder({
                   <SectionIcon icon={Microscope} />
                   <div>
                     <CardTitle className="font-display text-base">Input Files</CardTitle>
-                    <CardDescription>Structure and optional MSA for Boltz input generation.</CardDescription>
+                    <CardDescription>
+                      Protein and reference ligand inputs for {isFlashBindEngine ? 'FlashBind' : 'Boltz'}.
+                    </CardDescription>
                   </div>
                 </div>
               </CardHeader>
@@ -550,118 +836,209 @@ export default function ConfigBuilder({
                   onReadLocalContent={async (path) => await invoke('file:read-pdb', path)}
                 />
 
-                <div className="space-y-2">
-                  <Label className="text-xs font-medium text-muted-foreground">Boltz YAML preview</Label>
-                  <div className="rounded-md border border-border bg-secondary/20 p-3">
-                    {generatedBoltzYamlResult.error ? (
-                      <p className="text-sm text-destructive">{generatedBoltzYamlResult.error}</p>
-                    ) : generatedBoltzYamlResult.yaml ? (
-                      <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all font-data text-[11px] leading-5 text-foreground/80">
-                        {generatedBoltzYamlResult.yaml}
-                      </pre>
-                    ) : (
-                      <p className="text-sm text-muted-foreground">
-                        Choose a protein PDB to preview.
-                      </p>
-                    )}
-                  </div>
-                </div>
-
                 <FileSelector
-                  label="MSA file"
-                  value={config.boltz.msa_path ?? ''}
+                  label="Reference ligand"
+                  value={config.ref_ligand_path ?? ''}
                   onChange={(path) =>
                     setConfig((prev) => ({
                       ...prev,
-                      boltz: { ...prev.boltz, msa_path: path || null },
+                      ref_ligand_path: path || null,
                     }))
                   }
-                  fieldType="msa"
-                  fileType="msa"
-                  accept=".a3m"
-                  placeholder="Select MSA file"
+                  onContentLoaded={(content) => setLigandContent(content)}
+                  fieldType="other"
+                  fileType="other"
+                  accept=".mol2,.sdf,.mol,.pdb,.cif,.mmcif"
+                  placeholder="Select reference ligand file"
                   optional
-                  onSelectLocal={handleSelectMsa}
+                  onSelectLocal={handleSelectLigand}
+                  onReadLocalContent={async (path) => await invoke('file:read-text', path)}
                 />
 
-                <div className="space-y-2">
-                  <Label htmlFor="boltz-workers" className="text-xs font-medium text-muted-foreground">Boltz workers</Label>
-                  <Input
-                    id="boltz-workers"
-                    type="number"
-                    min={1}
-                    value={config.boltz.worker}
-                    onChange={(e) =>
+                {isFlashBindEngine ? (
+                  <div className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-amber-200">
+                      FlashBind Naming Constraint
+                    </p>
+                    <p className="text-xs text-amber-100/90">
+                      Protein and prots_json filenames must not contain spaces, special symbols, or underscores (`_`).
+                      Also ensure `protein_id` exactly matches the protein filename stem.
+                    </p>
+                  </div>
+                ) : null}
+
+                {isFlashBindEngine ? (
+                  <div className="space-y-2">
+                    <Label htmlFor="flashbind-protein-id" className="text-xs font-medium text-muted-foreground">
+                      FlashBind protein_id
+                    </Label>
+                    <Input
+                      id="flashbind-protein-id"
+                      value={config.flashbind?.protein_id ?? ''}
+                      onChange={(e) =>
+                        setConfig((prev) => ({
+                          ...prev,
+                          flashbind: {
+                            ...(prev.flashbind ?? defaultFlashBindConfig),
+                            protein_id: e.target.value.trim(),
+                          },
+                        }))
+                      }
+                      placeholder="Must match protein filename stem (e.g. NS5)"
+                      className="font-data"
+                    />
+                  </div>
+                ) : null}
+
+                {isFlashBindEngine ? (
+                  <FileSelector
+                    label="FlashBind prots_json"
+                    value={config.flashbind?.prots_json ?? ''}
+                    onChange={(path) =>
                       setConfig((prev) => ({
                         ...prev,
-                        boltz: {
-                          ...prev.boltz,
-                          worker: normalizeBoltzWorker(e.target.value),
+                        flashbind: {
+                          ...(prev.flashbind ?? defaultFlashBindConfig),
+                          prots_json: path || null,
                         },
                       }))
                     }
-                    className="font-data tabular-nums"
+                    fieldType="other"
+                    fileType="other"
+                    accept=".json"
+                    placeholder="Select FlashBind prots.json"
+                    onSelectLocal={handleSelectProtsJson}
+                    onReadLocalContent={async (path) => await invoke('file:read-text', path)}
+                    optional={false}
                   />
-                </div>
+                ) : null}
+
+                {!isFlashBindEngine ? (
+                  <div className="space-y-2">
+                    <Label className="text-xs font-medium text-muted-foreground">Boltz YAML preview</Label>
+                    <div className="rounded-md border border-border bg-secondary/20 p-3">
+                      {generatedBoltzYamlResult.error ? (
+                        <p className="text-sm text-destructive">{generatedBoltzYamlResult.error}</p>
+                      ) : generatedBoltzYamlResult.yaml ? (
+                        <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all font-data text-[11px] leading-5 text-foreground/80">
+                          {generatedBoltzYamlResult.yaml}
+                        </pre>
+                      ) : (
+                        <p className="text-sm text-muted-foreground">
+                          Choose a protein PDB to preview.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ) : null}
+
+                {!isFlashBindEngine ? (
+                  <FileSelector
+                    label="MSA file"
+                    value={config.boltz.msa_path ?? ''}
+                    onChange={(path) =>
+                      setConfig((prev) => ({
+                        ...prev,
+                        boltz: { ...prev.boltz, msa_path: path || null },
+                      }))
+                    }
+                    fieldType="msa"
+                    fileType="msa"
+                    accept=".a3m"
+                    placeholder="Select MSA file"
+                    optional
+                    onSelectLocal={handleSelectMsa}
+                  />
+                ) : null}
+
+                {!isFlashBindEngine ? (
+                  <div className="space-y-2">
+                    <Label htmlFor="boltz-workers" className="text-xs font-medium text-muted-foreground">Boltz workers</Label>
+                    <Input
+                      id="boltz-workers"
+                      type="number"
+                      min={1}
+                      max={1024}
+                      value={config.boltz.worker}
+                      onChange={(e) =>
+                        setConfig((prev) => ({
+                          ...prev,
+                          boltz: {
+                            ...prev.boltz,
+                            worker: parseBoundedIntegerInput(
+                              e.target.value,
+                              normalizeBoltzWorker(prev.boltz.worker),
+                              1,
+                              1024
+                            ),
+                          },
+                        }))
+                      }
+                      className="font-data tabular-nums"
+                    />
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
 
             {/* Target residues */}
-            <Card className="border-border/60 bg-card/80">
-              <CardHeader className="pb-4">
-                <div className="flex items-center gap-3">
-                  <SectionIcon icon={Dna} />
-                  <div>
-                    <CardTitle className="font-display text-base">Target Residues</CardTitle>
-                    <CardDescription>Pick residues in the viewer or enter as CHAIN:RESID.</CardDescription>
+            {!isFlashBindEngine ? (
+              <Card className="border-border/60 bg-card/80">
+                <CardHeader className="pb-4">
+                  <div className="flex items-center gap-3">
+                    <SectionIcon icon={Dna} />
+                    <div>
+                      <CardTitle className="font-display text-base">Target Residues</CardTitle>
+                      <CardDescription>Pick residues in the viewer or enter as CHAIN:RESID.</CardDescription>
+                    </div>
                   </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground">Selected</span>
-                  <Badge variant="outline" className="font-data text-[10px]">{selectedResidues.length}</Badge>
-                </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground">Selected</span>
+                    <Badge variant="outline" className="font-data text-[10px]">{selectedResidues.length}</Badge>
+                  </div>
 
-                {selectedResidues.length > 0 ? (
-                  <div className="flex flex-wrap gap-1.5">
-                    {selectedResidues.map((residue) => (
-                      <Badge key={residue} variant="secondary" className="gap-1 pr-1 font-data text-[11px]">
-                        {residue}
-                        <button
-                          onClick={() => handleRemoveResidue(residue)}
-                          className="rounded-sm p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      </Badge>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="rounded-md border border-dashed border-border bg-secondary/20 px-3 py-4 text-center text-sm text-muted-foreground">
-                    No residues selected yet.
-                  </div>
-                )}
-
-                <div className="flex gap-2">
-                  <Input
-                    value={newResidue}
-                    onChange={(e) => setNewResidue(e.target.value)}
-                    placeholder="A:123"
-                    className="font-data"
-                    onKeyDown={(e) => e.key === 'Enter' && handleAddResidue()}
-                  />
-                  <Button variant="outline" size="icon" onClick={handleAddResidue}>
-                    <Plus className="h-4 w-4" />
-                  </Button>
                   {selectedResidues.length > 0 ? (
-                    <Button variant="ghost" size="sm" onClick={() => setSelectedResidues([])}>
-                      Clear
+                    <div className="flex flex-wrap gap-1.5">
+                      {selectedResidues.map((residue) => (
+                        <Badge key={residue} variant="secondary" className="gap-1 pr-1 font-data text-[11px]">
+                          {residue}
+                          <button
+                            onClick={() => handleRemoveResidue(residue)}
+                            className="rounded-sm p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-md border border-dashed border-border bg-secondary/20 px-3 py-4 text-center text-sm text-muted-foreground">
+                      No residues selected yet.
+                    </div>
+                  )}
+
+                  <div className="flex gap-2">
+                    <Input
+                      value={newResidue}
+                      onChange={(e) => setNewResidue(e.target.value.toUpperCase())}
+                      placeholder="A:123"
+                      className="font-data"
+                      onKeyDown={(e) => e.key === 'Enter' && handleAddResidue()}
+                    />
+                    <Button variant="outline" size="icon" onClick={handleAddResidue}>
+                      <Plus className="h-4 w-4" />
                     </Button>
-                  ) : null}
-                </div>
-              </CardContent>
-            </Card>
+                    {selectedResidues.length > 0 ? (
+                      <Button variant="ghost" size="sm" onClick={() => setSelectedResidues([])}>
+                        Clear
+                      </Button>
+                    ) : null}
+                  </div>
+                </CardContent>
+              </Card>
+            ) : null}
 
             {/* Directories */}
             <Card className="border-border/60 bg-card/80">
@@ -681,7 +1058,15 @@ export default function ConfigBuilder({
                     <Input
                       id="result-dir"
                       value={config.result_dir}
-                      onChange={(e) => setConfig((prev) => ({ ...prev, result_dir: e.target.value }))}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        if (hasUnsafeRelativePath(next)) {
+                          setStartError('Result directory cannot contain ".." path traversal sequences.');
+                          return;
+                        }
+                        setStartError(null);
+                        setConfig((prev) => ({ ...prev, result_dir: next }));
+                      }}
                       className="font-data text-xs"
                     />
                     <Button variant="outline" size="icon" onClick={handleSelectResultDir}>
@@ -696,7 +1081,15 @@ export default function ConfigBuilder({
                     <Input
                       id="env-dir"
                       value={config.env_dir}
-                      onChange={(e) => setConfig((prev) => ({ ...prev, env_dir: e.target.value }))}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        if (hasUnsafeRelativePath(next)) {
+                          setStartError('Environment directory cannot contain ".." path traversal sequences.');
+                          return;
+                        }
+                        setStartError(null);
+                        setConfig((prev) => ({ ...prev, env_dir: next }));
+                      }}
                       className="font-data text-xs"
                     />
                     <Button variant="outline" size="icon" onClick={handleSelectEnvDir}>
@@ -724,9 +1117,14 @@ export default function ConfigBuilder({
                   <Input
                     id="num-steps"
                     type="number"
+                    min={1}
+                    max={100000}
                     value={config.num_steps}
                     onChange={(e) =>
-                      setConfig((prev) => ({ ...prev, num_steps: parseInt(e.target.value) || 0 }))
+                      setConfig((prev) => ({
+                        ...prev,
+                        num_steps: parseBoundedIntegerInput(e.target.value, prev.num_steps, 1, 100000),
+                      }))
                     }
                     className="font-data tabular-nums"
                   />
@@ -737,11 +1135,18 @@ export default function ConfigBuilder({
                   <Input
                     id="samples-per-step"
                     type="number"
+                    min={1}
+                    max={100000}
                     value={config.num_sampling_per_step}
                     onChange={(e) =>
                       setConfig((prev) => ({
                         ...prev,
-                        num_sampling_per_step: parseInt(e.target.value) || 0,
+                        num_sampling_per_step: parseBoundedIntegerInput(
+                          e.target.value,
+                          prev.num_sampling_per_step,
+                          1,
+                          100000
+                        ),
                       }))
                     }
                     className="font-data tabular-nums"
@@ -753,9 +1158,14 @@ export default function ConfigBuilder({
                   <Input
                     id="max-atoms"
                     type="number"
+                    min={1}
+                    max={100000}
                     value={config.max_atoms}
                     onChange={(e) =>
-                      setConfig((prev) => ({ ...prev, max_atoms: parseInt(e.target.value) || 0 }))
+                      setConfig((prev) => ({
+                        ...prev,
+                        max_atoms: parseBoundedIntegerInput(e.target.value, prev.max_atoms, 1, 100000),
+                      }))
                     }
                     className="font-data tabular-nums"
                   />
@@ -766,9 +1176,14 @@ export default function ConfigBuilder({
                   <Input
                     id="seed"
                     type="number"
+                    min={0}
+                    max={2147483647}
                     value={config.seed}
                     onChange={(e) =>
-                      setConfig((prev) => ({ ...prev, seed: parseInt(e.target.value) || 0 }))
+                      setConfig((prev) => ({
+                        ...prev,
+                        seed: parseBoundedIntegerInput(e.target.value, prev.seed, 0, 2147483647),
+                      }))
                     }
                     className="font-data tabular-nums"
                   />
@@ -859,6 +1274,11 @@ export default function ConfigBuilder({
                     {startError}
                   </div>
                 ) : null}
+                {validationErrors.length > 0 ? (
+                  <div className="rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                    {validationErrors.join(' | ')}
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
           </div>
@@ -900,14 +1320,23 @@ export default function ConfigBuilder({
             <div>
               <h2 className="font-display text-lg font-semibold">Protein Structure</h2>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                Click residues in the viewer to update the target list.
+                {isFlashBindEngine
+                  ? 'Preview uploaded protein and reference ligand for FlashBind.'
+                  : 'Click residues in the viewer to update the target list.'}
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <Badge variant="outline" className="font-data text-[10px]">{selectedResidues.length} residues</Badge>
+              {!isFlashBindEngine ? (
+                <Badge variant="outline" className="font-data text-[10px]">{selectedResidues.length} residues</Badge>
+              ) : null}
               {config.protein_path ? (
                 <Badge variant="secondary" className="max-w-[280px] truncate font-data text-[10px]">
                   {config.protein_path.split('/').pop()}
+                </Badge>
+              ) : null}
+              {config.ref_ligand_path ? (
+                <Badge variant="secondary" className="max-w-[240px] truncate font-data text-[10px]">
+                  Ligand: {config.ref_ligand_path.split('/').pop()}
                 </Badge>
               ) : null}
             </div>
@@ -917,9 +1346,11 @@ export default function ConfigBuilder({
         <div className="flex-1 bg-background">
           <MolstarViewer
             pdbContent={pdbContent}
-            selectedResidues={selectedResidues}
-            onResidueSelect={handleResidueSelect}
-            multiSelectMode={true}
+            ligandContent={ligandContent}
+            ligandLabel={config.ref_ligand_path}
+            selectedResidues={isFlashBindEngine ? [] : selectedResidues}
+            onResidueSelect={isFlashBindEngine ? () => {} : handleResidueSelect}
+            multiSelectMode={!isFlashBindEngine}
           />
         </div>
       </div>
