@@ -41,7 +41,7 @@ export default function MoleculeCard({ molecule }: MoleculeCardProps) {
             const sanitizedSvg = DOMPurify.sanitize(svg, {
               USE_PROFILES: { svg: true, html: false, mathMl: false },
               FORBID_TAGS: ['script'],
-              FORBID_ATTR: [/^on/i],
+              FORBID_ATTR: ['onclick', 'onload', 'onerror', 'onmouseover', 'onmouseout', 'onmousemove', 'onmousedown', 'onmouseup', 'onfocus', 'onblur', 'onchange', 'onsubmit', 'onkeydown', 'onkeyup', 'onkeypress'],
             });
             setSvgContent(sanitizedSvg);
             setError(null);

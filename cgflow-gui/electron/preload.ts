@@ -34,6 +34,7 @@ const ALLOWED_CHANNELS = [
   // Boltz complex files
   'boltz:get-complex-path',
   'boltz:get-complex',
+  'boltz:read-complex',
   // Events (main -> renderer)
   'run:output',
   'run:status-changed',

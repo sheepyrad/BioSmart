@@ -132,7 +132,9 @@ const getPathFilename = (input: string | null | undefined): string => {
     const parts = input.split('::');
     return parts[1] ?? '';
   }
-  return input.split('/').pop() ?? '';
+  // Normalize backslashes to forward slashes for cross-platform compatibility
+  const normalized = input.replace(/\\/g, '/');
+  return normalized.split('/').pop() ?? '';
 };
 
 const getFilenameStem = (filename: string): string => {

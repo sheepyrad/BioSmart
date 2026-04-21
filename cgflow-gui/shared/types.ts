@@ -79,8 +79,7 @@ export const FlashBindConfigSchema = z.object({
   hf_cache: nullableSafePathSchema,
 });
 
-export const OptConfigSchema = z.object({
-  engine: OptimizationEngineSchema.optional().default('boltz'),
+const BaseOptConfigSchema = z.object({
   result_dir: safePathSchema,
   env_dir: safePathSchema,
   max_atoms: z.number().int().min(1).max(100_000),
@@ -99,9 +98,24 @@ export const OptConfigSchema = z.object({
   random_action_prob: z.number().min(0).max(1),
   replay_warmup_step: z.number().int().min(0).max(100_000),
   replay_capacity: z.number().int().min(1).max(1_000_000),
+});
+
+const BoltzOptConfigSchema = BaseOptConfigSchema.extend({
+  engine: z.literal('boltz').optional().default('boltz'),
   boltz: BoltzConfigSchema,
   flashbind: FlashBindConfigSchema.optional(),
 });
+
+const FlashBindOptConfigSchema = BaseOptConfigSchema.extend({
+  engine: z.literal('flashbind'),
+  boltz: BoltzConfigSchema,
+  flashbind: FlashBindConfigSchema,
+});
+
+export const OptConfigSchema = z.discriminatedUnion('engine', [
+  BoltzOptConfigSchema,
+  FlashBindOptConfigSchema,
+]);
 
 export type OptimizationEngine = z.infer<typeof OptimizationEngineSchema>;
 export type BoltzConfig = z.infer<typeof BoltzConfigSchema>;
@@ -295,6 +309,8 @@ export interface IpcChannels {
 
   // Boltz complex files
   'boltz:get-complex': (runId: string, oracleIdx: number, molIdx: number) => Promise<string | null>;
+  'boltz:get-complex-path': (runId: string, oracleIdx: number, molIdx: number) => Promise<string | null>;
+  'boltz:read-complex': (complexPath: string) => Promise<string>;
 }
 
 // Type-safe IPC invoke helper type

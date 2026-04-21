@@ -59,6 +59,7 @@ export const upsert = mutation({
     if (existing) {
       // Update existing
       await ctx.db.patch(existing._id, {
+        engine: args.engine,
         reward: args.reward,
         normalizedAffinity: args.normalizedAffinity,
         normalizedProbability: args.normalizedProbability,
@@ -124,6 +125,7 @@ export const batchUpsert = mutation({
 
       if (existing) {
         await ctx.db.patch(existing._id, {
+          engine: mol.engine,
           reward: mol.reward,
           normalizedAffinity: mol.normalizedAffinity,
           normalizedProbability: mol.normalizedProbability,

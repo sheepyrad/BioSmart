@@ -173,8 +173,8 @@ export default function MolstarViewer({
     if (ext === 'pdb') return 'pdb';
     if (ext === 'cif' || ext === 'mmcif') return 'mmcif';
     if (content.includes('@<TRIPOS>MOLECULE')) return 'mol2';
-    if (content.includes('M  END')) return 'mol';
     if (content.includes('$$$$')) return 'sdf';
+    if (content.includes('M  END')) return 'mol';
     return 'pdb';
   }
 
@@ -182,9 +182,13 @@ export default function MolstarViewer({
   useEffect(() => {
     if (molstarDisabledByEnv || !pluginRef.current || !pdbContent || !isInitialized) return;
 
+    // Capture ligand content and label together to avoid race conditions
+    const capturedLigandContent = ligandContent;
+    const capturedLigandLabel = ligandLabel;
+
     const loadStructure = async () => {
       const plugin = pluginRef.current!;
-      
+
       try {
         // Clear existing structures
         await plugin.clear();
@@ -200,13 +204,13 @@ export default function MolstarViewer({
         const proteinTrajectory = await plugin.builders.structure.parseTrajectory(proteinData, format as any);
         await plugin.builders.structure.hierarchy.applyPreset(proteinTrajectory, 'default');
 
-        if (ligandContent) {
+        if (capturedLigandContent) {
           try {
             const ligandData = await plugin.builders.data.rawData({
-              data: ligandContent,
-              label: ligandLabel ?? 'reference-ligand',
+              data: capturedLigandContent,
+              label: capturedLigandLabel ?? 'reference-ligand',
             });
-            const ligandFormat = inferLigandFormat(ligandContent, ligandLabel);
+            const ligandFormat = inferLigandFormat(capturedLigandContent, capturedLigandLabel);
             const ligandTrajectory = await plugin.builders.structure.parseTrajectory(ligandData, ligandFormat as any);
             await plugin.builders.structure.hierarchy.applyPreset(ligandTrajectory, 'default');
           } catch (ligandError) {

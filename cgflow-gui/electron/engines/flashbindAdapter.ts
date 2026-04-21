@@ -36,10 +36,10 @@ function toBoltzScoreLike(params: {
   affinity2?: number | null;
   probability2?: number | null;
 }): BoltzScore | null {
-  const affinity = params.affinity ?? 0;
-  const probability = params.probability ?? 0;
-  const affinity2 = params.affinity2 ?? 0;
-  const probability2 = params.probability2 ?? 0;
+  const affinity = params.affinity ?? null;
+  const probability = params.probability ?? null;
+  const affinity2 = params.affinity2 ?? null;
+  const probability2 = params.probability2 ?? null;
   const hasAnyScore =
     params.affinity != null ||
     params.probability != null ||
@@ -241,9 +241,9 @@ export async function getFlashbindTopMolecules(
       trajectory: [],
       boltzScores: boltzLikeScore,
       normalizedScores: {
-        affinity: affinity ?? 0,
-        probability: binary ?? 0,
-        score: mappedReward ?? 0,
+        affinity: affinity ?? null,
+        probability: binary ?? null,
+        score: mappedReward ?? null,
       },
       complexPath: null,
       engine: 'flashbind' as const,

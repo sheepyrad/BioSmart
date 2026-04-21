@@ -183,16 +183,29 @@ async function resolveConfigConvexPaths(config: OptConfig, destDir: string): Pro
   resolved.ref_ligand_path = await resolveOne(resolved.ref_ligand_path);
   resolved.pose_model = (await resolveOne(resolved.pose_model)) ?? resolved.pose_model;
   resolved.boltz.msa_path = await resolveOne(resolved.boltz.msa_path);
+
+  // Resolve FlashBind paths if present
+  if (resolved.flashbind) {
+    resolved.flashbind.prots_json = await resolveOne(resolved.flashbind.prots_json);
+  }
+
   return resolved;
 }
 
 function configHasConvexPaths(config: OptConfig): boolean {
-  return [
+  const paths = [
     config.protein_path,
     config.ref_ligand_path,
     config.pose_model,
     config.boltz.msa_path,
-  ].some((value) => isConvexPath(value ?? null));
+  ];
+
+  // Add FlashBind paths if present
+  if (config.flashbind) {
+    paths.push(config.flashbind.prots_json);
+  }
+
+  return paths.some((value) => isConvexPath(value ?? null));
 }
 
 function getAllowedConfigWriteDirs(): string[] {
