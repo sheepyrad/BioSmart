@@ -49,7 +49,6 @@ interface RunnerOptions {
 
 interface RunRecord extends RunInfo {
   pid: number | null;
-  configId?: string | null;
   convexRunId?: string | null;
   source?: 'local';
   logPath?: string | null;
@@ -58,38 +57,8 @@ interface RunRecord extends RunInfo {
 interface RunnerStartPayload {
   config?: OptConfig;
   configPath?: string | null;
-  configId?: string | null;
   name?: string | null;
 }
-
-type ConvexConfigCreateInput = {
-  name: string;
-  resultDir: string;
-  envDir: string;
-  maxAtoms: number;
-  subsamplingRatio: number;
-  proteinPath: string;
-  center: number[] | null;
-  refLigandPath: string | null;
-  size: number[];
-  numSteps: number;
-  numSamplingPerStep: number;
-  temperatureMin: number;
-  temperatureMax: number;
-  seed: number;
-  poseModel: string;
-  poseSteps: number;
-  samplingTau: number;
-  randomActionProb: number;
-  replayWarmupStep: number;
-  replayCapacity: number;
-  boltzBaseYaml: string;
-  boltzTargetResidues: string[];
-  boltzMsaPath: string | null;
-  boltzCacheDir: string | null;
-  boltzUseMsaServer: boolean;
-  boltzWorker: number;
-};
 
 interface RunnerState {
   runs: Map<string, RunRecord>;
@@ -646,7 +615,7 @@ async function getLatestCheckpoint(resultDir: string): Promise<string | null> {
   }
 }
 
-async function loadMoleculesFromArtifacts(resultDir: string, limit: number): Promise<MoleculeResult[]> {
+async function loadMoleculesFromArtifacts(resultDir: string, limit?: number): Promise<MoleculeResult[]> {
   const boltzRoot = path.join(resultDir, 'boltz_cofold');
   const oracleDirs = await listSubdirectories(boltzRoot);
   if (oracleDirs.length === 0) return [];
@@ -740,7 +709,8 @@ async function loadMoleculesFromArtifacts(resultDir: string, limit: number): Pro
   }
 
   parsedRows.sort((a, b) => b.reward - a.reward);
-  return parsedRows.slice(0, limit).map((row) => ({
+  const limitedRows = typeof limit === 'number' ? parsedRows.slice(0, limit) : parsedRows;
+  return limitedRows.map((row) => ({
     smiles: row.smiles,
     reward: row.reward,
     trajectory: [],
@@ -841,68 +811,6 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     resolved.boltz.msa_path = await resolveFile(resolved.boltz.msa_path);
 
     return resolved;
-  }
-
-  function convexConfigToOpt(config: any): OptConfig {
-    return {
-      result_dir: config.resultDir,
-      env_dir: config.envDir,
-      max_atoms: config.maxAtoms,
-      subsampling_ratio: config.subsamplingRatio,
-      protein_path: config.proteinPath,
-      center: config.center ?? null,
-      ref_ligand_path: config.refLigandPath ?? null,
-      size: config.size as [number, number, number],
-      num_steps: config.numSteps,
-      num_sampling_per_step: config.numSamplingPerStep,
-      temperature: [config.temperatureMin, config.temperatureMax],
-      seed: config.seed,
-      pose_model: config.poseModel,
-      pose_steps: config.poseSteps,
-      sampling_tau: config.samplingTau,
-      random_action_prob: config.randomActionProb,
-      replay_warmup_step: config.replayWarmupStep,
-      replay_capacity: config.replayCapacity,
-      boltz: {
-        base_yaml: config.boltzBaseYaml,
-        target_residues: config.boltzTargetResidues ?? [],
-        msa_path: config.boltzMsaPath ?? null,
-        cache_dir: config.boltzCacheDir ?? null,
-        use_msa_server: config.boltzUseMsaServer ?? false,
-        worker: Math.max(1, Math.floor(config.boltzWorker ?? 1)),
-      },
-    };
-  }
-
-  function optConfigToConvexCreateInput(config: OptConfig, name: string): ConvexConfigCreateInput {
-    return {
-      name,
-      resultDir: config.result_dir,
-      envDir: config.env_dir,
-      maxAtoms: config.max_atoms,
-      subsamplingRatio: config.subsampling_ratio,
-      proteinPath: config.protein_path,
-      center: config.center ? [...config.center] : null,
-      refLigandPath: config.ref_ligand_path,
-      size: [...config.size],
-      numSteps: config.num_steps,
-      numSamplingPerStep: config.num_sampling_per_step,
-      temperatureMin: config.temperature[0],
-      temperatureMax: config.temperature[1],
-      seed: config.seed,
-      poseModel: config.pose_model,
-      poseSteps: config.pose_steps,
-      samplingTau: config.sampling_tau,
-      randomActionProb: config.random_action_prob,
-      replayWarmupStep: config.replay_warmup_step,
-      replayCapacity: config.replay_capacity,
-      boltzBaseYaml: config.boltz.base_yaml,
-      boltzTargetResidues: config.boltz.target_residues,
-      boltzMsaPath: config.boltz.msa_path,
-      boltzCacheDir: config.boltz.cache_dir,
-      boltzUseMsaServer: config.boltz.use_msa_server,
-      boltzWorker: Math.max(1, Math.floor(config.boltz.worker ?? 1)),
-    };
   }
 
   async function detectResultDir(baseDir: string, startedAt: number): Promise<string | null> {
@@ -1040,18 +948,6 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     let config = payload.config;
     let configName = payload.name;
     if (!config) {
-      if (!payload.configId || !convexClient) {
-        throw new Error('Missing config payload and Convex is not available.');
-      }
-      const convexConfig = await convexClient.query(api.configs.get, { id: payload.configId as any });
-      if (!convexConfig) {
-        throw new Error('Config not found in Convex.');
-      }
-      config = convexConfigToOpt(convexConfig);
-      configName = configName || convexConfig.name;
-    }
-
-    if (!config) {
       throw new Error('Config payload is required.');
     }
 
@@ -1094,7 +990,6 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       checkpointPath: null,
       error: null,
       pid: null,
-      configId: payload.configId ?? null,
       convexRunId: null,
       source: 'local',
       logPath,
@@ -1104,10 +999,9 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     state.outputs.set(runId, []);
     await persistRuns();
 
-    // Create Convex run if configured and configId provided
-    if (payload.configId && convexUrl) {
+    // Create Convex run if configured.
+    if (convexUrl) {
       const convexRunId = await convexSync.createRun(
-        payload.configId,
         runInfo.name,
         runInfo.resultDir,
         runInfo.totalSteps
@@ -1433,7 +1327,6 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       checkpointPath,
       error: null,
       pid: null,
-      configId: null,
       convexRunId: null,
       source: 'local',
       logPath: path.join(resultDir, 'train.log'),
@@ -1442,15 +1335,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     // Best-effort cloud sync for imported runs when Convex is configured.
     if (convexClient && convexUrl) {
       try {
-        const configForCloud = importedConfig ?? defaultImportedConfig(resultDir);
-        const convexConfigId = await convexClient.mutation(
-          api.configs.create,
-          optConfigToConvexCreateInput(configForCloud, `${run.name} (imported)`) as any
-        );
-        run.configId = convexConfigId as any;
-
         const convexRunId = await convexSync.createRun(
-          convexConfigId as any,
           run.name,
           run.resultDir,
           run.totalSteps
@@ -1513,27 +1398,8 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       throw new Error('Convex is not configured. Set VITE_CONVEX_URL/CONVEX_URL to enable cloud sync.');
     }
 
-    if (!run.configId) {
-      let configForCloud: OptConfig | null = null;
-      if (run.configPath && run.configPath.endsWith('.yaml')) {
-        try {
-          const configRaw = await fs.readFile(run.configPath, 'utf-8');
-          configForCloud = normalizeImportedConfig(YAML.parse(configRaw), run.resultDir);
-        } catch {
-          configForCloud = null;
-        }
-      }
-      const fallbackConfig = configForCloud ?? defaultImportedConfig(run.resultDir);
-      const convexConfigId = await convexClient.mutation(
-        api.configs.create,
-        optConfigToConvexCreateInput(fallbackConfig, `${run.name} (synced)`) as any
-      );
-      run.configId = convexConfigId as any;
-    }
-
     if (!run.convexRunId) {
       const convexRunId = await convexSync.createRun(
-        run.configId!,
         run.name,
         run.resultDir,
         run.totalSteps
@@ -1579,7 +1445,9 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     const dbFiles = files.filter((f) => f.startsWith('generated_objs_') && f.endsWith('.db'));
     if (dbFiles.length === 0) return trajMap;
 
-    const placeholders = smiles.map(() => '?').join(',');
+    const smileSet = new Set(smiles);
+    const shouldQueryAll = smiles.length > 900;
+    const placeholders = shouldQueryAll ? '' : smiles.map(() => '?').join(',');
 
     for (const dbFile of dbFiles) {
       const dbPath = path.join(trainDir, dbFile);
@@ -1587,11 +1455,14 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
         const genDb = await openDatabase(dbPath);
         const trajRows = queryAll<{ smi: string; traj: string }>(
           genDb,
-          `SELECT smi, traj FROM results WHERE smi IN (${placeholders})`,
-          smiles
+          shouldQueryAll
+            ? 'SELECT smi, traj FROM results'
+            : `SELECT smi, traj FROM results WHERE smi IN (${placeholders})`,
+          shouldQueryAll ? [] : smiles
         );
         genDb.close();
         for (const row of trajRows) {
+          if (!smileSet.has(row.smi)) continue;
           if (!row.traj) continue;
           const existing = trajMap.get(row.smi);
           if (!existing) {
@@ -1616,7 +1487,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     return trajMap;
   }
 
-  async function getTopMolecules(runId: string, limit = 50): Promise<MoleculeResult[]> {
+  async function getTopMolecules(runId: string, limit?: number): Promise<MoleculeResult[]> {
     const run = state.runs.get(runId);
     if (!run) return [];
 
@@ -1629,8 +1500,10 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       const rewardDb = await openDatabase(rewardCachePath);
       const topEntries = queryAll<RewardCacheEntry>(
         rewardDb,
-        `SELECT smiles, reward, info FROM entries ORDER BY reward DESC LIMIT ?`,
-        [limit]
+        typeof limit === 'number'
+          ? 'SELECT smiles, reward, info FROM entries ORDER BY reward DESC LIMIT ?'
+          : 'SELECT smiles, reward, info FROM entries ORDER BY reward DESC',
+        typeof limit === 'number' ? [limit] : []
       );
       rewardDb.close();
 
@@ -1650,14 +1523,23 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
 
       try {
         const boltzDb = await openDatabase(boltzDbPath);
-        const placeholders = topEntries.map(() => '?').join(',');
+        const shouldQueryAllBoltz = topEntries.length > 900;
+        const topSmiles = topEntries.map((e) => e.smiles);
+        const topSmileSet = new Set(topSmiles);
+        const placeholders = shouldQueryAllBoltz ? '' : topEntries.map(() => '?').join(',');
         const boltzRows = queryAll<BoltzScore>(
           boltzDb,
-          `SELECT * FROM results WHERE smiles IN (${placeholders})`,
-          topEntries.map((e) => e.smiles)
+          shouldQueryAllBoltz
+            ? 'SELECT * FROM results'
+            : `SELECT * FROM results WHERE smiles IN (${placeholders})`,
+          shouldQueryAllBoltz ? [] : topSmiles
         );
         boltzDb.close();
-        boltzMap = new Map(boltzRows.map((r) => [r.smiles, r]));
+        boltzMap = new Map(
+          boltzRows
+            .filter((row) => topSmileSet.has(row.smiles))
+            .map((r) => [r.smiles, r])
+        );
       } catch {
         // Boltz scores DB may not exist yet
       }
@@ -1715,7 +1597,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       const shouldUseArtifactCache = run.status !== 'running';
       let artifactMap = shouldUseArtifactCache ? artifactMapCache.get(run.resultDir) : undefined;
       if (!artifactMap) {
-        const artifactRows = await loadMoleculesFromArtifacts(run.resultDir, Number.MAX_SAFE_INTEGER);
+        const artifactRows = await loadMoleculesFromArtifacts(run.resultDir);
         artifactMap = new Map(artifactRows.map((row) => [row.smiles, row]));
         if (shouldUseArtifactCache) {
           artifactMapCache.set(run.resultDir, artifactMap);
@@ -2010,7 +1892,9 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       }
 
       if (req.method === 'GET' && pathParts[2] === 'molecules') {
-        const limit = Number(url.searchParams.get('limit') ?? '50');
+        const rawLimit = url.searchParams.get('limit');
+        const parsedLimit = rawLimit ? Number(rawLimit) : undefined;
+        const limit = Number.isFinite(parsedLimit) && parsedLimit! > 0 ? parsedLimit : undefined;
         const molecules = await getTopMolecules(runId, limit);
         sendJson(200, molecules);
         return;

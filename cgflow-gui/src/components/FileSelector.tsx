@@ -37,6 +37,7 @@ interface FileSelectorProps {
   // For local file selection (IPC or web)
   onSelectLocal: () => Promise<string | null>;
   onReadLocalContent?: (path: string) => Promise<string>;
+  prepareFileForUpload?: (file: File) => Promise<{ file: File; content: string }>;
 }
 
 export default function FileSelector({
@@ -51,6 +52,7 @@ export default function FileSelector({
   optional = false,
   onSelectLocal,
   onReadLocalContent,
+  prepareFileForUpload,
 }: FileSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -93,20 +95,28 @@ export default function FileSelector({
   // Handle selecting a previously uploaded file
   const handleSelectUploadedFile = useCallback(async (file: UploadedFile) => {
     setIsOpen(false);
-    
-    // Use the file URL as the path (will be recognized as a Convex file)
-    if (file.url) {
-      onChange(`convex://${file._id}::${file.name}`);
-      
-      // Load content if callback provided
-      if (onContentLoaded) {
-        const content = await getFileContent(file);
-        if (content) {
-          onContentLoaded(content);
+
+    if (!file.url) return;
+
+    const content = await getFileContent(file);
+    if (!content) return;
+
+    if (prepareFileForUpload) {
+      const prepared = await prepareFileForUpload(new File([content], file.name, { type: 'chemical/x-pdb' }));
+      if (prepared.file !== undefined && prepared.file.name !== file.name) {
+        const uploaded = await uploadFile(prepared.file, fieldType, fileType);
+        if (uploaded) {
+          onChange(`convex://${uploaded._id}::${prepared.file.name}`);
+          onContentLoaded?.(prepared.content);
+          return;
         }
       }
     }
-  }, [onChange, onContentLoaded, getFileContent]);
+
+    // Use the file URL as the path (will be recognized as a Convex file)
+    onChange(`convex://${file._id}::${file.name}`);
+    onContentLoaded?.(content);
+  }, [fieldType, fileType, getFileContent, onChange, onContentLoaded, prepareFileForUpload, uploadFile]);
 
   // Handle selecting a local file
   const handleSelectLocal = useCallback(async () => {
@@ -132,15 +142,17 @@ export default function FileSelector({
 
     setIsUploading(true);
     try {
-      const uploaded = await uploadFile(file, fieldType, fileType);
+      const prepared = prepareFileForUpload
+        ? await prepareFileForUpload(file)
+        : { file, content: await file.text() };
+      const uploaded = await uploadFile(prepared.file, fieldType, fileType);
       if (uploaded) {
         // The file list will auto-update, select it
-        onChange(`convex://${uploaded._id}::${file.name}`);
+        onChange(`convex://${uploaded._id}::${prepared.file.name}`);
         
         // Load content if callback provided
         if (onContentLoaded) {
-          const content = await file.text();
-          onContentLoaded(content);
+          onContentLoaded(prepared.content);
         }
       }
     } catch (error) {
@@ -153,7 +165,7 @@ export default function FileSelector({
         fileInputRef.current.value = '';
       }
     }
-  }, [uploadFile, fieldType, fileType, onChange, onContentLoaded]);
+  }, [uploadFile, fieldType, fileType, onChange, onContentLoaded, prepareFileForUpload]);
 
   // Handle deleting an uploaded file
   const handleDelete = useCallback(async (e: React.MouseEvent, fileId: UploadedFile['_id']) => {
@@ -171,7 +183,7 @@ export default function FileSelector({
   const isConvexFile = value.startsWith('convex://');
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-1">
       <Label className="text-xs font-medium text-muted-foreground">
         {label}
         {optional && <span className="ml-1 text-muted-foreground/60">(optional)</span>}
@@ -184,7 +196,7 @@ export default function FileSelector({
               value={displayValue}
               onChange={(e) => onChange(e.target.value)}
               placeholder={placeholder}
-              className="pr-8"
+              className="h-8 pr-8"
             />
             {isConvexFile && (
               <Cloud className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -198,7 +210,7 @@ export default function FileSelector({
             variant="outline"
             size="icon"
             onClick={() => setIsOpen(!isOpen)}
-            className="shrink-0"
+            className="h-8 w-8 shrink-0"
           >
             {isUploading ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -211,7 +223,7 @@ export default function FileSelector({
             variant="outline"
             size="icon"
             onClick={handleSelectLocal}
-            className="shrink-0"
+            className="h-8 w-8 shrink-0"
             title="Select from local filesystem"
           >
             <FileUp className="h-4 w-4" />
@@ -321,7 +333,7 @@ export default function FileSelector({
         <div className="flex items-center gap-2">
           <Badge 
             variant="secondary" 
-            className="text-xs"
+            className="text-[10px]"
           >
             {isConvexFile ? (
               <>

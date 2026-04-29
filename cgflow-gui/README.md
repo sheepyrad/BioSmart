@@ -15,7 +15,7 @@ CGFlow GUI is split across four layers:
 1. **React Renderer (`src/`)** for config editing, dashboards, Mol* views, and molecule cards.
 2. **Runner Service (`electron/runner.ts`)** that starts/stops/resumes CGFlow Python jobs and serves run data over HTTP/SSE.
 3. **Electron Main (`electron/main.ts`)** for desktop shell, IPC, tray integration, and bootstrapping.
-4. **Convex Backend (`convex/`)** for optional cloud persistence of configs, runs, files, and molecules.
+4. **Convex Backend (`convex/`)** for optional cloud persistence of runs, files, molecules, and annotations.
 
 ## Key Features
 
@@ -24,7 +24,7 @@ CGFlow GUI is split across four layers:
 - **Run Lifecycle Management**: Start, stop (pause), resume, and checkpoint-aware workflows.
 - **Results Dashboard**: Inspect run progress, top molecules, Boltz scores, and trajectory pathways.
 - **Protein-Ligand Complex Viewer**: Load predicted complex structures for selected molecules.
-- **Cloud Sync (Optional)**: Persist configs/files/runs/molecules with Convex.
+- **Cloud Sync (Optional)**: Persist files/runs/molecules with Convex.
 
 ## Prerequisites
 
@@ -125,12 +125,11 @@ cgflow-gui/
 │   ├── pages/           # ConfigBuilder + Dashboard
 │   ├── components/      # MolstarViewer, FileSelector, MoleculeCard, etc.
 │   ├── hooks/           # IPC, Convex, uploads, run state helpers
-│   └── lib/             # Runner client, config mapping, utilities
+│   └── lib/             # Runner client, utilities
 ├── shared/
 │   └── types.ts         # Shared zod schemas/types for app layers
 └── convex/
     ├── schema.ts        # Convex schema
-    ├── configs.ts       # Config CRUD
     ├── runs.ts          # Run records/status
     ├── molecules.ts     # Molecule upserts/queries
     ├── files.ts         # File storage metadata + upload URLs

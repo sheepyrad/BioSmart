@@ -6,7 +6,6 @@ const DEFAULT_RUNNER_URL =
 type RunnerStartPayload = {
   config: OptConfig;
   configPath?: string | null;
-  configId?: string | null;
   name?: string | null;
 };
 
@@ -114,8 +113,9 @@ class RunnerClient {
     }
   }
 
-  async getTopMolecules(runId: string, limit = 50): Promise<MoleculeResult[]> {
-    const res = await fetch(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/molecules?limit=${limit}`);
+  async getTopMolecules(runId: string, limit?: number): Promise<MoleculeResult[]> {
+    const query = typeof limit === 'number' ? `?limit=${limit}` : '';
+    const res = await fetch(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/molecules${query}`);
     if (!res.ok) throw new Error('Failed to get molecules');
     return (await res.json()) as MoleculeResult[];
   }

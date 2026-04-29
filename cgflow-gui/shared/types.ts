@@ -38,6 +38,13 @@ export const OptConfigSchema = z.object({
 export type BoltzConfig = z.infer<typeof BoltzConfigSchema>;
 export type OptConfig = z.infer<typeof OptConfigSchema>;
 
+export interface NormalizedPdbFile {
+  path: string;
+  content: string;
+  converted: boolean;
+  message: string | null;
+}
+
 // ============================================================================
 // Run Status and Management
 // ============================================================================
@@ -64,7 +71,6 @@ export const RunInfoSchema = z.object({
   lastUpdatedAt: z.string().nullable(),
   checkpointPath: z.string().nullable(),
   error: z.string().nullable(),
-  configId: z.string().nullable().optional(),
   convexRunId: z.string().nullable().optional(),
   source: z.enum(['local', 'convex']).optional(),
 });
@@ -160,6 +166,7 @@ export interface IpcChannels {
   'file:select-yaml': () => Promise<string | null>;
   'file:select-directory': () => Promise<string | null>;
   'file:read-pdb': (path: string) => Promise<string>;
+  'file:normalize-pdb-residues': (path: string) => Promise<NormalizedPdbFile>;
   'file:read-yaml': (path: string) => Promise<OptConfig>;
   'file:write-yaml': (path: string, config: OptConfig) => Promise<void>;
   'file:exists': (path: string) => Promise<boolean>;
@@ -168,7 +175,6 @@ export interface IpcChannels {
   'run:start': (payload: {
     config: OptConfig;
     configPath?: string | null;
-    configId?: string | null;
     name?: string | null;
   }) => Promise<RunInfo>;
   'run:stop': (runId: string) => Promise<void>;
