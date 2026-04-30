@@ -1,0 +1,16 @@
+lower_mean_compound,higher_mean_compound,alternative,u_statistic,p_value,rank_biserial_effect,mean_diff_lower_minus_higher,median_diff_lower_minus_higher,p_holm,significant_holm_0.05
+Compound 45,Compound 6,Compound 45 has lower binding free energy than Compound 6,0.0,1.2810718345817004e-34,-1.0,-34.10952470160004,-33.92077859999988,1.9216077518725505e-33,True
+Compound 45,Compound 24,Compound 45 has lower binding free energy than Compound 24,0.0,1.2810718345817004e-34,-1.0,-43.68263593039998,-44.06763504000018,1.9216077518725505e-33,True
+Compound 45,Compound 41,Compound 45 has lower binding free energy than Compound 41,0.0,1.2810718345817004e-34,-1.0,-36.82704876800002,-36.47643336000023,1.9216077518725505e-33,True
+Compound 45,Compound 29,Compound 45 has lower binding free energy than Compound 29,0.0,1.2810718345817004e-34,-1.0,-45.152066867200034,-44.98124612000018,1.9216077518725505e-33,True
+Compound 45,Compound 59,Compound 45 has lower binding free energy than Compound 59,0.0,1.2810718345817004e-34,-1.0,-37.17766815599998,-37.10708463999986,1.9216077518725505e-33,True
+Compound 6,Compound 29,Compound 6 has lower binding free energy than Compound 29,102.0,2.6614394250799474e-33,-0.9796,-11.0425421656,-11.060467520000305,2.6614394250799474e-32,True
+Compound 6,Compound 24,Compound 6 has lower binding free energy than Compound 24,242.0,1.548399861402571e-31,-0.9516,-9.573111228799949,-10.146856440000299,1.3935598752623139e-30,True
+Compound 59,Compound 29,Compound 59 has lower binding free energy than Compound 29,279.0,4.44482802231299e-31,-0.9442,-7.974398711200056,-7.874161480000321,3.555862417850392e-30,True
+Compound 41,Compound 29,Compound 41 has lower binding free energy than Compound 29,437.0,3.66326787012817e-29,-0.9126,-8.325018099200019,-8.504812759999954,2.564287509089719e-28,True
+Compound 59,Compound 24,Compound 59 has lower binding free energy than Compound 24,623.0,5.459090716261616e-27,-0.8754,-6.504967774400004,-6.960550400000315,3.2754544297569697e-26,True
+Compound 41,Compound 24,Compound 41 has lower binding free energy than Compound 24,897.0,5.978012237640315e-24,-0.8206,-6.855587162399967,-7.591201679999948,2.9890061188201574e-23,True
+Compound 6,Compound 59,Compound 6 has lower binding free energy than Compound 59,2488.0,4.216079346079776e-10,-0.5024,-3.0681434543999444,-3.186306039999984,1.6864317384319104e-09,True
+Compound 6,Compound 41,Compound 6 has lower binding free energy than Compound 41,3089.0,1.5200306001912635e-06,-0.3822,-2.7175240663999816,-2.555654760000351,4.560091800573791e-06,True
+Compound 24,Compound 29,Compound 24 has lower binding free energy than Compound 29,3651.0,0.0004922661811213255,-0.26980000000000004,-1.4694309368000518,-0.9136110800000061,0.000984532362242651,True
+Compound 41,Compound 59,Compound 41 has lower binding free energy than Compound 59,4715.0,0.24348248802509104,-0.05700000000000005,-0.35061938799996284,-0.6306512799996327,0.24348248802509104,False

@@ -1,0 +1,25 @@
+Non-parametric binding energy statistics
+=======================================
+
+Omnibus test: Kruskal-Wallis H-test across all compounds
+H statistic: 472.56
+p-value: 6.67058e-100
+Interpretation: significant differences detected at alpha=0.05.
+
+Pairwise test: one-sided Mann-Whitney U in the lower binding free energy direction with Holm-Bonferroni correction
+lower_mean_compound higher_mean_compound                                                alternative  u_statistic      p_value  rank_biserial_effect  mean_diff_lower_minus_higher  median_diff_lower_minus_higher       p_holm  significant_holm_0.05
+        Compound 45           Compound 6  Compound 45 has lower binding free energy than Compound 6          0.0 1.281072e-34               -1.0000                    -34.109525                      -33.920779 1.921608e-33                   True
+        Compound 45          Compound 24 Compound 45 has lower binding free energy than Compound 24          0.0 1.281072e-34               -1.0000                    -43.682636                      -44.067635 1.921608e-33                   True
+        Compound 45          Compound 41 Compound 45 has lower binding free energy than Compound 41          0.0 1.281072e-34               -1.0000                    -36.827049                      -36.476433 1.921608e-33                   True
+        Compound 45          Compound 29 Compound 45 has lower binding free energy than Compound 29          0.0 1.281072e-34               -1.0000                    -45.152067                      -44.981246 1.921608e-33                   True
+        Compound 45          Compound 59 Compound 45 has lower binding free energy than Compound 59          0.0 1.281072e-34               -1.0000                    -37.177668                      -37.107085 1.921608e-33                   True
+         Compound 6          Compound 29  Compound 6 has lower binding free energy than Compound 29        102.0 2.661439e-33               -0.9796                    -11.042542                      -11.060468 2.661439e-32                   True
+         Compound 6          Compound 24  Compound 6 has lower binding free energy than Compound 24        242.0 1.548400e-31               -0.9516                     -9.573111                      -10.146856 1.393560e-30                   True
+        Compound 59          Compound 29 Compound 59 has lower binding free energy than Compound 29        279.0 4.444828e-31               -0.9442                     -7.974399                       -7.874161 3.555862e-30                   True
+        Compound 41          Compound 29 Compound 41 has lower binding free energy than Compound 29        437.0 3.663268e-29               -0.9126                     -8.325018                       -8.504813 2.564288e-28                   True
+        Compound 59          Compound 24 Compound 59 has lower binding free energy than Compound 24        623.0 5.459091e-27               -0.8754                     -6.504968                       -6.960550 3.275454e-26                   True
+        Compound 41          Compound 24 Compound 41 has lower binding free energy than Compound 24        897.0 5.978012e-24               -0.8206                     -6.855587                       -7.591202 2.989006e-23                   True
+         Compound 6          Compound 59  Compound 6 has lower binding free energy than Compound 59       2488.0 4.216079e-10               -0.5024                     -3.068143                       -3.186306 1.686432e-09                   True
+         Compound 6          Compound 41  Compound 6 has lower binding free energy than Compound 41       3089.0 1.520031e-06               -0.3822                     -2.717524                       -2.555655 4.560092e-06                   True
+        Compound 24          Compound 29 Compound 24 has lower binding free energy than Compound 29       3651.0 4.922662e-04               -0.2698                     -1.469431                       -0.913611 9.845324e-04                   True
+        Compound 41          Compound 59 Compound 41 has lower binding free energy than Compound 59       4715.0 2.434825e-01               -0.0570                     -0.350619                       -0.630651 2.434825e-01                  False
