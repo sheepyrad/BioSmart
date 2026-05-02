@@ -4,6 +4,40 @@ This repository branch deposits the thesis figure data, plotting code, and Matpl
 
 The `Data/` folder stores the raw data used to plot the submitted thesis figures, together with the Python scripts used to regenerate the figures. Figure outputs in this deposit are drawn by Matplotlib from the included data files. Non-Python/code/data analysis plots are not stored in `Data/`.
 
+## Reproducing the Thesis CGFlow Boltz Example
+
+The CGFlow code is contained in `cgflow/`. Set up and run the optimization from that directory so the relative paths in the configs resolve correctly:
+
+```bash
+cd cgflow
+
+# Create and activate the conda environment.
+mamba create -n cgflow python=3.11
+mamba activate cgflow
+
+# Install CGFlow and required extras from inside cgflow/.
+pip install -e .
+pip install -e '.[unidock]'
+pip install -e '.[extra]'
+pip install 'boltz[cuda]' -U
+```
+
+Prepare the required CGFlow data, environment files, and pretrained pose-prediction weights as described in `cgflow/README.md` and `cgflow/experiments/README.md`.
+
+For the thesis example, run the Boltz optimization script with the NS5 crop configuration:
+
+```bash
+python scripts/opt/opt_boltz.py --config ./configs/opt/NS5_crop_boltz_32_2000.yaml
+```
+
+To write results to a different location, either update `result_dir` in `configs/opt/NS5_crop_boltz_32_2000.yaml` or override it from the command line:
+
+```bash
+python scripts/opt/opt_boltz.py \
+  --config ./configs/opt/NS5_crop_boltz_32_2000.yaml \
+  --result_dir ./result/opt/unidock_boltz/NS5
+```
+
 ## File Structure
 
 - `Data/Figure7/`
