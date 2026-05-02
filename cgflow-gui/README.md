@@ -28,7 +28,8 @@ CGFlow GUI is split across four layers:
 
 ## Prerequisites
 
-- Node.js 18+
+- Bun
+- Node.js 18+ available for Electron tooling
 - Python 3.10+
 - Conda env with CGFlow dependencies (default env name: `cgflow`)
 - CGFlow repository available at `../cgflow` relative to this project
@@ -36,22 +37,37 @@ CGFlow GUI is split across four layers:
 
 ## Installation
 
-```bash
-npm install
-```
-
-If using Convex:
+From the repository root:
 
 ```bash
-npx convex dev
+cd cgflow-gui
+bun install
 ```
+
+The desktop app starts CGFlow jobs through the local conda environment. By default it runs Python with:
+
+```bash
+conda run --no-capture-output -n cgflow python ...
+```
+
+Set `CGFLOW_CONDA_ENV` if your environment uses a different name.
+
+### Optional Convex Setup
+
+Convex is only needed for cloud sync. Local desktop runs and dashboards work without it.
+
+```bash
+bunx convex dev
+```
+
+If Convex is enabled, set `VITE_CONVEX_URL` or `CONVEX_URL` in `.env`.
 
 ## Running the App
 
 ### Desktop (recommended)
 
 ```bash
-npm run electron:dev
+bun run electron:dev
 ```
 
 This starts:
@@ -62,15 +78,24 @@ This starts:
 ### Web-only mode
 
 ```bash
-npm run dev:web
+bun run dev:web
 ```
 
 This is useful for UI development, but training/run operations require the local runner service and local CGFlow setup.
 
+### npm fallback
+
+If Bun is unavailable, the same scripts can be run with npm:
+
+```bash
+npm install
+npm run electron:dev
+```
+
 ## Build
 
 ```bash
-npm run build
+bun run build
 ```
 
 Artifacts are generated in:
@@ -94,6 +119,13 @@ VITE_RUNNER_URL=http://127.0.0.1:45731
 
 # Optional conda env override in main/runner process
 CGFLOW_CONDA_ENV=cgflow
+```
+
+In PowerShell, you can also set the conda environment for the current terminal session before launching the app:
+
+```powershell
+$env:CGFLOW_CONDA_ENV="cgflow"
+bun run electron:dev
 ```
 
 ## Typical Workflow
@@ -153,7 +185,7 @@ CGFlow writes run outputs into the configured `result_dir`, including:
 - **No molecules in dashboard yet**
   - Wait for CGFlow to emit SQLite outputs; early run stages may have no molecules.
 - **Convex actions disabled**
-  - Set a valid `VITE_CONVEX_URL` and run `npx convex dev` (or deploy and point to a production URL).
+  - Set a valid `VITE_CONVEX_URL` and run `bunx convex dev` (or deploy and point to a production URL).
 
 ## Tech Stack
 

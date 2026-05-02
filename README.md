@@ -38,6 +38,25 @@ python scripts/opt/opt_boltz.py \
   --result_dir ./result/opt/unidock_boltz/NS5
 ```
 
+## Running the Electron App Locally
+
+The local desktop GUI is in `cgflow-gui/`. It expects the CGFlow Python project at `../cgflow` relative to `cgflow-gui/` and uses the `cgflow` conda environment by default.
+
+```bash
+cd cgflow-gui
+bun install
+bun run electron:dev
+```
+
+If your conda environment has a different name, set `CGFLOW_CONDA_ENV` before starting the app:
+
+```powershell
+$env:CGFLOW_CONDA_ENV="<env-name>"
+bun run electron:dev
+```
+
+For more details, see `cgflow-gui/README.md`.
+
 ## File Structure
 
 - `Data/Figure7/`
