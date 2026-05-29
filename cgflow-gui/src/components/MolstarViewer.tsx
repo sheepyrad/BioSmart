@@ -2,14 +2,21 @@ import { useEffect, useRef, useState } from 'react';
 import { createPluginUI } from 'molstar/lib/mol-plugin-ui';
 import { renderReact18 } from 'molstar/lib/mol-plugin-ui/react18';
 import { PluginUIContext } from 'molstar/lib/mol-plugin-ui/context';
+import { DefaultPluginUISpec, type PluginUISpec } from 'molstar/lib/mol-plugin-ui/spec';
+import { PluginConfig } from 'molstar/lib/mol-plugin/config';
 import { StructureSelection, QueryContext, Structure, StructureProperties, StructureElement } from 'molstar/lib/mol-model/structure';
 import { OrderedSet } from 'molstar/lib/mol-data/int';
 import { MolScriptBuilder as MS } from 'molstar/lib/mol-script/language/builder';
+import { Expression } from 'molstar/lib/mol-script/language/expression';
 import { compile } from 'molstar/lib/mol-script/runtime/query/compiler';
 import { InteractivityManager } from 'molstar/lib/mol-plugin-state/manager/interactivity';
 
 // Import Mol* pre-built styles
 import 'molstar/build/viewer/molstar.css';
+
+const SELECTED_SIDECHAIN_COMPONENT_TAG = 'cgflow-selected-sidechain-sticks';
+const SELECTED_SIDECHAIN_REPRESENTATION_TAG = 'cgflow-selected-sidechain-sticks-repr';
+const BACKBONE_ATOM_NAMES = ['N', 'CA', 'C', 'O', 'OXT'];
 
 interface MolstarViewerProps {
   pdbContent: string | null;
@@ -19,6 +26,95 @@ interface MolstarViewerProps {
   onResidueSelect: (residues: string[]) => void;
   /** If true, clicking always toggles. If false, requires Ctrl/Cmd for multi-select */
   multiSelectMode?: boolean;
+  /** Hide Mol* panels and advanced viewport controls for read-only dashboard views. */
+  compact?: boolean;
+}
+
+function residueExpression(resId: string, sidechainOnly: boolean): Expression | null {
+  const [chain, seqStr] = resId.split(':');
+  const seq = Number.parseInt(seqStr ?? '', 10);
+  if (!chain || !Number.isFinite(seq)) return null;
+
+  return MS.struct.generator.atomGroups({
+    'chain-test': MS.core.rel.eq([
+      MS.struct.atomProperty.macromolecular.auth_asym_id(),
+      chain,
+    ]),
+    'residue-test': MS.core.rel.eq([
+      MS.struct.atomProperty.macromolecular.auth_seq_id(),
+      seq,
+    ]),
+    ...(sidechainOnly
+      ? {
+          'atom-test': MS.core.logic.not([
+            MS.core.set.has([MS.set(...BACKBONE_ATOM_NAMES), MS.ammp('label_atom_id')]),
+          ]),
+        }
+      : {}),
+  });
+}
+
+function buildResiduesExpression(residueIds: string[], sidechainOnly = false): Expression | null {
+  const groups = residueIds
+    .map((resId) => residueExpression(resId, sidechainOnly))
+    .filter((expression): expression is Expression => expression !== null);
+
+  if (groups.length === 0) return null;
+  return MS.struct.combinator.merge(groups);
+}
+
+async function clearSelectedSidechainRepresentation(plugin: PluginUIContext) {
+  const state = plugin.state.data;
+  const cells = state.selectQ((q) => q.root.subtree().withTag(SELECTED_SIDECHAIN_COMPONENT_TAG));
+  if (cells.length === 0) return;
+
+  const update = state.build();
+  for (const cell of cells) {
+    update.delete(cell.transform.ref);
+  }
+  await update.commit();
+}
+
+function getCompactMolstarSpec(): PluginUISpec {
+  const spec = DefaultPluginUISpec();
+  return {
+    ...spec,
+    layout: {
+      ...spec.layout,
+      initial: {
+        ...spec.layout?.initial,
+        isExpanded: false,
+        showControls: false,
+        regionState: {
+          top: 'hidden',
+          left: 'hidden',
+          right: 'hidden',
+          bottom: 'hidden',
+        },
+      },
+    },
+    components: {
+      ...spec.components,
+      controls: {
+        top: 'none',
+        left: 'none',
+        right: 'none',
+        bottom: 'none',
+      },
+      remoteState: 'none',
+      disableDragOverlay: true,
+    },
+    config: [
+      ...(spec.config ?? []),
+      [PluginConfig.Viewport.ShowExpand, false],
+      [PluginConfig.Viewport.ShowControls, false],
+      [PluginConfig.Viewport.ShowSettings, false],
+      [PluginConfig.Viewport.ShowSelectionMode, false],
+      [PluginConfig.Viewport.ShowAnimation, false],
+      [PluginConfig.Viewport.ShowTrajectoryControls, false],
+      [PluginConfig.Viewport.ShowScreenshotControls, false],
+    ],
+  };
 }
 
 export default function MolstarViewer({
@@ -28,6 +124,7 @@ export default function MolstarViewer({
   selectedResidues,
   onResidueSelect,
   multiSelectMode = true, // Default to always toggle (multi-select)
+  compact = false,
 }: MolstarViewerProps) {
   const molstarDisabledByEnv = ['true', '1', 'yes'].includes(
     String(import.meta.env.VITE_DISABLE_MOLSTAR ?? '').toLowerCase()
@@ -84,6 +181,7 @@ export default function MolstarViewer({
         const plugin = await createPluginUI({
           target: containerRef.current!,
           render: renderReact18,
+          spec: compact ? getCompactMolstarSpec() : undefined,
         });
 
         // Subscribe to click events for residue selection
@@ -163,7 +261,7 @@ export default function MolstarViewer({
       pluginRef.current?.dispose();
       pluginRef.current = null;
     };
-  }, [viewerError, molstarDisabledByEnv]);
+  }, [viewerError, molstarDisabledByEnv, compact]);
 
   function inferLigandFormat(content: string, label: string | null): 'mol' | 'sdf' | 'mol2' | 'pdb' | 'mmcif' {
     const ext = (label ?? '').split('.').pop()?.toLowerCase();
@@ -239,6 +337,7 @@ export default function MolstarViewer({
     
     if (selectedResidues.length === 0) {
       plugin.managers.interactivity.lociHighlights.clearHighlights();
+      void clearSelectedSidechainRepresentation(plugin);
       return;
     }
 
@@ -253,24 +352,9 @@ export default function MolstarViewer({
         
         const structure = structureRef.cell.obj.data as Structure;
 
-        // Build selection expression for all selected residues
-        const groups = selectedResidues.map((resId) => {
-          const [chain, seqStr] = resId.split(':');
-          const seq = parseInt(seqStr!, 10);
-          
-          return MS.struct.generator.atomGroups({
-            'chain-test': MS.core.rel.eq([
-              MS.struct.atomProperty.macromolecular.auth_asym_id(),
-              chain!,
-            ]),
-            'residue-test': MS.core.rel.eq([
-              MS.struct.atomProperty.macromolecular.auth_seq_id(),
-              seq,
-            ]),
-          });
-        });
+        const expression = buildResiduesExpression(selectedResidues);
+        if (!expression) return;
 
-        const expression = MS.struct.combinator.merge(groups);
         const query = compile<StructureSelection>(expression);
         const selection = query(new QueryContext(structure));
         const loci = StructureSelection.toLociWithSourceUnits(selection);
@@ -278,6 +362,36 @@ export default function MolstarViewer({
         // Highlight and select the residues
         plugin.managers.interactivity.lociHighlights.highlightOnly({ loci });
         plugin.managers.interactivity.lociSelects.select({ loci });
+
+        await clearSelectedSidechainRepresentation(plugin);
+        const sidechainExpression = buildResiduesExpression(selectedResidues, true);
+        if (sidechainExpression) {
+          const sidechainComponent = await plugin.builders.structure.tryCreateComponentFromExpression(
+            structureRef.cell,
+            sidechainExpression,
+            'cgflow-selected-sidechains',
+            {
+              label: 'Selected sidechains',
+              tags: [SELECTED_SIDECHAIN_COMPONENT_TAG],
+            }
+          );
+          if (sidechainComponent) {
+            await plugin.builders.structure.representation.addRepresentation(
+              sidechainComponent,
+              {
+                type: 'ball-and-stick',
+                color: 'element-symbol',
+                size: 'physical',
+                typeParams: {
+                  sizeFactor: 0.22,
+                  sizeAspectRatio: 0.73,
+                  adjustCylinderLength: true,
+                },
+              },
+              { tag: SELECTED_SIDECHAIN_REPRESENTATION_TAG }
+            );
+          }
+        }
         
         // Focus camera on selection
         plugin.managers.camera.focusLoci(loci);

@@ -1,5 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, type PointerEvent as ReactPointerEvent } from 'react';
-import { z } from 'zod';
+import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent as ReactUIEvent } from 'react';
 import { useQuery } from 'convex/react';
 import { api } from '../../convex/_generated/api';
 import { useConvexRuns, useConvexAvailable } from '@/hooks/useConvex';
@@ -7,25 +6,15 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useIpcInvoke } from '@/hooks/useIpc';
 import MolstarViewer from '@/components/MolstarViewer';
-import MoleculeCard from '@/components/MoleculeCard';
-import ReactionPathway from '@/components/ReactionPathway';
 import BoltzMetricsPanel from '@/components/BoltzMetricsPanel';
 import ParallelCoordinatesPanel from '@/components/ParallelCoordinatesPanel';
-import SmilesCell from '@/components/SmilesCell';
+import CompoundImageCell from '@/components/CompoundImageCell';
 import { computeBoltzMetrics } from '@shared/boltzMetrics';
 import type { BoltzMetricInputRow, BoltzMetricSeries, RunInfo, MoleculeResult } from '@shared/types';
 import {
-  Atom,
   Beaker,
   CheckCircle2,
   Circle,
@@ -34,14 +23,14 @@ import {
   FolderOpen,
   History,
   PauseCircle,
+  PanelLeftClose,
+  PanelLeftOpen,
   PlayCircle,
   RefreshCw,
   Square,
   Trash2,
   XCircle,
   FlaskConical,
-  TrendingUp,
-  Layers,
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -49,21 +38,35 @@ interface DashboardProps {
   onRunStatusChange: (run: RunInfo) => void;
 }
 
-const DASHBOARD_MOLECULE_LIMIT = 5000;
-const TABLE_PAGE_SIZE = 50;
+const MOLECULE_ROW_HEIGHT = 120;
+const MOLECULE_TABLE_MIN_VISIBLE_ROWS = 3;
+const MOLECULE_TABLE_MAX_VISIBLE_ROWS = 10;
+const MOLECULE_TABLE_HEADER_HEIGHT = 42;
+const MOLECULE_ROW_OVERSCAN = 6;
+const MOLECULE_SCROLL_IDLE_MS = 140;
+const PARALLEL_COORDINATE_SAMPLE_LIMIT = 250;
 const SIDEBAR_MIN_WIDTH = 220;
 const SIDEBAR_MAX_WIDTH = 520;
 const SIDEBAR_DEFAULT_WIDTH = 256;
+const SIDEBAR_COLLAPSED_WIDTH = 64;
+const VISUALIZATION_TABLE_MIN_WIDTH = 340;
+const VISUALIZATION_TABLE_MAX_WIDTH = 760;
+const VISUALIZATION_TABLE_DEFAULT_WIDTH = 370;
+const VISUALIZATION_TOP_MIN_HEIGHT = 420;
+const VISUALIZATION_TOP_MAX_HEIGHT = 760;
+const VISUALIZATION_TOP_DEFAULT_HEIGHT = 560;
+const RUN_INFO_CHART_MIN_HEIGHT = 160;
+const RUN_INFO_CHART_MAX_HEIGHT = 320;
+const RUN_INFO_CHART_DEFAULT_HEIGHT = 224;
 const HIDDEN_RUN_IDS_KEY = 'cgflow.hiddenRunIds';
 const LOG_TAIL_LINES = 200;
-const HiddenRunIdsSchema = z.array(z.string());
 
 function getStatusIcon(status: string) {
   switch (status) {
     case 'running':
       return <PlayCircle className="h-4 w-4 text-primary" />;
     case 'completed':
-      return <CheckCircle2 className="h-4 w-4 text-blue-400" />;
+      return <CheckCircle2 className="h-4 w-4 text-success" />;
     case 'error':
       return <XCircle className="h-4 w-4 text-destructive" />;
     case 'paused':
@@ -79,18 +82,10 @@ function getRunOrigin(run: RunInfo): 'Cloud' | 'Synced' | 'Local' {
   return 'Local';
 }
 
-function computeBoltzScore(affinity: number, probability: number): number {
-  return ((-affinity + 2) / 4) * probability;
-}
-
-function fmtBoltz(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(v)) return 'N/A';
-  return v.toFixed(3);
-}
-
 function getStatusBadgeVariant(status: RunInfo['status']) {
   switch (status) {
     case 'running':
+    case 'completed':
       return 'success';
     case 'error':
       return 'destructive';
@@ -101,31 +96,9 @@ function getStatusBadgeVariant(status: RunInfo['status']) {
   }
 }
 
-function MetricTile({
-  label,
-  value,
-  icon: Icon,
-}: {
-  label: string;
-  value: React.ReactNode;
-  icon?: React.ElementType;
-}) {
-  return (
-    <div className="rounded-md border border-border bg-secondary/20 px-3 py-3">
-      <div className="flex items-center gap-2">
-        {Icon && <Icon className="h-3 w-3 text-muted-foreground" />}
-        <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground">{label}</p>
-      </div>
-      <div className="mt-1 font-data text-base font-medium tabular-nums">{value}</div>
-    </div>
-  );
-}
-
 interface ConvexRun {
   _id: string;
-  configId: string;
   name: string;
-  engine: 'boltz' | 'flashbind';
   status: 'idle' | 'running' | 'paused' | 'completed' | 'error';
   currentStep: number;
   totalSteps: number;
@@ -135,6 +108,81 @@ interface ConvexRun {
   startedAt: number | null;
   completedAt: number | null;
   lastUpdatedAt: number;
+}
+
+const LOG_LINE_PATTERN = /^(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2})\s+-\s+(\w+)\s+-\s+([^-]+)\s+-\s+(.*)$/;
+const LOG_ITERATION_PATTERN = /^(iteration\s+)(\d+)(\s*:\s*)/;
+const LOG_METRIC_PATTERN = /([A-Za-z_][\w]*):(-?\d+(?:\.\d+)?)/g;
+
+function getLogMetricClass(metricName: string): string {
+  if (metricName.includes('boltz')) return 'text-primary';
+  if (metricName.includes('loss') || metricName.includes('invalid')) return 'text-destructive';
+  if (metricName.includes('reward')) return 'text-success';
+  return 'text-foreground';
+}
+
+function renderLogMetrics(text: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let lastIndex = 0;
+
+  for (const match of text.matchAll(LOG_METRIC_PATTERN)) {
+    const [token, key, value] = match;
+    if (!key || !value) continue;
+    const index = match.index ?? 0;
+    if (index > lastIndex) nodes.push(text.slice(lastIndex, index));
+    nodes.push(
+      <span key={`${key}-${index}`} className="rounded bg-muted/60 px-1 py-0.5">
+        <span className="text-muted-foreground">{key}:</span>
+        <span className={`ml-0.5 font-semibold ${getLogMetricClass(key)}`}>{value}</span>
+      </span>
+    );
+    lastIndex = index + token.length;
+  }
+
+  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+  return nodes;
+}
+
+function renderLogMessage(message: string): ReactNode[] {
+  const iterationMatch = message.match(LOG_ITERATION_PATTERN);
+  if (!iterationMatch) return renderLogMetrics(message);
+
+  const [prefix, label, iteration, suffix] = iterationMatch;
+  return [
+    <span key="iteration" className="rounded bg-primary/10 px-1 py-0.5 font-semibold text-primary">
+      {label}
+      {iteration}
+    </span>,
+    suffix,
+    ...renderLogMetrics(message.slice(prefix.length)),
+  ];
+}
+
+function renderLogLine(line: string, index: number): ReactNode {
+  const match = line.match(LOG_LINE_PATTERN);
+  if (!match) {
+    return (
+      <div key={index} className="whitespace-pre-wrap break-words">
+        {line}
+      </div>
+    );
+  }
+
+  const timestamp = match[1] ?? '';
+  const level = match[2] ?? '';
+  const logger = match[3] ?? '';
+  const message = match[4] ?? '';
+  return (
+    <div key={index} className="whitespace-pre-wrap break-words">
+      <span className="text-muted-foreground">{timestamp}</span>
+      <span className="text-muted-foreground"> - </span>
+      <span className="font-semibold text-primary">{level}</span>
+      <span className="text-muted-foreground"> - </span>
+      <span className="text-accent-foreground">{logger.trim()}</span>
+      <span className="text-muted-foreground"> - </span>
+      {renderLogMessage(message)}
+    </div>
+  );
 }
 
 export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusChange }: DashboardProps) {
@@ -152,21 +200,29 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
   const [isSyncingCloud, setIsSyncingCloud] = useState(false);
   const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
   const [isLogLoading, setIsLogLoading] = useState(false);
-  const [tablePage, setTablePage] = useState(1);
+  const [dashboardView, setDashboardView] = useState<'run-info' | 'visualization'>('visualization');
   const [plotFilteredSmiles, setPlotFilteredSmiles] = useState<Set<string> | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
+  const [isRunSidebarCollapsed, setIsRunSidebarCollapsed] = useState(false);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+  const [visualizationTableWidth, setVisualizationTableWidth] = useState(VISUALIZATION_TABLE_DEFAULT_WIDTH);
+  const [visualizationTopHeight, setVisualizationTopHeight] = useState(VISUALIZATION_TOP_DEFAULT_HEIGHT);
+  const [runInfoChartHeight, setRunInfoChartHeight] = useState(RUN_INFO_CHART_DEFAULT_HEIGHT);
+  const [visualizationResizeMode, setVisualizationResizeMode] = useState<'columns' | 'rows' | null>(null);
+  const moleculeTableRef = useRef<HTMLDivElement>(null);
+  const moleculeTableScrollTimerRef = useRef<number | undefined>(undefined);
+  const moleculeTableMeasureFrameRef = useRef<number | undefined>(undefined);
+  const [moleculeTableScrollTop, setMoleculeTableScrollTop] = useState(0);
+  const [moleculeTableViewportHeight, setMoleculeTableViewportHeight] = useState(VISUALIZATION_TOP_DEFAULT_HEIGHT);
+  const [isMoleculeTableScrolling, setIsMoleculeTableScrolling] = useState(false);
   const [runLogLines, setRunLogLines] = useState<string[]>([]);
   const [hiddenRunIds, setHiddenRunIds] = useState<Set<string>>(() => {
     if (typeof window === 'undefined') return new Set();
     try {
       const raw = window.localStorage.getItem(HIDDEN_RUN_IDS_KEY);
       if (!raw) return new Set();
-      const parsed = HiddenRunIdsSchema.safeParse(JSON.parse(raw));
-      if (!parsed.success) {
-        return new Set();
-      }
-      return new Set(parsed.data);
+      const parsed = JSON.parse(raw) as string[];
+      return new Set(Array.isArray(parsed) ? parsed : []);
     } catch {
       return new Set();
     }
@@ -208,16 +264,6 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
         smiles: row.smiles,
         reward: row.reward,
         trajectory,
-        normalizedScores:
-          row.normalizedAffinity !== null ||
-          row.normalizedProbability !== null ||
-          row.normalizedScore !== null
-            ? {
-                affinity: row.normalizedAffinity ?? 0,
-                probability: row.normalizedProbability ?? 0,
-                score: row.normalizedScore ?? row.reward,
-              }
-            : undefined,
         boltzScores: hasScores
           ? {
               iteration: row.iteration ?? 0,
@@ -232,20 +278,19 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
             }
           : null,
         complexPath: null,
-        engine: row.engine ?? selectedRun?.engine ?? 'boltz',
         oracleIdx: row.oracleIdx ?? null,
         molIdx: row.molIdx ?? null,
       } as MoleculeResult;
     });
-  }, [convexMoleculeRows, selectedRun?.engine]);
+  }, [convexMoleculeRows]);
 
   const convexMetricInputRows = useMemo<BoltzMetricInputRow[]>(() => {
     if (!convexMetricRows) return [];
     return convexMetricRows.map((row: any) => ({
       iteration: row.iteration ?? 0,
       smiles: row.smiles,
-      affinityModel1: row.affinityModel1 ?? row.normalizedAffinity ?? null,
-      probabilityModel1: row.probabilityModel1 ?? row.normalizedProbability ?? null,
+      affinityModel1: row.affinityModel1 ?? null,
+      probabilityModel1: row.probabilityModel1 ?? null,
     }));
   }, [convexMetricRows]);
 
@@ -285,7 +330,6 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
         setSelectedMolecule(null);
         setMolecules([]);
         setPlotFilteredSmiles(null);
-        setTablePage(1);
       }
     },
     [persistHiddenRunIds, selectedRun]
@@ -330,7 +374,6 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     lastUpdatedAt: run.lastUpdatedAt ? new Date(run.lastUpdatedAt).toISOString() : null,
     checkpointPath: run.checkpointPath,
     error: run.error,
-  engine: run.engine,
     source: 'convex',
   });
 
@@ -350,8 +393,6 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     ...localRuns,
     ...convexRunList.filter((run) => !localConvexIds.has(run.id)),
   ];
-  const selectedEngine = selectedRun?.engine ?? 'boltz';
-  const selectedEngineLabel = selectedEngine === 'flashbind' ? 'FlashBind' : 'Boltz';
 
   useEffect(() => {
     if (!selectedRun) return;
@@ -366,7 +407,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
 
     const fetchMolecules = async () => {
       try {
-        const results = await invoke('db:get-top-molecules', selectedRun.id, DASHBOARD_MOLECULE_LIMIT);
+        const results = await invoke('db:get-top-molecules', selectedRun.id);
         setMolecules(results);
         if (results.length > 0 && !selectedMolecule) {
           setSelectedMolecule(results[0] ?? null);
@@ -487,7 +528,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
         setMolecules(mappedConvexMolecules);
         return;
       }
-      const results = await invoke('db:get-top-molecules', selectedRun.id, DASHBOARD_MOLECULE_LIMIT);
+      const results = await invoke('db:get-top-molecules', selectedRun.id);
       setMolecules(results);
       const metrics = await invoke('run:get-boltz-metrics', selectedRun.id);
       setLocalBoltzMetrics(metrics);
@@ -502,8 +543,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     setSelectedRun(run);
     setSelectedMolecule(null);
     setMolecules([]);
-      setPlotFilteredSmiles(null);
-    setTablePage(1);
+    setPlotFilteredSmiles(null);
   }, []);
 
   const handleStopRun = useCallback(async (run: RunInfo) => {
@@ -524,7 +564,6 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       setSelectedMolecule(null);
       setMolecules([]);
       setPlotFilteredSmiles(null);
-      setTablePage(1);
     } catch (err) {
       console.error('Failed to import run:', err);
     }
@@ -587,6 +626,82 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     window.addEventListener('pointerup', onUp, { once: true });
   }, [sidebarWidth]);
 
+  const startVisualizationColumnResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const grid = event.currentTarget.parentElement;
+    const rect = grid?.getBoundingClientRect();
+    if (!rect) return;
+    const startX = event.clientX;
+    const startWidth = visualizationTableWidth;
+
+    setVisualizationResizeMode('columns');
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const nextWidth = Math.min(
+        VISUALIZATION_TABLE_MAX_WIDTH,
+        Math.max(VISUALIZATION_TABLE_MIN_WIDTH, startWidth + moveEvent.clientX - startX)
+      );
+      setVisualizationTableWidth(nextWidth);
+    };
+
+    const onUp = () => {
+      setVisualizationResizeMode(null);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp, { once: true });
+  }, [visualizationTableWidth]);
+
+  const startVisualizationRowResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setVisualizationResizeMode('rows');
+    const startY = event.clientY;
+    const startHeight = visualizationTopHeight;
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const nextHeight = Math.min(
+        VISUALIZATION_TOP_MAX_HEIGHT,
+        Math.max(VISUALIZATION_TOP_MIN_HEIGHT, startHeight + moveEvent.clientY - startY)
+      );
+      setVisualizationTopHeight(nextHeight);
+    };
+
+    const onUp = () => {
+      setVisualizationResizeMode(null);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp, { once: true });
+  }, [visualizationTopHeight]);
+
+  const startRunInfoPlotResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setVisualizationResizeMode('rows');
+    const startY = event.clientY;
+    const startHeight = runInfoChartHeight;
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const nextHeight = Math.min(
+        RUN_INFO_CHART_MAX_HEIGHT,
+        Math.max(RUN_INFO_CHART_MIN_HEIGHT, startHeight + moveEvent.clientY - startY)
+      );
+      setRunInfoChartHeight(nextHeight);
+    };
+
+    const onUp = () => {
+      setVisualizationResizeMode(null);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp, { once: true });
+  }, [runInfoChartHeight]);
+
   useEffect(() => {
     if (!isResizingSidebar) return;
     const previousCursor = document.body.style.cursor;
@@ -600,45 +715,107 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
   }, [isResizingSidebar]);
 
   useEffect(() => {
-    setTablePage(1);
+    if (!visualizationResizeMode) return;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = visualizationResizeMode === 'columns' ? 'col-resize' : 'row-resize';
+    document.body.style.userSelect = 'none';
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+    };
+  }, [visualizationResizeMode]);
+
+  useEffect(() => {
     setPlotFilteredSmiles(null);
   }, [selectedRun?.id]);
+
+  const handleMoleculeTableScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
+    setMoleculeTableScrollTop(event.currentTarget.scrollTop);
+    setIsMoleculeTableScrolling(true);
+
+    if (moleculeTableScrollTimerRef.current) {
+      window.clearTimeout(moleculeTableScrollTimerRef.current);
+    }
+
+    moleculeTableScrollTimerRef.current = window.setTimeout(() => {
+      setIsMoleculeTableScrolling(false);
+    }, MOLECULE_SCROLL_IDLE_MS);
+  }, []);
+
+  const measureMoleculeTableViewport = useCallback(() => {
+    if (dashboardView !== 'visualization') return;
+    const table = moleculeTableRef.current;
+    if (!table) return;
+
+    const nextHeight = table.clientHeight;
+    if (nextHeight < MOLECULE_TABLE_HEADER_HEIGHT + MOLECULE_ROW_HEIGHT) return;
+    setMoleculeTableViewportHeight(nextHeight);
+  }, [dashboardView]);
+
+  useEffect(() => {
+    const table = moleculeTableRef.current;
+    if (!table) return;
+
+    measureMoleculeTableViewport();
+    const firstFrame = window.requestAnimationFrame(() => {
+      const secondFrame = window.requestAnimationFrame(measureMoleculeTableViewport);
+      moleculeTableMeasureFrameRef.current = secondFrame;
+    });
+    moleculeTableMeasureFrameRef.current = firstFrame;
+
+    const observer = new ResizeObserver(measureMoleculeTableViewport);
+    observer.observe(table);
+    return () => {
+      if (moleculeTableMeasureFrameRef.current) {
+        window.cancelAnimationFrame(moleculeTableMeasureFrameRef.current);
+      }
+      moleculeTableMeasureFrameRef.current = undefined;
+      observer.disconnect();
+    };
+  }, [dashboardView, measureMoleculeTableViewport, visualizationTopHeight]);
+
+  useEffect(() => {
+    const table = moleculeTableRef.current;
+    if (table) table.scrollTop = 0;
+    setMoleculeTableScrollTop(0);
+    setIsMoleculeTableScrolling(false);
+  }, [selectedRun?.id, plotFilteredSmiles]);
+
+  useEffect(() => {
+    return () => {
+      if (moleculeTableScrollTimerRef.current) {
+        window.clearTimeout(moleculeTableScrollTimerRef.current);
+      }
+      if (moleculeTableMeasureFrameRef.current) {
+        window.cancelAnimationFrame(moleculeTableMeasureFrameRef.current);
+      }
+    };
+  }, []);
 
   const displayedMolecules = useMemo(
     () => (plotFilteredSmiles ? molecules.filter((molecule) => plotFilteredSmiles.has(molecule.smiles)) : molecules),
     [molecules, plotFilteredSmiles]
   );
 
-  const totalPages = Math.max(1, Math.ceil(displayedMolecules.length / TABLE_PAGE_SIZE));
-  const safePage = Math.min(tablePage, totalPages);
-  const pageStart = (safePage - 1) * TABLE_PAGE_SIZE;
-  const pageEnd = Math.min(pageStart + TABLE_PAGE_SIZE, displayedMolecules.length);
-  const pagedMolecules = useMemo(
-    () => displayedMolecules.slice(pageStart, pageEnd),
-    [displayedMolecules, pageStart, pageEnd]
+  const visibleMoleculeStart = Math.min(
+    displayedMolecules.length,
+    Math.max(0, Math.floor(moleculeTableScrollTop / MOLECULE_ROW_HEIGHT))
   );
-
-  useEffect(() => {
-    if (tablePage !== safePage) {
-      setTablePage(safePage);
-    }
-  }, [safePage, tablePage]);
+  const moleculeTableRowsHeight = Math.max(0, moleculeTableViewportHeight - MOLECULE_TABLE_HEADER_HEIGHT);
+  const visibleMoleculeCount = Math.max(1, Math.ceil(moleculeTableRowsHeight / MOLECULE_ROW_HEIGHT) + 1);
+  const virtualMoleculeStart = Math.max(0, visibleMoleculeStart - MOLECULE_ROW_OVERSCAN);
+  const virtualMoleculeEnd = Math.min(
+    displayedMolecules.length,
+    visibleMoleculeStart + visibleMoleculeCount + MOLECULE_ROW_OVERSCAN
+  );
+  const virtualMolecules = displayedMolecules.slice(virtualMoleculeStart, virtualMoleculeEnd);
 
   useEffect(() => {
     if (!selectedMolecule) return;
     if (displayedMolecules.some((molecule) => molecule.smiles === selectedMolecule.smiles)) return;
     setSelectedMolecule(displayedMolecules[0] ?? null);
   }, [displayedMolecules, selectedMolecule]);
-
-  const affinityValues = molecules
-    .filter((molecule) => molecule.boltzScores)
-    .map((molecule) => molecule.boltzScores!.affinity_ensemble);
-  const probabilityValues = molecules
-    .filter((molecule) => molecule.boltzScores)
-    .map((molecule) => molecule.boltzScores!.probability_ensemble);
-
-  const bestAffinity = affinityValues.length > 0 ? Math.min(...affinityValues) : null;
-  const bestProbability = probabilityValues.length > 0 ? Math.max(...probabilityValues) : null;
 
   if (allRuns.length === 0) {
     return (
@@ -671,25 +848,54 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
   return (
     <div className="flex min-h-full">
       {/* Run History Sidebar */}
-      <div className="flex shrink-0 flex-col border-r border-border bg-card/50" style={{ width: sidebarWidth }}>
-        <div className="border-b border-border p-4">
-          <div className="flex items-center gap-2">
+      <div
+        className="flex shrink-0 flex-col border-r border-border bg-card/75 transition-[width] duration-200"
+        style={{ width: isRunSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : sidebarWidth }}
+      >
+        <div className={`border-b border-border p-3 ${isRunSidebarCollapsed ? 'space-y-2' : ''}`}>
+          <div className={`flex items-center ${isRunSidebarCollapsed ? 'justify-center' : 'gap-2'}`}>
             <History className="h-4 w-4 text-primary" />
-            <h3 className="font-display text-sm font-semibold">Run History</h3>
+            {!isRunSidebarCollapsed ? <h3 className="font-display text-sm font-semibold">Run History</h3> : null}
+            {!isRunSidebarCollapsed ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="ml-auto h-7 w-7"
+                title="Collapse run history"
+                onClick={() => setIsRunSidebarCollapsed(true)}
+              >
+                <PanelLeftClose className="h-3.5 w-3.5" />
+              </Button>
+            ) : null}
           </div>
+          {!isRunSidebarCollapsed ? (
           <p className="mt-1 font-data text-[10px] text-muted-foreground tabular-nums">
             {allRuns.length} run{allRuns.length !== 1 ? 's' : ''}
           </p>
+          ) : null}
+          {isRunSidebarCollapsed ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-full"
+              title="Expand run history"
+              onClick={() => setIsRunSidebarCollapsed(false)}
+            >
+              <PanelLeftOpen className="h-4 w-4" />
+            </Button>
+          ) : null}
           <Button
             variant="outline"
-            size="sm"
-            className="mt-3 w-full justify-start gap-2"
+            size={isRunSidebarCollapsed ? 'icon' : 'sm'}
+            className={isRunSidebarCollapsed ? 'h-8 w-full' : 'mt-3 w-full justify-start gap-2'}
             onClick={handleImportRun}
+            title="Import run"
           >
             <FolderOpen className="h-3.5 w-3.5" />
-            Import Run
+            {!isRunSidebarCollapsed ? 'Import Run' : null}
           </Button>
-          <Button
+          {!isRunSidebarCollapsed ? (
+            <Button
             variant="outline"
             size="sm"
             className="mt-2 w-full justify-start gap-2"
@@ -699,20 +905,28 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
             <CloudUpload className="h-3.5 w-3.5" />
             {isSyncingCloud ? 'Syncing...' : 'Sync to Cloud'}
           </Button>
+          ) : null}
         </div>
 
         <ScrollArea className="flex-1">
-          <div className="space-y-1 p-2">
+          <div className={isRunSidebarCollapsed ? 'space-y-2 p-2' : 'space-y-1 p-2'}>
             {allRuns.map((run) => (
               <div
                 key={run.id}
                 onClick={() => handleSelectRun(run)}
-                className={`w-full cursor-pointer rounded-md border p-3 text-left transition-all ${
+                title={isRunSidebarCollapsed ? `${run.name} (${run.status})` : undefined}
+                className={`w-full cursor-pointer rounded-md border text-left transition-all ${
+                  isRunSidebarCollapsed ? 'flex h-10 items-center justify-center p-0' : 'p-3'
+                } ${
                   selectedRun?.id === run.id
-                    ? 'border-primary/30 bg-primary/5 glow-subtle'
+                    ? 'border-primary/30 bg-primary/10 shadow-sm'
                     : 'border-transparent hover:border-border hover:bg-secondary/30'
                 }`}
               >
+                {isRunSidebarCollapsed ? (
+                  getStatusIcon(run.status)
+                ) : (
+                <>
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -758,6 +972,8 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                     </Button>
                   </div>
                 </div>
+                </>
+                )}
               </div>
             ))}
           </div>
@@ -765,29 +981,33 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       </div>
 
       {/* Sidebar resize handle */}
-      <div
+      {!isRunSidebarCollapsed ? (
+        <div
         role="separator"
         aria-orientation="vertical"
         aria-label="Resize run history sidebar"
         className="w-1 shrink-0 cursor-col-resize bg-border/40 transition-colors hover:bg-primary/30"
         onPointerDown={startSidebarResize}
       />
+      ) : null}
 
       {/* Main Dashboard Content */}
       {selectedRun ? (
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {/* Dashboard header */}
-          <div className="border-b border-border bg-card/50 px-5 py-4">
+          <div className="border-b border-border bg-card/50 px-4 py-3">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="flex items-center gap-3">
                   <h2 className="font-display text-xl font-semibold">{selectedRun.name}</h2>
                   <Badge variant={getStatusBadgeVariant(selectedRun.status)}>{selectedRun.status}</Badge>
                   <Badge variant="outline" className="font-data text-[9px]">{selectedRun.source}</Badge>
-                  <Badge variant="secondary" className="font-data text-[9px]">{selectedEngineLabel}</Badge>
                 </div>
                 <p className="mt-0.5 font-data text-xs text-muted-foreground tabular-nums">
-                  Step {selectedRun.currentStep} of {selectedRun.totalSteps}
+                  Iteration {selectedRun.currentStep} of {selectedRun.totalSteps}
+                </p>
+                <p className="mt-1 max-w-4xl truncate font-data text-[11px] text-muted-foreground" title={selectedRun.resultDir}>
+                  Result directory: {selectedRun.resultDir}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -805,293 +1025,188 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
             </div>
           </div>
 
-          <div className="space-y-4 p-5">
-            {/* Metrics row */}
-            <div className="stats-grid">
-              <MetricTile
-                label="Progress"
-                value={<span>{selectedRun.currentStep} / {selectedRun.totalSteps}</span>}
-                icon={TrendingUp}
-              />
-              <MetricTile
-                label="Molecules"
-                value={molecules.length}
-                icon={FlaskConical}
-              />
-              <MetricTile
-                label="Best Affinity"
-                value={bestAffinity?.toFixed(3) ?? 'N/A'}
-                icon={Atom}
-              />
-              <MetricTile
-                label="Best Probability"
-                value={bestProbability?.toFixed(3) ?? 'N/A'}
-                icon={Layers}
-              />
+          <Tabs value={dashboardView} onValueChange={(value) => setDashboardView(value as 'run-info' | 'visualization')} className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <div className="border-b border-border bg-background/60 px-4">
+              <TabsList>
+                <TabsTrigger value="run-info">Run Info</TabsTrigger>
+                <TabsTrigger value="visualization">Visualization</TabsTrigger>
+              </TabsList>
             </div>
 
-            {/* Paths */}
-            <div className="grid gap-3 xl:grid-cols-2">
-              <div className="rounded-md border border-border bg-secondary/15 px-3 py-2.5">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground">Result Directory</p>
-                <p className="mt-1 break-all font-data text-[11px] text-foreground/70">{selectedRun.resultDir}</p>
-              </div>
-              <div className="rounded-md border border-border bg-secondary/15 px-3 py-2.5">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground">Checkpoint</p>
-                <p className="mt-1 break-all font-data text-[11px] text-foreground/70">
-                  {selectedRun.checkpointPath ?? 'No checkpoint recorded'}
-                </p>
-              </div>
-            </div>
+            <TabsContent
+              value="run-info"
+              className="m-0 min-h-0 flex-1 overflow-auto p-4 data-[state=inactive]:hidden"
+            >
+              <div className="grid min-h-0 grid-rows-[auto_8px_auto] gap-3">
+                <BoltzMetricsPanel
+                  className="shrink-0"
+                  metrics={activeBoltzMetrics}
+                  isLoading={selectedRun.source === 'convex' ? convexMetricRows === undefined : isBoltzMetricsLoading}
+                  chartHeight={runInfoChartHeight}
+                />
 
-            {/* Boltz metrics */}
-            <BoltzMetricsPanel
-              metrics={activeBoltzMetrics}
-              isLoading={selectedRun.source === 'convex' ? convexMetricRows === undefined : isBoltzMetricsLoading}
-              title={`${selectedEngineLabel} Score Trends`}
-              emptyMessage={`No ${selectedEngineLabel} metric data available yet.`}
-            />
+                <div
+                  className="h-2 cursor-row-resize rounded-full bg-border/40 transition-colors hover:bg-primary/40"
+                  role="separator"
+                  aria-label="Resize Boltz score plots"
+                  aria-orientation="horizontal"
+                  title="Drag to resize Boltz score plots"
+                  onPointerDown={startRunInfoPlotResize}
+                />
 
-            {/* Logs */}
-            <Card className="border-border/60 bg-card/80">
-              <CardHeader className="pb-3">
-                <div className="flex items-center gap-2">
-                  <FileText className="h-4 w-4 text-muted-foreground" />
-                  <CardTitle className="font-display text-base">Run Logs</CardTitle>
-                </div>
-              </CardHeader>
-              <CardContent>
-                {selectedRun.source === 'convex' ? (
-                  <p className="text-sm text-muted-foreground">Logs are only available for local runs.</p>
-                ) : (
-                  <div className="max-h-52 overflow-auto rounded-md border border-border bg-background p-3">
-                    <pre className="whitespace-pre-wrap break-words font-data text-[10px] leading-relaxed text-muted-foreground">
-                      {runLogLines.length > 0
-                        ? runLogLines.join('\n')
-                        : isLogLoading
-                          ? 'Loading logs...'
-                          : 'No log output yet.'}
-                    </pre>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* Molecule details + 3D viewer */}
-            <div className="grid gap-4 xl:grid-cols-[minmax(360px,420px)_minmax(0,1fr)]">
-              <div className="space-y-4">
-                {selectedMolecule ? (
-                  <MoleculeCard molecule={selectedMolecule} />
-                ) : (
-                  <Card className="border-border/60 bg-card/80">
-                    <CardContent className="py-8">
-                      <p className="text-center text-sm text-muted-foreground">Select a molecule from the table to inspect it.</p>
-                    </CardContent>
-                  </Card>
-                )}
-
-                {selectedMolecule?.boltzScores ? (
-                  <Card className="border-border/60 bg-card/80">
-                    <CardHeader className="pb-3">
-                      <CardTitle className="font-display text-base">{selectedEngineLabel} Scores</CardTitle>
-                    </CardHeader>
-                    <CardContent className="grid gap-3 md:grid-cols-3">
-                      {[
-                        {
-                          label: 'Ensemble',
-                          aff: selectedMolecule.boltzScores.affinity_ensemble,
-                          prob: selectedMolecule.boltzScores.probability_ensemble,
-                        },
-                        {
-                          label: 'Model 1',
-                          aff: selectedMolecule.boltzScores.affinity_model1,
-                          prob: selectedMolecule.boltzScores.probability_model1,
-                        },
-                        {
-                          label: 'Model 2',
-                          aff: selectedMolecule.boltzScores.affinity_model2,
-                          prob: selectedMolecule.boltzScores.probability_model2,
-                        },
-                      ].map((item) => (
-                        <div key={item.label} className="rounded-md border border-border bg-secondary/20 p-3 text-sm">
-                          <p className="mb-2 text-xs font-semibold text-muted-foreground">{item.label}</p>
-                          <div className="space-y-1.5 text-muted-foreground">
-                            <div className="flex justify-between">
-                              <span className="text-xs">Affinity</span>
-                              <span className="font-data text-xs text-foreground tabular-nums">{item.aff.toFixed(3)}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-xs">Probability</span>
-                              <span className="font-data text-xs text-foreground tabular-nums">{item.prob.toFixed(3)}</span>
-                            </div>
-                            <div className="h-px bg-border/40" />
-                            <div className="flex justify-between">
-                              <span className="text-xs font-medium text-primary/80">Score</span>
-                              <span className="font-data text-xs font-medium text-primary tabular-nums">
-                                {computeBoltzScore(item.aff, item.prob).toFixed(3)}
-                              </span>
-                            </div>
-                          </div>
+                <Card className="flex h-[clamp(180px,28vh,320px)] min-h-0 flex-col border-border/60 bg-card/80">
+                  <CardHeader className="shrink-0 pb-3">
+                    <div className="flex items-center gap-2">
+                      <FileText className="h-4 w-4 text-muted-foreground" />
+                      <CardTitle className="font-display text-base">Run Logs</CardTitle>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="min-h-0 flex-1">
+                    {selectedRun.source === 'convex' ? (
+                      <p className="text-sm text-muted-foreground">Logs are only available for local runs.</p>
+                    ) : (
+                      <div className="h-full overflow-auto rounded-md border border-border bg-background p-3">
+                        <div className="space-y-1 font-data text-[10px] leading-relaxed text-foreground">
+                          {runLogLines.length > 0
+                            ? runLogLines.map(renderLogLine)
+                            : isLogLoading
+                              ? 'Loading logs...'
+                              : 'No log output yet.'}
                         </div>
-                      ))}
-                    </CardContent>
-                  </Card>
-                ) : null}
-
-                {selectedMolecule && selectedMolecule.trajectory.length > 0 ? (
-                  <Card className="border-border/60 bg-card/80">
-                    <CardHeader className="pb-3">
-                      <div className="flex items-center gap-2">
-                        <Atom className="h-4 w-4 text-primary" />
-                        <CardTitle className="font-display text-base">Reaction Pathway</CardTitle>
                       </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="visualization" className="m-0 overflow-x-hidden p-3">
+              <div
+                className="grid min-w-0 items-start gap-3 xl:grid-cols-[var(--visualization-table-width)_8px_minmax(0,1fr)] xl:gap-x-0"
+                style={{ '--visualization-table-width': `${visualizationTableWidth}px` } as CSSProperties}
+              >
+                <Card className="flex min-w-0 flex-col overflow-hidden border-border/60 bg-card/80 xl:col-start-1">
+                  <CardHeader className="pb-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <Beaker className="h-4 w-4 text-primary" />
+                        <CardTitle className="font-display text-base">Generated Molecules</CardTitle>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline" className="font-data text-[10px]">
+                          {plotFilteredSmiles ? `${displayedMolecules.length} filtered` : `${molecules.length} total`}
+                        </Badge>
+                        {plotFilteredSmiles ? (
+                          <Badge variant="outline" className="font-data text-[10px]">
+                            {molecules.length} total
+                          </Badge>
+                        ) : null}
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="min-h-0 flex-1 p-0">
+                    <div
+                      ref={moleculeTableRef}
+                      className="h-full overflow-auto"
+                      style={{
+                        height: `clamp(${MOLECULE_TABLE_HEADER_HEIGHT + MOLECULE_ROW_HEIGHT * MOLECULE_TABLE_MIN_VISIBLE_ROWS}px, calc(100vh - 245px), ${MOLECULE_TABLE_HEADER_HEIGHT + MOLECULE_ROW_HEIGHT * MOLECULE_TABLE_MAX_VISIBLE_ROWS}px)`,
+                      }}
+                      onScroll={handleMoleculeTableScroll}
+                    >
+                      <div className="sticky top-0 z-10 grid w-fit grid-cols-[2.25rem_180px_4.75rem] gap-x-3 border-b border-border bg-card px-4 py-3 font-data text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                        <div className="text-center">ID</div>
+                        <div>Compound</div>
+                        <div className="text-right">Boltz Score</div>
+                      </div>
+                      <div className="relative" style={{ height: displayedMolecules.length * MOLECULE_ROW_HEIGHT }}>
+                        {displayedMolecules.length === 0 ? (
+                          <div className="absolute inset-x-0 top-0 px-4 py-6 text-sm text-muted-foreground">
+                            No molecules to display.
+                          </div>
+                        ) : (
+                          virtualMolecules.map((molecule, idx) => {
+                            const moleculeIndex = virtualMoleculeStart + idx;
+                            const isSelected = selectedMolecule?.smiles === molecule.smiles;
+
+                            return (
+                              <div
+                                key={molecule.smiles}
+                                className={`group absolute left-3 grid w-fit cursor-pointer grid-cols-[2.25rem_180px_4.75rem] items-start gap-x-3 rounded-md border px-3 py-2 transition-colors ${
+                                  isSelected
+                                    ? 'border-primary/30 bg-primary/10'
+                                    : 'border-transparent bg-transparent hover:border-border/70 hover:bg-secondary/40'
+                                }`}
+                                style={{
+                                  height: MOLECULE_ROW_HEIGHT - 8,
+                                  transform: `translateY(${moleculeIndex * MOLECULE_ROW_HEIGHT}px)`,
+                                }}
+                                onClick={() => setSelectedMolecule(molecule)}
+                              >
+                                {isSelected ? <div className="absolute bottom-3 left-0 top-3 w-1 rounded-r-full bg-primary" /> : null}
+                                <div className="pt-2 text-center font-data text-xs font-medium tabular-nums text-muted-foreground">
+                                  {moleculeIndex + 1}
+                                </div>
+                                <CompoundImageCell
+                                  smiles={molecule.smiles}
+                                  renderImage={!isMoleculeTableScrolling || isSelected}
+                                />
+                                <div className="pt-2 text-right font-data text-xs font-medium tabular-nums text-foreground">
+                                  {molecule.reward.toFixed(3)}
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <div
+                  className="hidden self-stretch cursor-col-resize rounded-full bg-border/40 transition-colors hover:bg-primary/40 xl:col-start-2 xl:block"
+                  role="separator"
+                  aria-label="Resize table and visualization columns"
+                  aria-orientation="vertical"
+                  title="Drag to resize table and visualization columns"
+                  onPointerDown={startVisualizationColumnResize}
+                />
+
+                <div className="min-w-0 space-y-3 xl:col-start-3">
+                  <Card className="flex min-w-0 flex-col overflow-hidden border-border/60 bg-card/80">
+                    <CardHeader className="px-3 py-2">
+                      <CardTitle className="font-display text-sm">Protein-Ligand Complex</CardTitle>
                     </CardHeader>
-                    <CardContent>
-                      <ReactionPathway trajectory={selectedMolecule.trajectory} />
+                    <CardContent className="p-0" style={{ height: visualizationTopHeight }}>
+                      <MolstarViewer
+                        pdbContent={complexContent}
+                        selectedResidues={[]}
+                        onResidueSelect={() => {}}
+                        compact
+                      />
                     </CardContent>
                   </Card>
-                ) : null}
-              </div>
 
-              <Card className="min-h-[420px] overflow-hidden border-border/60 bg-card/80">
-                <CardHeader className="pb-3">
-                  <CardTitle className="font-display text-base">Protein–Ligand Complex</CardTitle>
-                </CardHeader>
-                <CardContent className="h-[520px] p-0">
-                  <MolstarViewer
-                    pdbContent={complexContent}
-                    selectedResidues={[]}
-                    onResidueSelect={() => {}}
+                  <div
+                    className="hidden h-2 cursor-row-resize rounded-full bg-border/40 transition-colors hover:bg-primary/40 xl:block"
+                    role="separator"
+                    aria-label="Resize Mol* viewer height"
+                    aria-orientation="horizontal"
+                    title="Drag to resize the Mol* viewer"
+                    onPointerDown={startVisualizationRowResize}
                   />
-                </CardContent>
-              </Card>
-            </div>
 
-            <ParallelCoordinatesPanel
-              molecules={molecules}
-              isFiltered={plotFilteredSmiles !== null}
-              onFilteredSmilesChange={(smiles) => {
-                setPlotFilteredSmiles(smiles ? new Set(smiles) : null);
-                setTablePage(1);
-              }}
-            />
-
-            {/* Molecule table */}
-            <Card className="border-border/60 bg-card/80">
-              <CardHeader className="pb-3">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <Beaker className="h-4 w-4 text-primary" />
-                    <CardTitle className="font-display text-base">Generated Molecules</CardTitle>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="outline" className="font-data text-[10px]">
-                      {plotFilteredSmiles ? `${displayedMolecules.length} filtered` : `${molecules.length} total`}
-                    </Badge>
-                    {plotFilteredSmiles ? (
-                      <Badge variant="outline" className="font-data text-[10px]">
-                        {molecules.length} total
-                      </Badge>
-                    ) : null}
-                    <Badge variant="outline" className="font-data text-[10px]">
-                      {displayedMolecules.length === 0 ? 0 : pageStart + 1}–{pageEnd}
-                    </Badge>
-                    <Badge variant="secondary" className="font-data text-[10px]">{safePage}/{totalPages}</Badge>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setTablePage((page) => Math.max(1, page - 1))}
-                      disabled={safePage <= 1}
-                    >
-                      Prev
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setTablePage((page) => Math.min(totalPages, page + 1))}
-                      disabled={safePage >= totalPages}
-                    >
-                      Next
-                    </Button>
-                  </div>
+                  <ParallelCoordinatesPanel
+                    molecules={molecules}
+                    maxSamples={PARALLEL_COORDINATE_SAMPLE_LIMIT}
+                    isFiltered={plotFilteredSmiles !== null}
+                    onFilteredSmilesChange={(smiles) => {
+                      setPlotFilteredSmiles(smiles ? new Set(smiles) : null);
+                    }}
+                  />
                 </div>
-              </CardHeader>
-              <CardContent className="p-0">
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow className="hover:bg-transparent">
-                        <TableHead className="w-10 font-data text-[10px]">#</TableHead>
-                        <TableHead className="min-w-[200px] font-data text-[10px]">SMILES</TableHead>
-                        <TableHead className="w-[4.5rem] font-data text-[10px]">Reward</TableHead>
-                        <TableHead className="w-[4.5rem] font-data text-[10px]" title="Ensemble affinity">
-                          Ens A
-                        </TableHead>
-                        <TableHead className="w-[4.5rem] font-data text-[10px]" title="Ensemble probability">
-                          Ens P
-                        </TableHead>
-                        <TableHead className="w-[4.5rem] font-data text-[10px]" title="Model 1 affinity">
-                          M1 A
-                        </TableHead>
-                        <TableHead className="w-[4.5rem] font-data text-[10px]" title="Model 1 probability">
-                          M1 P
-                        </TableHead>
-                        <TableHead className="w-[4.5rem] font-data text-[10px]" title="Model 2 affinity">
-                          M2 A
-                        </TableHead>
-                        <TableHead className="w-[4.5rem] font-data text-[10px]" title="Model 2 probability">
-                          M2 P
-                        </TableHead>
-                        <TableHead className="w-16 font-data text-[10px]">Steps</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {pagedMolecules.map((molecule, idx) => (
-                        <TableRow
-                          key={molecule.smiles}
-                          className={`cursor-pointer transition-colors ${selectedMolecule?.smiles === molecule.smiles ? 'bg-primary/5' : 'hover:bg-secondary/30'}`}
-                          onClick={() => setSelectedMolecule(molecule)}
-                        >
-                          <TableCell className="align-top py-2 font-data text-xs font-medium tabular-nums">
-                            {pageStart + idx + 1}
-                          </TableCell>
-                          <TableCell className="min-w-[12rem] max-w-none py-2 align-top">
-                            <SmilesCell smiles={molecule.smiles} />
-                          </TableCell>
-                          <TableCell className="py-2 align-top font-data text-xs tabular-nums">
-                            {molecule.reward.toFixed(3)}
-                          </TableCell>
-                          <TableCell className="py-2 align-top font-data text-xs tabular-nums">
-                            {molecule.boltzScores ? fmtBoltz(molecule.boltzScores.affinity_ensemble) : 'N/A'}
-                          </TableCell>
-                          <TableCell className="py-2 align-top font-data text-xs tabular-nums">
-                            {molecule.boltzScores ? fmtBoltz(molecule.boltzScores.probability_ensemble) : 'N/A'}
-                          </TableCell>
-                          <TableCell className="py-2 align-top font-data text-xs tabular-nums">
-                            {molecule.boltzScores ? fmtBoltz(molecule.boltzScores.affinity_model1) : 'N/A'}
-                          </TableCell>
-                          <TableCell className="py-2 align-top font-data text-xs tabular-nums">
-                            {molecule.boltzScores ? fmtBoltz(molecule.boltzScores.probability_model1) : 'N/A'}
-                          </TableCell>
-                          <TableCell className="py-2 align-top font-data text-xs tabular-nums">
-                            {molecule.boltzScores ? fmtBoltz(molecule.boltzScores.affinity_model2) : 'N/A'}
-                          </TableCell>
-                          <TableCell className="py-2 align-top font-data text-xs tabular-nums">
-                            {molecule.boltzScores ? fmtBoltz(molecule.boltzScores.probability_model2) : 'N/A'}
-                          </TableCell>
-                          <TableCell className="py-2 align-top">
-                            <Badge variant="secondary" className="font-data text-[10px]">
-                              {molecule.trajectory.length}
-                            </Badge>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
+              </div>
+            </TabsContent>
+          </Tabs>
         </div>
       ) : (
         <div className="flex flex-1 items-center justify-center">

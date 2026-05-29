@@ -4,6 +4,7 @@
  */
 
 import type { IpcChannels, OptConfig, GeneratedObject, BoltzScore, RewardCacheEntry, MoleculeResult } from '@shared/types';
+import { normalizePdbResiduesToOneIndexed } from '@shared/pdbResidues';
 
 // Helper to create a file input and get selection
 function selectFile(accept: string): Promise<File | null> {
@@ -39,28 +40,6 @@ export const webFallback: {
   // File operations
   'file:select-pdb': async () => {
     const file = await selectFile('.pdb');
-    if (file) {
-      const content = await readFileAsText(file);
-      const fakePath = `web://${file.name}`;
-      fileStore.set(fakePath, { file, content });
-      return fakePath;
-    }
-    return null;
-  },
-
-  'file:select-ligand': async () => {
-    const file = await selectFile('.mol2,.sdf,.mol,.pdb,.cif,.mmcif');
-    if (file) {
-      const content = await readFileAsText(file);
-      const fakePath = `web://${file.name}`;
-      fileStore.set(fakePath, { file, content });
-      return fakePath;
-    }
-    return null;
-  },
-
-  'file:select-json': async () => {
-    const file = await selectFile('.json');
     if (file) {
       const content = await readFileAsText(file);
       const fakePath = `web://${file.name}`;
@@ -106,12 +85,34 @@ export const webFallback: {
     throw new Error(`File not found: ${path}`);
   },
 
-  'file:read-text': async (path: string) => {
+  'file:normalize-pdb-residues': async (path: string) => {
     const stored = fileStore.get(path);
-    if (stored) {
-      return stored.content;
+    if (!stored) {
+      throw new Error(`File not found: ${path}`);
     }
-    throw new Error(`File not found: ${path}`);
+
+    const normalized = normalizePdbResiduesToOneIndexed(stored.content);
+    if (!normalized.converted) {
+      return {
+        path,
+        content: stored.content,
+        converted: false,
+        message: null,
+      };
+    }
+
+    const normalizedPath = path.replace(/(\.pdb)?$/i, '.1indexed.pdb');
+    const normalizedFile = new File([normalized.content], normalizedPath.replace(/^web:\/\//, ''), {
+      type: stored.file.type || 'chemical/x-pdb',
+    });
+    fileStore.set(normalizedPath, { file: normalizedFile, content: normalized.content });
+
+    return {
+      path: normalizedPath,
+      content: normalized.content,
+      converted: true,
+      message: normalized.message,
+    };
   },
 
   'file:read-yaml': async (path: string) => {
@@ -146,7 +147,7 @@ export const webFallback: {
   },
 
   // Run management (mock implementations for web)
-  'run:start': async (_payload: { config: OptConfig; configPath?: string | null; configId?: string | null; name?: string | null }) => {
+  'run:start': async (_payload: { config: OptConfig; configPath?: string | null; name?: string | null }) => {
     alert('Training runs can only be started in the Electron app.');
     throw new Error('Not available in web mode');
   },
