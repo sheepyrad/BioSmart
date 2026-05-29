@@ -7,4 +7,5 @@
 ## Learned Workspace Facts
 
 - FlashBind optimization invokes FABind_plus scripts through `synthflow.utils.conda_env.run_in_conda_env`, using the `fabind` conda env for those subprocesses.
+- FABind+ and FlashBind `.ckpt`/`.bin` weights are not in git; run `./scripts/setup-cgflow-assets.sh` (or `cgflow/scripts/setup/download_flashbind_assets.sh`) after submodule init.
 - The FlashBind task supports `hf_hub_cache` so representation subprocesses (e.g. ESM3 downloads) can set `HF_HUB_CACHE` to a large-disk path.
