@@ -1,4 +1,4 @@
 [submodule "cgflow"]
 	path = cgflow
-	url = file:///home/conrad_hku/BioSmart/cgflow
+	url = https://github.com/sheepyrad/cgflow.git
 	branch = main
