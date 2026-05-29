@@ -5,51 +5,104 @@ import type { BoltzMetricSeries } from '@shared/types';
 import EChart from '@/components/EChart';
 import { TrendingUp } from 'lucide-react';
 import type { EChartsOption } from 'echarts';
+import { useChartTheme } from '@/lib/chartTheme';
+import { cn } from '@/lib/utils';
 
 interface BoltzMetricsPanelProps {
   metrics: BoltzMetricSeries | null;
   isLoading?: boolean;
+  className?: string;
+  chartHeight?: number;
 }
 
-const GRID_COLOR = 'rgba(255,255,255,0.06)';
-const AXIS_COLOR = 'rgba(255,255,255,0.3)';
+function formatAxisValue(value: number | string): string {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) return String(value);
+  if (Math.abs(numeric) >= 1000) return Math.round(numeric).toLocaleString();
+  if (Number.isInteger(numeric)) return String(numeric);
+  return numeric.toFixed(2).replace(/\.?0+$/, '');
+}
+
+function getNiceStep(value: number): number {
+  if (value <= 0) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  const normalized = value / magnitude;
+  if (normalized <= 1) return magnitude;
+  if (normalized <= 2.5) return 2 * magnitude;
+  if (normalized <= 5) return 5 * magnitude;
+  return 10 * magnitude;
+}
+
+function formatWholeNumber(value: number | string): string {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) return String(value);
+  return Math.round(numeric).toLocaleString();
+}
 
 function lineChartOption(
   data: Array<{ label: string; color: string; values: number[] }>,
   yAxisTitle: string,
+  theme: ReturnType<typeof useChartTheme>,
   yMax?: number
 ): EChartsOption {
   const pointCount = data[0]?.values.length ?? 0;
   const xValues = Array.from({ length: pointCount }, (_, idx) => idx + 1);
+  const xTickStep = getNiceStep(pointCount / 6);
+  const yAxisMax =
+    typeof yMax === 'number' && Number.isFinite(yMax)
+      ? yMax <= 1
+        ? 1
+        : Math.ceil(yMax * 1.05)
+      : undefined;
   return {
     animation: false,
     tooltip: {
       trigger: 'axis',
-      backgroundColor: 'rgba(10, 14, 28, 0.92)',
-      borderColor: 'rgba(255,255,255,0.12)',
-      textStyle: { color: '#d5d9e4', fontFamily: '"IBM Plex Mono", monospace', fontSize: 11 },
+      backgroundColor: theme.tooltipBackground,
+      borderColor: theme.tooltipBorder,
+      textStyle: { color: theme.tooltipText, fontFamily: '"IBM Plex Mono", monospace', fontSize: 12 },
     },
-    grid: { left: 62, right: 12, top: 10, bottom: 46 },
+    legend: {
+      top: 10,
+      right: 16,
+      itemWidth: 10,
+      itemHeight: 7,
+      textStyle: { color: theme.axisText, fontSize: 11, fontFamily: '"IBM Plex Mono", monospace' },
+    },
+    grid: { left: 62, right: 24, top: 46, bottom: 46, containLabel: true },
     xAxis: {
       type: 'category',
       data: xValues,
       name: 'Molecules processed',
       nameLocation: 'middle',
-      nameGap: 30,
-      axisLabel: { color: AXIS_COLOR, fontSize: 10 },
-      nameTextStyle: { color: AXIS_COLOR, fontSize: 10 },
-      axisLine: { lineStyle: { color: GRID_COLOR } },
+      nameGap: 24,
+      axisLabel: {
+        color: theme.axisText,
+        fontSize: 11,
+        interval: (_index: number, value: string) => {
+          const numeric = Number(value);
+          if (!Number.isFinite(numeric)) return false;
+          if (pointCount <= 12) return true;
+          return numeric === 1 || numeric % xTickStep === 0;
+        },
+        formatter: formatWholeNumber,
+      },
+      nameTextStyle: { color: theme.axisText, fontSize: 11 },
+      axisLine: { lineStyle: { color: theme.grid } },
       splitLine: { show: false },
     },
     yAxis: {
       type: 'value',
       name: yAxisTitle,
-      nameTextStyle: { color: AXIS_COLOR, fontSize: 10 },
-      axisLabel: { color: AXIS_COLOR, fontSize: 10 },
-      axisLine: { lineStyle: { color: GRID_COLOR } },
-      splitLine: { lineStyle: { color: GRID_COLOR } },
+      nameLocation: 'middle',
+      nameRotate: 90,
+      nameGap: 44,
+      nameTextStyle: { color: theme.axisText, fontSize: 11, align: 'center' },
+      axisLabel: { color: theme.axisText, fontSize: 11, formatter: formatAxisValue },
+      axisLine: { lineStyle: { color: theme.grid } },
+      splitLine: { lineStyle: { color: theme.grid } },
       min: 0,
-      ...(typeof yMax === 'number' && Number.isFinite(yMax) ? { max: yMax * 1.05 } : {}),
+      ...(yAxisMax !== undefined ? { max: yAxisMax } : {}),
     },
     series: data.map((series) => ({
       name: series.label,
@@ -59,7 +112,7 @@ function lineChartOption(
       smooth: true,
       lineStyle: {
         color: series.color,
-        width: 1.5,
+        width: 2,
       },
     })),
   };
@@ -73,7 +126,13 @@ function getMaxValue(values: number[]): number {
   return max;
 }
 
-export default function BoltzMetricsPanel({ metrics, isLoading = false }: BoltzMetricsPanelProps) {
+export default function BoltzMetricsPanel({
+  metrics,
+  isLoading = false,
+  className,
+  chartHeight = 224,
+}: BoltzMetricsPanelProps) {
+  const chartTheme = useChartTheme();
   const [mode, setMode] = useState<'all' | '10k'>('all');
   const visibleCount = useMemo(() => {
     if (!metrics) return 0;
@@ -107,8 +166,8 @@ export default function BoltzMetricsPanel({ metrics, isLoading = false }: BoltzM
   }, [thresholdSeries]);
 
   return (
-    <Card className="border-border/60 bg-card/80">
-      <CardHeader className="pb-2">
+    <Card className={cn('flex min-h-0 flex-col border-border/60 bg-card/80', className)}>
+      <CardHeader className="shrink-0 pb-1">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <TrendingUp className="h-4 w-4 text-primary" />
@@ -134,49 +193,29 @@ export default function BoltzMetricsPanel({ metrics, isLoading = false }: BoltzM
           </div>
         </div>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="px-4 pb-4 pt-2">
         {isLoading ? (
-          <div className="h-44 w-full skeleton rounded" />
+          <div className="w-full skeleton rounded" style={{ height: chartHeight }} />
         ) : !metrics || metrics.pointCount === 0 || !mainSeries || !thresholdSeries ? (
           <p className="text-sm text-muted-foreground">
             No Boltz metric data available yet.
           </p>
         ) : (
-          <>
-            <div className="space-y-1.5">
-              <div className="h-44 w-full overflow-hidden rounded-md border border-border bg-background">
+          <div className="grid gap-3 xl:grid-cols-2">
+            <div className="w-full overflow-hidden rounded-md border border-border bg-background" style={{ height: chartHeight }}>
                 <EChart
-                  option={lineChartOption(mainSeries, 'Binding Probability', 1)}
+                  option={lineChartOption(mainSeries, 'Binding Probability', chartTheme, 1)}
                   className="h-full w-full"
                 />
-              </div>
-              <div className="flex gap-3 px-1 font-data text-[10px] text-muted-foreground">
-                {mainSeries.map((entry) => (
-                  <span key={entry.label} className="inline-flex items-center gap-1.5">
-                    <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: entry.color }} />
-                    {entry.label}
-                  </span>
-                ))}
-              </div>
             </div>
 
-            <div className="space-y-1.5">
-              <div className="h-44 w-full overflow-hidden rounded-md border border-border bg-background">
+            <div className="w-full overflow-hidden rounded-md border border-border bg-background" style={{ height: chartHeight }}>
                 <EChart
-                  option={lineChartOption(thresholdSeries, 'Number of molecules', thresholdMax)}
+                  option={lineChartOption(thresholdSeries, 'Number of molecules', chartTheme, thresholdMax)}
                   className="h-full w-full"
                 />
-              </div>
-              <div className="flex gap-3 px-1 font-data text-[10px] text-muted-foreground">
-                {thresholdSeries.map((entry) => (
-                  <span key={entry.label} className="inline-flex items-center gap-1.5">
-                    <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: entry.color }} />
-                    {entry.label}
-                  </span>
-                ))}
-              </div>
             </div>
-          </>
+          </div>
         )}
       </CardContent>
     </Card>

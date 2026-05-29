@@ -36,7 +36,7 @@ export default function EChart({ option, className, onChartReady, onEvents }: EC
         lazyUpdate
         autoResize
         onEvents={onEvents}
-        opts={{ renderer: 'canvas' }}
+        opts={{ renderer: 'svg' }}
         style={{ height: '100%', width: '100%' }}
         onChartReady={(chart) => {
           chartRef.current = chart;

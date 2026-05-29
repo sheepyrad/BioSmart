@@ -2,46 +2,8 @@ import { defineSchema, defineTable } from 'convex/server';
 import { v } from 'convex/values';
 
 export default defineSchema({
-  // Run configurations
-  configs: defineTable({
-    name: v.string(),
-    resultDir: v.string(),
-    envDir: v.string(),
-    maxAtoms: v.number(),
-    subsamplingRatio: v.number(),
-    proteinPath: v.string(),
-    center: v.union(v.array(v.number()), v.null()),
-    refLigandPath: v.union(v.string(), v.null()),
-    size: v.array(v.number()),
-    numSteps: v.number(),
-    numSamplingPerStep: v.number(),
-    temperatureMin: v.number(),
-    temperatureMax: v.number(),
-    seed: v.number(),
-    poseModel: v.string(),
-    poseSteps: v.number(),
-    samplingTau: v.number(),
-    randomActionProb: v.number(),
-    replayWarmupStep: v.number(),
-    replayCapacity: v.number(),
-    // Boltz config
-    boltzBaseYaml: v.string(),
-    boltzTargetResidues: v.array(v.string()),
-    boltzMsaPath: v.union(v.string(), v.null()),
-    boltzCacheDir: v.union(v.string(), v.null()),
-    boltzUseMsaServer: v.boolean(),
-    boltzWorker: v.number(),
-    // Metadata
-    createdAt: v.number(),
-    updatedAt: v.number(),
-    lastUsedAt: v.union(v.number(), v.null()),
-  })
-    .index('by_name', ['name'])
-    .index('by_last_used', ['lastUsedAt']),
-
   // Training runs
   runs: defineTable({
-    configId: v.id('configs'),
     name: v.string(),
     status: v.union(
       v.literal('idle'),
@@ -58,9 +20,7 @@ export default defineSchema({
     startedAt: v.union(v.number(), v.null()),
     completedAt: v.union(v.number(), v.null()),
     lastUpdatedAt: v.number(),
-  })
-    .index('by_status', ['status'])
-    .index('by_config', ['configId']),
+  }).index('by_status', ['status']),
 
   // Uploaded files (PDB, YAML, etc.)
   files: defineTable({

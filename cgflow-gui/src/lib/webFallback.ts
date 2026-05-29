@@ -4,6 +4,7 @@
  */
 
 import type { IpcChannels, OptConfig, GeneratedObject, BoltzScore, RewardCacheEntry, MoleculeResult } from '@shared/types';
+import { normalizePdbResiduesToOneIndexed } from '@shared/pdbResidues';
 
 // Helper to create a file input and get selection
 function selectFile(accept: string): Promise<File | null> {
@@ -84,6 +85,36 @@ export const webFallback: {
     throw new Error(`File not found: ${path}`);
   },
 
+  'file:normalize-pdb-residues': async (path: string) => {
+    const stored = fileStore.get(path);
+    if (!stored) {
+      throw new Error(`File not found: ${path}`);
+    }
+
+    const normalized = normalizePdbResiduesToOneIndexed(stored.content);
+    if (!normalized.converted) {
+      return {
+        path,
+        content: stored.content,
+        converted: false,
+        message: null,
+      };
+    }
+
+    const normalizedPath = path.replace(/(\.pdb)?$/i, '.1indexed.pdb');
+    const normalizedFile = new File([normalized.content], normalizedPath.replace(/^web:\/\//, ''), {
+      type: stored.file.type || 'chemical/x-pdb',
+    });
+    fileStore.set(normalizedPath, { file: normalizedFile, content: normalized.content });
+
+    return {
+      path: normalizedPath,
+      content: normalized.content,
+      converted: true,
+      message: normalized.message,
+    };
+  },
+
   'file:read-yaml': async (path: string) => {
     const stored = fileStore.get(path);
     if (stored) {
@@ -116,7 +147,7 @@ export const webFallback: {
   },
 
   // Run management (mock implementations for web)
-  'run:start': async (_payload: { config: OptConfig; configPath?: string | null; configId?: string | null; name?: string | null }) => {
+  'run:start': async (_payload: { config: OptConfig; configPath?: string | null; name?: string | null }) => {
     alert('Training runs can only be started in the Electron app.');
     throw new Error('Not available in web mode');
   },

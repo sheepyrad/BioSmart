@@ -17,6 +17,7 @@ import type {
   MoleculeResult,
   TrajectoryStep,
 } from '../shared/types';
+import { normalizePdbResiduesToOneIndexed } from '../shared/pdbResidues';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -173,6 +174,22 @@ function configHasConvexPaths(config: OptConfig): boolean {
   ].some((value) => isConvexPath(value ?? null));
 }
 
+function safeFileName(fileName: string): string {
+  return fileName.replace(/[^a-zA-Z0-9._-]/g, '_') || 'protein.pdb';
+}
+
+function normalizedPdbPathFor(filePath: string): string {
+  const parsedConvexPath = parseConvexPath(filePath);
+  if (parsedConvexPath) {
+    const normalizedDir = path.join(app.getPath('userData'), 'normalized-pdbs');
+    return path.join(normalizedDir, `${parsedConvexPath.id}_${safeFileName(parsedConvexPath.name || 'protein.pdb')}`);
+  }
+
+  const parsedPath = path.parse(filePath);
+  const extension = parsedPath.ext || '.pdb';
+  return path.join(parsedPath.dir, `${parsedPath.name}.1indexed${extension}`);
+}
+
 // ============================================================================
 // Window Creation
 // ============================================================================
@@ -314,6 +331,33 @@ ipcMain.handle('file:read-pdb', async (_event, filePath: string) => {
     return await readConvexFileText(filePath);
   }
   return fs.readFile(filePath, 'utf-8');
+});
+
+ipcMain.handle('file:normalize-pdb-residues', async (_event, filePath: string) => {
+  const content = isConvexPath(filePath)
+    ? await readConvexFileText(filePath)
+    : await fs.readFile(filePath, 'utf-8');
+  const normalized = normalizePdbResiduesToOneIndexed(content);
+
+  if (!normalized.converted) {
+    return {
+      path: filePath,
+      content,
+      converted: false,
+      message: null,
+    };
+  }
+
+  const normalizedPath = normalizedPdbPathFor(filePath);
+  await fs.mkdir(path.dirname(normalizedPath), { recursive: true });
+  await fs.writeFile(normalizedPath, normalized.content, 'utf-8');
+
+  return {
+    path: normalizedPath,
+    content: normalized.content,
+    converted: true,
+    message: normalized.message,
+  };
 });
 
 ipcMain.handle('file:read-yaml', async (_event, filePath: string) => {

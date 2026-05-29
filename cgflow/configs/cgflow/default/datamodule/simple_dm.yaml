@@ -1,4 +1,0 @@
-_registry_: "datamodule"
-_type_: SimpleDataModule
-batch_size: 1
-num_workers: 0
