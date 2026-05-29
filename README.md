@@ -72,3 +72,21 @@ For more details, see `cgflow-gui/README.md`.
 - `Data/Supplementary Data S1/`: Top-100 unique Boltz compound pairwise Tanimoto similarity data and helper script for reporting the average pairwise Tanimoto similarity.
 
 Each figure folder is intended to be self-contained for thesis submission: it includes the plotting script, the data needed by that script, and the submitted figure output files where applicable.
+
+## CGFlow dependency
+
+CGFlow is included as a git submodule (fork: [sheepyrad/cgflow](https://github.com/sheepyrad/cgflow), pinned at tag `drug-pipeline-v1`).
+
+Clone with submodules:
+
+```bash
+git clone --recurse-submodules https://github.com/sheepyrad/Drug_pipeline.git
+```
+
+If the repo is already cloned:
+
+```bash
+git submodule update --init --recursive
+```
+
+The `cgflow-gui/` app expects CGFlow at `../cgflow` relative to its project root.
