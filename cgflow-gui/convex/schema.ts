@@ -5,6 +5,7 @@ export default defineSchema({
   // Training runs
   runs: defineTable({
     name: v.string(),
+    engine: v.union(v.literal('boltz'), v.literal('flashbind')),
     status: v.union(
       v.literal('idle'),
       v.literal('running'),
@@ -45,8 +46,12 @@ export default defineSchema({
   // Generated molecules (synced from SQLite)
   molecules: defineTable({
     runId: v.id('runs'),
+    engine: v.union(v.literal('boltz'), v.literal('flashbind')),
     smiles: v.string(),
     reward: v.number(),
+    normalizedAffinity: v.union(v.number(), v.null()),
+    normalizedProbability: v.union(v.number(), v.null()),
+    normalizedScore: v.union(v.number(), v.null()),
     trajectory: v.string(), // JSON string
     // Boltz scores
     affinityEnsemble: v.union(v.number(), v.null()),

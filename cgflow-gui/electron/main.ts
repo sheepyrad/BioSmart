@@ -11,8 +11,8 @@ import { api } from '../convex/_generated/api';
 import type {
   OptConfig,
   RunInfo,
-  GeneratedObject,
   BoltzScore,
+  GeneratedObject,
   RewardCacheEntry,
   MoleculeResult,
   TrajectoryStep,
@@ -33,8 +33,13 @@ let isQuitting = false;
 
 // Path to cgflow scripts
 const CGFLOW_ROOT = path.resolve(__dirname, '../../cgflow');
-const OPT_SCRIPT = path.join(CGFLOW_ROOT, 'scripts/opt/opt_boltz.py');
+const OPT_BOLTZ_SCRIPT = path.join(CGFLOW_ROOT, 'scripts/opt/opt_boltz.py');
+const OPT_FLASHBIND_SCRIPT = path.join(CGFLOW_ROOT, 'scripts/opt/opt_flashbind.py');
 const CONDA_ENV_NAME = process.env.CGFLOW_CONDA_ENV?.trim() || 'cgflow';
+
+function getOptScriptForEngine(engine: OptConfig['engine'] | RunInfo['engine']): string {
+  return engine === 'flashbind' ? OPT_FLASHBIND_SCRIPT : OPT_BOLTZ_SCRIPT;
+}
 const CONVEX_URL = process.env.VITE_CONVEX_URL ?? process.env.CONVEX_URL;
 const convexClient = CONVEX_URL ? new ConvexHttpClient(CONVEX_URL) : null;
 
@@ -303,6 +308,25 @@ ipcMain.handle('file:select-pdb', async () => {
   return result.canceled ? null : result.filePaths[0] ?? null;
 });
 
+ipcMain.handle('file:select-ligand', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [
+      { name: 'Ligand Files', extensions: ['mol2', 'sdf', 'mol', 'pdb', 'cif', 'mmcif'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  });
+  return result.canceled ? null : result.filePaths[0] ?? null;
+});
+
+ipcMain.handle('file:select-json', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [{ name: 'JSON Files', extensions: ['json'] }],
+  });
+  return result.canceled ? null : result.filePaths[0] ?? null;
+});
+
 ipcMain.handle('file:select-msa', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openFile'],
@@ -327,6 +351,13 @@ ipcMain.handle('file:select-directory', async () => {
 });
 
 ipcMain.handle('file:read-pdb', async (_event, filePath: string) => {
+  if (isConvexPath(filePath)) {
+    return await readConvexFileText(filePath);
+  }
+  return fs.readFile(filePath, 'utf-8');
+});
+
+ipcMain.handle('file:read-text', async (_event, filePath: string) => {
   if (isConvexPath(filePath)) {
     return await readConvexFileText(filePath);
   }
@@ -418,6 +449,8 @@ ipcMain.handle('run:start', async (_event, payload: { config: OptConfig; configP
   const timestamp = new Date().toISOString().replace(/[:.]/g, '').substring(0, 15);
   const resultDir = path.join(config.result_dir, timestamp);
 
+  const engine = config.engine === 'flashbind' ? 'flashbind' : 'boltz';
+
   const runInfo: RunInfo = {
     id: runId,
     name: payload.name || `Run ${timestamp}`,
@@ -430,10 +463,11 @@ ipcMain.handle('run:start', async (_event, payload: { config: OptConfig; configP
     lastUpdatedAt: new Date().toISOString(),
     checkpointPath: null,
     error: null,
+    engine,
   };
 
   const args = [
-    OPT_SCRIPT,
+    getOptScriptForEngine(engine),
     '--config', configPath,
     '--result_dir', config.result_dir,
     '--env_dir', config.env_dir,
@@ -532,7 +566,7 @@ ipcMain.handle('run:resume', async (_event, runId: string, checkpointPath: strin
 
   const { info } = run;
   const args = [
-    OPT_SCRIPT,
+    getOptScriptForEngine(info.engine),
     '--config', info.configPath,
     '--resume_from', checkpointPath,
   ];

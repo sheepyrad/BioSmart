@@ -8,7 +8,8 @@ import { Badge } from '@/components/ui/badge';
 import { useIpcInvoke, useIpcEvent, useRunOutput } from '@/hooks/useIpc';
 import MolstarViewer from '@/components/MolstarViewer';
 import FileSelector from '@/components/FileSelector';
-import type { OptConfig, RunInfo, BoltzConfig } from '@shared/types';
+import type { OptConfig, RunInfo, BoltzConfig, FlashBindConfig, OptimizationEngine } from '@shared/types';
+import { OptConfigSchema } from '@shared/types';
 import { normalizePdbResiduesToOneIndexed } from '@shared/pdbResidues';
 import YAML from 'yaml';
 import {
@@ -44,7 +45,34 @@ const defaultBoltzConfig: BoltzConfig = {
   worker: 1,
 };
 
+const defaultFlashBindConfig: FlashBindConfig = {
+  root: './src/FlashBind',
+  protein_id: '',
+  pdb_dir: '',
+  protein_repr: '',
+  ligand_repr: '',
+  prots_json: null,
+  fabind_checkpoint: '',
+  binary_checkpoints: [],
+  value_checkpoints: [],
+  fabind_conda_env: 'fabind',
+  flashbind_conda_env: 'flashaffinity',
+  fabind_num_threads: 8,
+  fabind_batch_size: 4,
+  fabind_post_optim: true,
+  devices: 1,
+  accelerator: 'gpu',
+  num_workers: 16,
+  distance_threshold: 20,
+  repr_n_jobs: -1,
+  auto_generate_protein_repr: true,
+  auto_generate_ligand_repr: true,
+  reward_cache_path: null,
+  hf_cache: '/media/data/conrad_hku/hf_cache',
+};
+
 const defaultConfig: OptConfig = {
+  engine: 'boltz',
   result_dir: './result/opt/unidock_boltz/custom',
   env_dir: './data/envs/enamine_stock_new',
   max_atoms: 60,
@@ -64,7 +92,41 @@ const defaultConfig: OptConfig = {
   replay_warmup_step: 10,
   replay_capacity: 6400,
   boltz: defaultBoltzConfig,
+  flashbind: defaultFlashBindConfig,
 };
+
+const normalizeEngine = (value: unknown): OptimizationEngine =>
+  value === 'flashbind' ? 'flashbind' : 'boltz';
+
+const normalizeFlashbindConfig = (value: unknown): FlashBindConfig => {
+  const incoming = (value as Partial<FlashBindConfig> | null) ?? {};
+  return {
+    ...defaultFlashBindConfig,
+    ...incoming,
+    binary_checkpoints: Array.isArray(incoming.binary_checkpoints)
+      ? incoming.binary_checkpoints.filter((v): v is string => typeof v === 'string')
+      : defaultFlashBindConfig.binary_checkpoints,
+    value_checkpoints: Array.isArray(incoming.value_checkpoints)
+      ? incoming.value_checkpoints.filter((v): v is string => typeof v === 'string')
+      : defaultFlashBindConfig.value_checkpoints,
+  };
+};
+
+const getPathFilename = (input: string | null | undefined): string => {
+  if (!input) return '';
+  const normalized = input.replace(/\\/g, '/');
+  return normalized.split('/').pop() ?? '';
+};
+
+const getFilenameStem = (filename: string): string => {
+  const idx = filename.lastIndexOf('.');
+  if (idx <= 0) return filename;
+  return filename.slice(0, idx);
+};
+
+const isFlashbindSafeFilename = (filename: string): boolean => /^[A-Za-z0-9.-]+$/.test(filename);
+
+const hasUnsafeRelativePath = (value: string): boolean => value.includes('..');
 
 const normalizeBoltzWorker = (value: unknown): number => {
   const parsed = Number(value);
@@ -181,14 +243,17 @@ export default function ConfigBuilder({
   const [configName, setConfigName] = useState<string>('New Config');
   const [pdbContent, setPdbContent] = useState<string | null>(null);
   const [loadedPdbPath, setLoadedPdbPath] = useState<string | null>(null);
+  const [ligandContent, setLigandContent] = useState<string | null>(null);
   const [selectedResidues, setSelectedResidues] = useState<string[]>([]);
   const [newResidue, setNewResidue] = useState('');
   const [residueInputError, setResidueInputError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [pdbResidueMessage, setPdbResidueMessage] = useState<string | null>(null);
   const [leftPanelWidth, setLeftPanelWidth] = useState(50);
   const [isConfigPanelCollapsed, setIsConfigPanelCollapsed] = useState(false);
+  const isFlashBindEngine = config.engine === 'flashbind';
 
   useEffect(() => {
     onConfigChange(config);
@@ -223,6 +288,7 @@ export default function ConfigBuilder({
   );
 
   useEffect(() => {
+    if (isFlashBindEngine) return;
     setConfig((prev) => ({
       ...prev,
       boltz: {
@@ -230,7 +296,13 @@ export default function ConfigBuilder({
         target_residues: selectedResidues,
       },
     }));
-  }, [selectedResidues]);
+  }, [isFlashBindEngine, selectedResidues]);
+
+  useEffect(() => {
+    if (!isFlashBindEngine) return;
+    if (selectedResidues.length === 0) return;
+    setSelectedResidues([]);
+  }, [isFlashBindEngine, selectedResidues.length]);
 
   useEffect(() => {
     let cancelled = false;
@@ -366,6 +438,14 @@ export default function ConfigBuilder({
     return await invoke('file:select-msa');
   }, [invoke]);
 
+  const handleSelectLigand = useCallback(async (): Promise<string | null> => {
+    return invoke('file:select-ligand');
+  }, [invoke]);
+
+  const handleSelectProtsJson = useCallback(async (): Promise<string | null> => {
+    return invoke('file:select-json');
+  }, [invoke]);
+
   const handleSelectResultDir = useCallback(async () => {
     const path = await invoke('file:select-directory');
     if (path) {
@@ -415,11 +495,65 @@ export default function ConfigBuilder({
   }, [invoke, config]);
 
   const handleStartRun = useCallback(async () => {
+    if (isFlashBindEngine) {
+      const proteinId = config.flashbind?.protein_id?.trim() ?? '';
+      if (!proteinId) {
+        setStartError('FlashBind requires `protein_id`.');
+        return;
+      }
+      const protsJsonPath = config.flashbind?.prots_json;
+      if (!protsJsonPath) {
+        setStartError('FlashBind requires `prots_json`.');
+        return;
+      }
+
+      const proteinFilename = getPathFilename(config.protein_path);
+      const protsJsonFilename = getPathFilename(protsJsonPath);
+      for (const item of [
+        { label: 'protein file', value: proteinFilename },
+        { label: 'prots_json file', value: protsJsonFilename },
+      ]) {
+        if (!item.value) {
+          setStartError(`FlashBind requires a valid ${item.label} name.`);
+          return;
+        }
+        if (!isFlashbindSafeFilename(item.value) || item.value.includes('_')) {
+          setStartError(
+            `FlashBind ${item.label} "${item.value}" is invalid. Use only letters/numbers/dot/hyphen; no spaces, symbols, or underscores (_).`
+          );
+          return;
+        }
+      }
+
+      const proteinStem = getFilenameStem(proteinFilename);
+      if (proteinStem !== proteinId) {
+        setStartError(
+          `FlashBind requires protein_id (${proteinId}) to match protein filename stem (${proteinStem}).`
+        );
+        return;
+      }
+    }
+
+    if (hasUnsafeRelativePath(config.result_dir) || hasUnsafeRelativePath(config.env_dir)) {
+      setStartError('Directory paths cannot contain ".." path traversal sequences.');
+      return;
+    }
+
+    const parsedConfig = OptConfigSchema.safeParse(config);
+    if (!parsedConfig.success) {
+      setValidationErrors(
+        parsedConfig.error.issues.map((issue) => `${issue.path.join('.') || 'config'}: ${issue.message}`)
+      );
+      setStartError('Configuration validation failed. Fix the errors below.');
+      return;
+    }
+
     setIsLoading(true);
     setStartError(null);
+    setValidationErrors([]);
     try {
       const runInfo = await invoke('run:start', {
-        config,
+        config: parsedConfig.data,
         configPath,
         name: configName.trim() || undefined,
       });
@@ -430,7 +564,7 @@ export default function ConfigBuilder({
     } finally {
       setIsLoading(false);
     }
-  }, [invoke, config, configPath, onRunStarted, configName]);
+  }, [invoke, config, configPath, onRunStarted, configName, isFlashBindEngine]);
 
   const handleStopRun = useCallback(async () => {
     if (activeRun) {
@@ -486,7 +620,7 @@ export default function ConfigBuilder({
                   Run Configuration
                 </h2>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  Prepare and launch molecular optimization jobs with Boltz-2.
+                  Prepare and launch molecular optimization jobs with {isFlashBindEngine ? 'FlashBind' : 'Boltz-2'}.
                 </p>
               </div>
               <Button
@@ -499,6 +633,48 @@ export default function ConfigBuilder({
                 <PanelLeftClose className="h-4 w-4" />
               </Button>
             </div>
+
+            <Card className="h-fit rounded-md border-border/40 bg-transparent shadow-none">
+              <CardHeader className="p-3 pb-2">
+                <CardTitle className="font-display text-sm">Optimization Engine</CardTitle>
+                <CardDescription className="text-xs">Choose the scoring backend for this run.</CardDescription>
+              </CardHeader>
+              <CardContent className="p-3 pt-0">
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    variant={config.engine === 'boltz' ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() =>
+                      setConfig((prev) => ({
+                        ...prev,
+                        engine: 'boltz',
+                        boltz: {
+                          ...prev.boltz,
+                          target_residues:
+                            selectedResidues.length > 0 ? selectedResidues : prev.boltz.target_residues,
+                        },
+                      }))
+                    }
+                  >
+                    Boltz
+                  </Button>
+                  <Button
+                    variant={config.engine === 'flashbind' ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() =>
+                      setConfig((prev) => ({
+                        ...prev,
+                        engine: 'flashbind',
+                        flashbind: prev.flashbind ?? defaultFlashBindConfig,
+                        boltz: { ...prev.boltz, target_residues: [] },
+                      }))
+                    }
+                  >
+                    FlashBind
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
 
             <div className="grid flex-1 items-stretch gap-3 xl:grid-cols-2">
               <div className="flex flex-col gap-3 xl:justify-between">
@@ -540,6 +716,7 @@ export default function ConfigBuilder({
             </Card>
 
             {/* Target residues */}
+            {!isFlashBindEngine ? (
             <Card className="h-fit rounded-md border-border/40 bg-transparent shadow-none">
               <CardHeader className="p-3 pb-2">
                 <div className="flex items-center gap-2">
@@ -613,6 +790,7 @@ export default function ConfigBuilder({
                 ) : null}
               </CardContent>
             </Card>
+            ) : null}
 
             {/* Optimization parameters */}
             <Card className="h-fit rounded-md border-border/40 bg-transparent shadow-none">
@@ -707,7 +885,9 @@ export default function ConfigBuilder({
                   <SectionIcon icon={Microscope} />
                   <div>
                     <CardTitle className="font-display text-sm">Input Files</CardTitle>
-                    <CardDescription className="text-xs">Structure and optional MSA for Boltz input.</CardDescription>
+                    <CardDescription className="text-xs">
+                      Protein and reference ligand inputs for {isFlashBindEngine ? 'FlashBind' : 'Boltz'}.
+                    </CardDescription>
                   </div>
                 </div>
               </CardHeader>
@@ -732,6 +912,83 @@ export default function ConfigBuilder({
                   </div>
                 ) : null}
 
+                <FileSelector
+                  label="Reference ligand"
+                  value={config.ref_ligand_path ?? ''}
+                  onChange={(path) =>
+                    setConfig((prev) => ({
+                      ...prev,
+                      ref_ligand_path: path || null,
+                    }))
+                  }
+                  onContentLoaded={(content) => setLigandContent(content)}
+                  fieldType="other"
+                  fileType="other"
+                  accept=".mol2,.sdf,.mol,.pdb,.cif,.mmcif"
+                  placeholder="Select reference ligand file"
+                  optional
+                  onSelectLocal={handleSelectLigand}
+                  onReadLocalContent={async (path) => await invoke('file:read-text', path)}
+                />
+
+                {isFlashBindEngine ? (
+                  <div className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-amber-200">
+                      FlashBind Naming Constraint
+                    </p>
+                    <p className="text-xs text-amber-100/90">
+                      Protein and prots_json filenames must not contain spaces, special symbols, or underscores (_).
+                      Also ensure `protein_id` exactly matches the protein filename stem.
+                    </p>
+                  </div>
+                ) : null}
+
+                {isFlashBindEngine ? (
+                  <div className="space-y-1">
+                    <Label htmlFor="flashbind-protein-id" className="text-xs font-medium text-muted-foreground">
+                      FlashBind protein_id
+                    </Label>
+                    <Input
+                      id="flashbind-protein-id"
+                      value={config.flashbind?.protein_id ?? ''}
+                      onChange={(e) =>
+                        setConfig((prev) => ({
+                          ...prev,
+                          flashbind: {
+                            ...(prev.flashbind ?? defaultFlashBindConfig),
+                            protein_id: e.target.value.trim(),
+                          },
+                        }))
+                      }
+                      placeholder="Must match protein filename stem (e.g. NS5)"
+                      className="h-8 font-data"
+                    />
+                  </div>
+                ) : null}
+
+                {isFlashBindEngine ? (
+                  <FileSelector
+                    label="FlashBind prots_json"
+                    value={config.flashbind?.prots_json ?? ''}
+                    onChange={(path) =>
+                      setConfig((prev) => ({
+                        ...prev,
+                        flashbind: {
+                          ...(prev.flashbind ?? defaultFlashBindConfig),
+                          prots_json: path || null,
+                        },
+                      }))
+                    }
+                    fieldType="other"
+                    fileType="other"
+                    accept=".json"
+                    placeholder="Select FlashBind prots.json"
+                    onSelectLocal={handleSelectProtsJson}
+                    onReadLocalContent={async (path) => await invoke('file:read-text', path)}
+                  />
+                ) : null}
+
+                {!isFlashBindEngine ? (
                 <div className="space-y-1">
                   <Label className="text-xs font-medium text-muted-foreground">Boltz YAML preview</Label>
                   <div className="rounded-md border border-border bg-secondary/20 p-2">
@@ -748,7 +1005,9 @@ export default function ConfigBuilder({
                     )}
                   </div>
                 </div>
+                ) : null}
 
+                {!isFlashBindEngine ? (
                 <div className="rounded-md border border-accent/30 bg-accent/10 p-2">
                   <div className="mb-2 flex items-center justify-between gap-3">
                     <Label className="text-xs font-medium text-foreground">MSA file</Label>
@@ -771,7 +1030,9 @@ export default function ConfigBuilder({
                     onSelectLocal={handleSelectMsa}
                   />
                 </div>
+                ) : null}
 
+                {!isFlashBindEngine ? (
                 <div className="space-y-1">
                   <Label htmlFor="boltz-workers" className="text-xs font-medium text-muted-foreground">Boltz workers</Label>
                   <Input
@@ -791,6 +1052,7 @@ export default function ConfigBuilder({
                     className="h-8 font-data tabular-nums"
                   />
                 </div>
+                ) : null}
               </CardContent>
             </Card>
 
@@ -922,6 +1184,13 @@ export default function ConfigBuilder({
                     {startError}
                   </div>
                 ) : null}
+                {validationErrors.length > 0 ? (
+                  <ul className="space-y-1 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    {validationErrors.map((error) => (
+                      <li key={error}>{error}</li>
+                    ))}
+                  </ul>
+                ) : null}
               </CardContent>
             </Card>
               </div>
@@ -967,11 +1236,15 @@ export default function ConfigBuilder({
             <div>
               <h2 className="font-display text-lg font-semibold">Protein Structure</h2>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                Click residues in the viewer to update the target list.
+                {isFlashBindEngine
+                  ? 'Preview uploaded protein and reference ligand for FlashBind.'
+                  : 'Click residues in the viewer to update the target list.'}
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <Badge variant="outline" className="font-data text-[10px]">{selectedResidues.length} residues</Badge>
+              {!isFlashBindEngine ? (
+                <Badge variant="outline" className="font-data text-[10px]">{selectedResidues.length} residues</Badge>
+              ) : null}
               {config.protein_path ? (
                 <Badge variant="secondary" className="max-w-[280px] truncate font-data text-[10px]">
                   {config.protein_path.split('/').pop()}
@@ -984,9 +1257,10 @@ export default function ConfigBuilder({
         <div className="flex-1 bg-background">
           <MolstarViewer
             pdbContent={pdbContent}
-            selectedResidues={selectedResidues}
-            onResidueSelect={handleResidueSelect}
-            multiSelectMode={true}
+            ligandContent={ligandContent}
+            selectedResidues={isFlashBindEngine ? [] : selectedResidues}
+            onResidueSelect={isFlashBindEngine ? () => {} : handleResidueSelect}
+            multiSelectMode={!isFlashBindEngine}
           />
         </div>
       </div>

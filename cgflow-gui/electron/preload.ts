@@ -11,6 +11,7 @@ const ALLOWED_CHANNELS = [
   'file:select-directory',
   'file:read-pdb',
   'file:read-text',
+  'file:normalize-pdb-residues',
   'file:read-yaml',
   'file:write-yaml',
   'file:exists',

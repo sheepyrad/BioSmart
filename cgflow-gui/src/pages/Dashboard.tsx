@@ -99,6 +99,7 @@ function getStatusBadgeVariant(status: RunInfo['status']) {
 interface ConvexRun {
   _id: string;
   name: string;
+  engine?: 'boltz' | 'flashbind';
   status: 'idle' | 'running' | 'paused' | 'completed' | 'error';
   currentStep: number;
   totalSteps: number;
@@ -264,6 +265,17 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
         smiles: row.smiles,
         reward: row.reward,
         trajectory,
+        engine: row.engine ?? selectedRun?.engine ?? 'boltz',
+        normalizedScores:
+          row.normalizedAffinity != null &&
+          row.normalizedProbability != null &&
+          row.normalizedScore != null
+            ? {
+                affinity: row.normalizedAffinity,
+                probability: row.normalizedProbability,
+                score: row.normalizedScore,
+              }
+            : null,
         boltzScores: hasScores
           ? {
               iteration: row.iteration ?? 0,
@@ -282,7 +294,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
         molIdx: row.molIdx ?? null,
       } as MoleculeResult;
     });
-  }, [convexMoleculeRows]);
+  }, [convexMoleculeRows, selectedRun?.engine]);
 
   const convexMetricInputRows = useMemo<BoltzMetricInputRow[]>(() => {
     if (!convexMetricRows) return [];
@@ -374,8 +386,12 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     lastUpdatedAt: run.lastUpdatedAt ? new Date(run.lastUpdatedAt).toISOString() : null,
     checkpointPath: run.checkpointPath,
     error: run.error,
+    engine: run.engine,
     source: 'convex',
   });
+
+  const selectedEngine = selectedRun?.engine ?? 'boltz';
+  const selectedEngineLabel = selectedEngine === 'flashbind' ? 'FlashBind' : 'Boltz';
 
   const localRuns = [
     ...runnerRuns.filter((run) => !hiddenRunIds.has(run.id)),
@@ -1001,6 +1017,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                 <div className="flex items-center gap-3">
                   <h2 className="font-display text-xl font-semibold">{selectedRun.name}</h2>
                   <Badge variant={getStatusBadgeVariant(selectedRun.status)}>{selectedRun.status}</Badge>
+                  <Badge variant="outline" className="font-data text-[9px]">{selectedEngineLabel}</Badge>
                   <Badge variant="outline" className="font-data text-[9px]">{selectedRun.source}</Badge>
                 </div>
                 <p className="mt-0.5 font-data text-xs text-muted-foreground tabular-nums">
@@ -1048,9 +1065,9 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                 <div
                   className="h-2 cursor-row-resize rounded-full bg-border/40 transition-colors hover:bg-primary/40"
                   role="separator"
-                  aria-label="Resize Boltz score plots"
+                  aria-label={`Resize ${selectedEngineLabel} score plots`}
                   aria-orientation="horizontal"
-                  title="Drag to resize Boltz score plots"
+                  title={`Drag to resize ${selectedEngineLabel} score plots`}
                   onPointerDown={startRunInfoPlotResize}
                 />
 
@@ -1116,7 +1133,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                       <div className="sticky top-0 z-10 grid w-fit grid-cols-[2.25rem_180px_4.75rem] gap-x-3 border-b border-border bg-card px-4 py-3 font-data text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                         <div className="text-center">ID</div>
                         <div>Compound</div>
-                        <div className="text-right">Boltz Score</div>
+                        <div className="text-right">{selectedEngineLabel} Score</div>
                       </div>
                       <div className="relative" style={{ height: displayedMolecules.length * MOLECULE_ROW_HEIGHT }}>
                         {displayedMolecules.length === 0 ? (

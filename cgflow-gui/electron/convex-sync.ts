@@ -286,11 +286,17 @@ export class ConvexSyncService {
   /**
    * Create a run record in Convex and return its id.
    */
-  async createRun(name: string, resultDir: string, totalSteps: number): Promise<string | null> {
+  async createRun(
+    name: string,
+    engine: 'boltz' | 'flashbind',
+    resultDir: string,
+    totalSteps: number
+  ): Promise<string | null> {
     if (!this.client) return null;
     try {
       const runId = await this.client.mutation(api.runs.create, {
         name,
+        engine,
         resultDir,
         totalSteps,
       });
