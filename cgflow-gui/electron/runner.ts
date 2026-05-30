@@ -96,7 +96,6 @@ interface RunnerOptions {
 
 interface RunRecord extends RunInfo {
   pid: number | null;
-  configId?: string | null;
   convexRunId?: string | null;
   source?: 'local';
   logPath?: string | null;
@@ -105,62 +104,9 @@ interface RunRecord extends RunInfo {
 interface RunnerStartPayload {
   config?: OptConfig;
   configPath?: string | null;
-  configId?: string | null;
   name?: string | null;
 }
 
-type ConvexConfigCreateInput = {
-  name: string;
-  engine: OptimizationEngine;
-  resultDir: string;
-  envDir: string;
-  maxAtoms: number;
-  subsamplingRatio: number;
-  proteinPath: string;
-  center: number[] | null;
-  refLigandPath: string | null;
-  size: number[];
-  numSteps: number;
-  numSamplingPerStep: number;
-  temperatureMin: number;
-  temperatureMax: number;
-  seed: number;
-  poseModel: string;
-  poseSteps: number;
-  samplingTau: number;
-  randomActionProb: number;
-  replayWarmupStep: number;
-  replayCapacity: number;
-  boltzBaseYaml: string;
-  boltzTargetResidues: string[];
-  boltzMsaPath: string | null;
-  boltzCacheDir: string | null;
-  boltzUseMsaServer: boolean;
-  boltzWorker: number;
-  flashbindRoot: string;
-  flashbindProteinId: string;
-  flashbindPdbDir: string;
-  flashbindProteinRepr: string;
-  flashbindLigandRepr: string;
-  flashbindProtsJson: string | null;
-  flashbindFabindCheckpoint: string;
-  flashbindBinaryCheckpoints: string[];
-  flashbindValueCheckpoints: string[];
-  flashbindFabindCondaEnv: string;
-  flashbindFlashbindCondaEnv: string;
-  flashbindFabindNumThreads: number;
-  flashbindFabindBatchSize: number;
-  flashbindFabindPostOptim: boolean;
-  flashbindDevices: number;
-  flashbindAccelerator: string;
-  flashbindNumWorkers: number;
-  flashbindDistanceThreshold: number;
-  flashbindReprNJobs: number;
-  flashbindAutoGenerateProteinRepr: boolean;
-  flashbindAutoGenerateLigandRepr: boolean;
-  flashbindRewardCachePath: string | null;
-  flashbindHfCache: string | null;
-};
 
 interface RunnerState {
   runs: Map<string, RunRecord>;
@@ -1114,132 +1060,6 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     return resolved;
   }
 
-  function convexConfigToOpt(config: any): OptConfig {
-    return {
-      engine: normalizeEngine(config.engine),
-      result_dir: config.resultDir,
-      env_dir: config.envDir,
-      max_atoms: config.maxAtoms,
-      subsampling_ratio: config.subsamplingRatio,
-      protein_path: config.proteinPath,
-      center: config.center ?? null,
-      ref_ligand_path: config.refLigandPath ?? null,
-      size: config.size as [number, number, number],
-      num_steps: config.numSteps,
-      num_sampling_per_step: config.numSamplingPerStep,
-      temperature: [config.temperatureMin, config.temperatureMax],
-      seed: config.seed,
-      pose_model: config.poseModel,
-      pose_steps: config.poseSteps,
-      sampling_tau: config.samplingTau,
-      random_action_prob: config.randomActionProb,
-      replay_warmup_step: config.replayWarmupStep,
-      replay_capacity: config.replayCapacity,
-      boltz: {
-        base_yaml: config.boltzBaseYaml,
-        target_residues: config.boltzTargetResidues ?? [],
-        msa_path: config.boltzMsaPath ?? null,
-        cache_dir: config.boltzCacheDir ?? null,
-        use_msa_server: config.boltzUseMsaServer ?? false,
-        worker: Math.max(1, Math.floor(config.boltzWorker ?? 1)),
-      },
-      flashbind: {
-        root: config.flashbindRoot ?? DEFAULT_FLASHBIND_CONFIG.root,
-        protein_id: config.flashbindProteinId ?? DEFAULT_FLASHBIND_CONFIG.protein_id,
-        pdb_dir: config.flashbindPdbDir ?? DEFAULT_FLASHBIND_CONFIG.pdb_dir,
-        protein_repr: config.flashbindProteinRepr ?? DEFAULT_FLASHBIND_CONFIG.protein_repr,
-        ligand_repr: config.flashbindLigandRepr ?? DEFAULT_FLASHBIND_CONFIG.ligand_repr,
-        prots_json: config.flashbindProtsJson ?? DEFAULT_FLASHBIND_CONFIG.prots_json,
-        fabind_checkpoint:
-          config.flashbindFabindCheckpoint ?? DEFAULT_FLASHBIND_CONFIG.fabind_checkpoint,
-        binary_checkpoints:
-          config.flashbindBinaryCheckpoints ?? DEFAULT_FLASHBIND_CONFIG.binary_checkpoints,
-        value_checkpoints:
-          config.flashbindValueCheckpoints ?? DEFAULT_FLASHBIND_CONFIG.value_checkpoints,
-        fabind_conda_env:
-          config.flashbindFabindCondaEnv ?? DEFAULT_FLASHBIND_CONFIG.fabind_conda_env,
-        flashbind_conda_env:
-          config.flashbindFlashbindCondaEnv ?? DEFAULT_FLASHBIND_CONFIG.flashbind_conda_env,
-        fabind_num_threads:
-          config.flashbindFabindNumThreads ?? DEFAULT_FLASHBIND_CONFIG.fabind_num_threads,
-        fabind_batch_size:
-          config.flashbindFabindBatchSize ?? DEFAULT_FLASHBIND_CONFIG.fabind_batch_size,
-        fabind_post_optim:
-          config.flashbindFabindPostOptim ?? DEFAULT_FLASHBIND_CONFIG.fabind_post_optim,
-        devices: config.flashbindDevices ?? DEFAULT_FLASHBIND_CONFIG.devices,
-        accelerator: config.flashbindAccelerator ?? DEFAULT_FLASHBIND_CONFIG.accelerator,
-        num_workers: config.flashbindNumWorkers ?? DEFAULT_FLASHBIND_CONFIG.num_workers,
-        distance_threshold:
-          config.flashbindDistanceThreshold ?? DEFAULT_FLASHBIND_CONFIG.distance_threshold,
-        repr_n_jobs: config.flashbindReprNJobs ?? DEFAULT_FLASHBIND_CONFIG.repr_n_jobs,
-        auto_generate_protein_repr:
-          config.flashbindAutoGenerateProteinRepr ??
-          DEFAULT_FLASHBIND_CONFIG.auto_generate_protein_repr,
-        auto_generate_ligand_repr:
-          config.flashbindAutoGenerateLigandRepr ??
-          DEFAULT_FLASHBIND_CONFIG.auto_generate_ligand_repr,
-        reward_cache_path:
-          config.flashbindRewardCachePath ?? DEFAULT_FLASHBIND_CONFIG.reward_cache_path,
-        hf_cache: config.flashbindHfCache ?? DEFAULT_FLASHBIND_CONFIG.hf_cache,
-      },
-    };
-  }
-
-  function optConfigToConvexCreateInput(config: OptConfig, name: string): ConvexConfigCreateInput {
-    const flashbind = config.flashbind ?? DEFAULT_FLASHBIND_CONFIG;
-    return {
-      name,
-      engine: normalizeEngine(config.engine),
-      resultDir: config.result_dir,
-      envDir: config.env_dir,
-      maxAtoms: config.max_atoms,
-      subsamplingRatio: config.subsampling_ratio,
-      proteinPath: config.protein_path,
-      center: config.center ? [...config.center] : null,
-      refLigandPath: config.ref_ligand_path,
-      size: [...config.size],
-      numSteps: config.num_steps,
-      numSamplingPerStep: config.num_sampling_per_step,
-      temperatureMin: config.temperature[0],
-      temperatureMax: config.temperature[1],
-      seed: config.seed,
-      poseModel: config.pose_model,
-      poseSteps: config.pose_steps,
-      samplingTau: config.sampling_tau,
-      randomActionProb: config.random_action_prob,
-      replayWarmupStep: config.replay_warmup_step,
-      replayCapacity: config.replay_capacity,
-      boltzBaseYaml: config.boltz.base_yaml,
-      boltzTargetResidues: config.boltz.target_residues,
-      boltzMsaPath: config.boltz.msa_path,
-      boltzCacheDir: config.boltz.cache_dir,
-      boltzUseMsaServer: config.boltz.use_msa_server,
-      boltzWorker: Math.max(1, Math.floor(config.boltz.worker ?? 1)),
-      flashbindRoot: flashbind.root,
-      flashbindProteinId: flashbind.protein_id,
-      flashbindPdbDir: flashbind.pdb_dir,
-      flashbindProteinRepr: flashbind.protein_repr,
-      flashbindLigandRepr: flashbind.ligand_repr,
-      flashbindProtsJson: flashbind.prots_json,
-      flashbindFabindCheckpoint: flashbind.fabind_checkpoint,
-      flashbindBinaryCheckpoints: flashbind.binary_checkpoints,
-      flashbindValueCheckpoints: flashbind.value_checkpoints,
-      flashbindFabindCondaEnv: flashbind.fabind_conda_env,
-      flashbindFlashbindCondaEnv: flashbind.flashbind_conda_env,
-      flashbindFabindNumThreads: flashbind.fabind_num_threads,
-      flashbindFabindBatchSize: flashbind.fabind_batch_size,
-      flashbindFabindPostOptim: flashbind.fabind_post_optim,
-      flashbindDevices: flashbind.devices,
-      flashbindAccelerator: flashbind.accelerator,
-      flashbindNumWorkers: flashbind.num_workers,
-      flashbindDistanceThreshold: flashbind.distance_threshold,
-      flashbindReprNJobs: flashbind.repr_n_jobs,
-      flashbindAutoGenerateProteinRepr: flashbind.auto_generate_protein_repr,
-      flashbindAutoGenerateLigandRepr: flashbind.auto_generate_ligand_repr,
-      flashbindRewardCachePath: flashbind.reward_cache_path,
-      flashbindHfCache: flashbind.hf_cache,
-    };
-  }
 
   async function detectResultDir(baseDir: string, startedAt: number): Promise<string | null> {
     try {
@@ -1375,20 +1195,8 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
   }
 
   async function startRun(payload: RunnerStartPayload): Promise<RunRecord> {
-    let config = payload.config;
-    let configName = payload.name;
-    if (!config) {
-      if (!payload.configId || !convexClient) {
-        throw new Error('Missing config payload and Convex is not available.');
-      }
-      const convexConfig = await convexClient.query(api.configs.get, { id: payload.configId as any });
-      if (!convexConfig) {
-        throw new Error('Config not found in Convex.');
-      }
-      config = convexConfigToOpt(convexConfig);
-      configName = configName || convexConfig.name;
-    }
-
+    const config = payload.config;
+    const configName = payload.name;
     if (!config) {
       throw new Error('Config payload is required.');
     }
@@ -1436,7 +1244,6 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       error: null,
       engine,
       pid: null,
-      configId: payload.configId ?? null,
       convexRunId: null,
       source: 'local',
       logPath,
@@ -1446,10 +1253,8 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
     state.outputs.set(runId, []);
     await persistRuns();
 
-    // Create Convex run if configured and configId provided
-    if (payload.configId && convexUrl) {
+    if (convexUrl) {
       const convexRunId = await convexSync.createRun(
-        payload.configId,
         runInfo.name,
         runInfo.engine ?? 'boltz',
         runInfo.resultDir,
@@ -1785,24 +1590,14 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       error: null,
       engine: importedConfig?.engine ?? 'boltz',
       pid: null,
-      configId: null,
       convexRunId: null,
       source: 'local',
       logPath: path.join(resultDir, 'train.log'),
     };
 
-    // Best-effort cloud sync for imported runs when Convex is configured.
     if (convexClient && convexUrl) {
       try {
-        const configForCloud = importedConfig ?? defaultImportedConfig(resultDir);
-        const convexConfigId = await convexClient.mutation(
-          api.configs.create,
-          optConfigToConvexCreateInput(configForCloud, `${run.name} (imported)`) as any
-        );
-        run.configId = convexConfigId as any;
-
         const convexRunId = await convexSync.createRun(
-          convexConfigId as any,
           run.name,
           run.engine ?? 'boltz',
           run.resultDir,
@@ -1866,28 +1661,8 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       throw new Error('Convex is not configured. Set VITE_CONVEX_URL/CONVEX_URL to enable cloud sync.');
     }
 
-    if (!run.configId) {
-      let configForCloud: OptConfig | null = null;
-      if (run.configPath && run.configPath.endsWith('.yaml')) {
-        try {
-          validateFilePath(run.configPath, 'read');
-          const configRaw = await fs.readFile(run.configPath, 'utf-8');
-          configForCloud = normalizeImportedConfig(YAML.parse(configRaw), run.resultDir);
-        } catch {
-          configForCloud = null;
-        }
-      }
-      const fallbackConfig = configForCloud ?? defaultImportedConfig(run.resultDir);
-      const convexConfigId = await convexClient.mutation(
-        api.configs.create,
-        optConfigToConvexCreateInput(fallbackConfig, `${run.name} (synced)`) as any
-      );
-      run.configId = convexConfigId as any;
-    }
-
     if (!run.convexRunId) {
       const convexRunId = await convexSync.createRun(
-        run.configId!,
         run.name,
         run.engine ?? 'boltz',
         run.resultDir,

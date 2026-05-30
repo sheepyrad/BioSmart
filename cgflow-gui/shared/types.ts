@@ -122,6 +122,13 @@ export type BoltzConfig = z.infer<typeof BoltzConfigSchema>;
 export type FlashBindConfig = z.infer<typeof FlashBindConfigSchema>;
 export type OptConfig = z.infer<typeof OptConfigSchema>;
 
+export interface NormalizedPdbFile {
+  path: string;
+  content: string;
+  converted: boolean;
+  message: string | null;
+}
+
 // ============================================================================
 // Run Status and Management
 // ============================================================================
@@ -149,7 +156,6 @@ export const RunInfoSchema = z.object({
   checkpointPath: nullableSafePathSchema,
   error: z.string().nullable(),
   engine: OptimizationEngineSchema.optional(),
-  configId: z.string().nullable().optional(),
   convexRunId: z.string().nullable().optional(),
   source: z.enum(['local', 'convex']).optional(),
 });
@@ -162,8 +168,8 @@ export type RunInfo = z.infer<typeof RunInfoSchema>;
 
 export const GeneratedObjectSchema = z.object({
   smi: z.string(),
-  r: z.number(), // reward
-  traj: z.string(), // JSON string of trajectory
+  r: z.number(),
+  traj: z.string(),
 });
 
 export type GeneratedObject = z.infer<typeof GeneratedObjectSchema>;
@@ -209,7 +215,7 @@ export interface BoltzMetricSeries {
 export const RewardCacheEntrySchema = z.object({
   smiles: z.string(),
   reward: z.number(),
-  info: z.string().nullable(), // JSON with affinity scores
+  info: z.string().nullable(),
 });
 
 export type RewardCacheEntry = z.infer<typeof RewardCacheEntrySchema>;
@@ -221,7 +227,7 @@ export type RewardCacheEntry = z.infer<typeof RewardCacheEntrySchema>;
 export const TrajectoryStepSchema = z.object({
   step: z.number(),
   smiles: z.string(),
-  action: z.tuple([z.string(), z.string(), z.string()]), // [rxn_name, block_id, fragment_smiles]
+  action: z.tuple([z.string(), z.string(), z.string()]),
 });
 
 export type TrajectoryStep = z.infer<typeof TrajectoryStepSchema>;
@@ -236,7 +242,7 @@ export const MoleculeResultSchema = z.object({
   trajectory: z.array(TrajectoryStepSchema),
   boltzScores: BoltzScoreSchema.nullable(),
   normalizedScores: NormalizedScoreSchema.nullable().optional(),
-  complexPath: nullableSafePathSchema, // Path to Boltz-2 predicted complex
+  complexPath: nullableSafePathSchema,
   engine: OptimizationEngineSchema.optional(),
   oracleIdx: runnerIndex.nullable().optional(),
   molIdx: runnerIndex.nullable().optional(),
@@ -251,7 +257,6 @@ export type MoleculeResult = z.infer<typeof MoleculeResultSchema>;
 export const RunnerStartPayloadSchema = z.object({
   config: OptConfigSchema.optional(),
   configPath: nullableSafePathSchema.optional(),
-  configId: z.string().nullable().optional(),
   name: configNameSchema.nullable().optional(),
 });
 
@@ -270,7 +275,6 @@ export const RunnerImportPayloadSchema = z.object({
 // ============================================================================
 
 export interface IpcChannels {
-  // File operations
   'file:select-pdb': () => Promise<string | null>;
   'file:select-ligand': () => Promise<string | null>;
   'file:select-json': () => Promise<string | null>;
@@ -279,15 +283,14 @@ export interface IpcChannels {
   'file:select-directory': () => Promise<string | null>;
   'file:read-pdb': (path: string) => Promise<string>;
   'file:read-text': (path: string) => Promise<string>;
+  'file:normalize-pdb-residues': (path: string) => Promise<NormalizedPdbFile>;
   'file:read-yaml': (path: string) => Promise<OptConfig>;
   'file:write-yaml': (path: string, config: OptConfig) => Promise<void>;
   'file:exists': (path: string) => Promise<boolean>;
 
-  // Run management
   'run:start': (payload: {
     config: OptConfig;
     configPath?: string | null;
-    configId?: string | null;
     name?: string | null;
   }) => Promise<RunInfo>;
   'run:stop': (runId: string) => Promise<void>;
@@ -301,19 +304,16 @@ export interface IpcChannels {
   'run:sync-to-cloud': (runId: string) => Promise<RunInfo>;
   'run:get-boltz-metrics': (runId: string) => Promise<BoltzMetricSeries | null>;
 
-  // Database queries
   'db:get-generated-objects': (dbPath: string, limit?: number, offset?: number) => Promise<GeneratedObject[]>;
   'db:get-boltz-scores': (dbPath: string, limit?: number, offset?: number) => Promise<BoltzScore[]>;
   'db:get-reward-cache': (dbPath: string, limit?: number) => Promise<RewardCacheEntry[]>;
   'db:get-top-molecules': (runId: string, limit?: number) => Promise<MoleculeResult[]>;
 
-  // Boltz complex files
   'boltz:get-complex': (runId: string, oracleIdx: number, molIdx: number) => Promise<string | null>;
   'boltz:get-complex-path': (runId: string, oracleIdx: number, molIdx: number) => Promise<string | null>;
   'boltz:read-complex': (complexPath: string) => Promise<string>;
 }
 
-// Type-safe IPC invoke helper type
 export type IpcInvoke = <K extends keyof IpcChannels>(
   channel: K,
   ...args: Parameters<IpcChannels[K]>

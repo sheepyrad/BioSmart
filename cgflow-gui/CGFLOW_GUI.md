@@ -51,11 +51,11 @@ A hybrid Electron / Web application for configuring, launching, and monitoring *
 │  │  Electron    │     │    Convex      │     │  cgflow Python    │  │
 │  │  Main Proc   │     │    Cloud       │     │  process          │  │
 │  │  (optional)  │     │                │     │                   │  │
-│  └──────────────┘     │  - configs     │     │  Writes to:       │  │
-│                       │  - runs        │     │  - train.log      │  │
-│  ┌──────────────┐     │  - molecules   │     │  - SQLite DBs     │  │
-│  │  Convex Sync │────▶│  - files       │     │  - checkpoints    │  │
-│  │  Service     │     │  - annotations │     │  - Boltz outputs  │  │
+│  └──────────────┘     │  - runs        │     │  Writes to:       │  │
+│                       │  - molecules   │     │  - train.log      │  │
+│  ┌──────────────┐     │  - files       │     │  - SQLite DBs     │  │
+│  │  Convex Sync │────▶│  - annotations │     │  - checkpoints    │  │
+│  │  Service     │     │                │     │  - Boltz outputs  │  │
 │  │  (Node.js)   │     └────────────────┘     └───────────────────┘  │
 │  └──────────────┘                                                    │
 │         │                                                            │
@@ -90,11 +90,9 @@ cgflow-gui/
 │   │   └── ui/                    #   shadcn/ui primitives
 │   ├── hooks/
 │   │   ├── useConvex.ts           #   Convex availability + runs
-│   │   ├── useConvexConfigs.ts    #   Config CRUD via Convex
 │   │   ├── useIpc.ts              #   IPC / Runner client abstraction
 │   │   └── useUploadedFiles.ts    #   File upload to Convex storage
 │   └── lib/
-│       ├── configMapping.ts       #   OptConfig ↔ Convex config mapping
 │       ├── runnerClient.ts        #   HTTP client for runner server
 │       ├── utils.ts               #   cn() helper
 │       └── webFallback.ts         #   Web-mode IPC shims
@@ -106,8 +104,7 @@ cgflow-gui/
 │   └── convex-sync.ts             #   SQLite → Convex sync service
 │
 ├── convex/                        # Convex backend functions
-│   ├── schema.ts                  #   Database schema (5 tables)
-│   ├── configs.ts                 #   Config CRUD
+│   ├── schema.ts                  #   Database schema (4 tables)
 │   ├── runs.ts                    #   Run lifecycle
 │   ├── molecules.ts               #   Molecule upsert + queries
 │   ├── files.ts                   #   File storage operations
@@ -147,7 +144,7 @@ A split-panel form for assembling a CGFlow optimization configuration.
 
 | Section | Description |
 |---------|-------------|
-| **Load / Save** | Load YAML from disk, save YAML locally, save to Convex cloud, load recent cloud configs |
+| **Load / Save** | Load YAML from disk, save YAML locally, save to Convex cloud |
 | **Input Files** | Select Protein PDB, Boltz Base YAML, MSA path — via local filesystem or Convex uploads |
 | **Target Residues** | Click-to-select residues in the Mol* viewer or type manually (format `A:123`) |
 | **Directories** | Result directory and environment directory paths |
@@ -327,7 +324,6 @@ Convex is an **optional** cloud backend. When configured (via `VITE_CONVEX_URL`)
 - **Cross-machine access** — view runs and molecules from any browser
 - **Real-time updates** — Convex subscriptions push data to the UI automatically
 - **Cloud file storage** — upload PDB/YAML/MSA files to Convex storage
-- **Persistent configs** — save and share optimization configurations
 
 When Convex is not configured, the app operates in local-only mode with full functionality via the Runner Server.
 
@@ -337,8 +333,7 @@ When Convex is not configured, the app operates in local-only mode with full fun
 
 | Table | Purpose | Key Indexes |
 |-------|---------|-------------|
-| `configs` | Optimization configurations (mirrors `OptConfig`) | `by_name`, `by_last_used` |
-| `runs` | Training run records (status, progress, result dir) | `by_status`, `by_config` |
+| `runs` | Training run records (status, progress, result dir) | `by_status` |
 | `molecules` | Generated molecules synced from local SQLite | `by_run`, `by_run_reward`, `by_smiles` |
 | `files` | Uploaded files (PDB, YAML, MSA) with Convex storage refs | `by_run`, `by_type`, `by_field_type` |
 | `annotations` | User notes, stars, and tags on molecules | `by_molecule` |
@@ -354,7 +349,6 @@ The `ConvexSyncService` (`electron/convex-sync.ts`) runs in the Node.js layer an
 | `generated_objs_*.db` | `molecules` table (trajectory field) | Every 30 seconds | Trajectory JSON extracted per SMILES |
 | `train.log` | `runs` table (currentStep) | Every 30 seconds | Parses last iteration number |
 | Run status changes | `runs` table | On event | Immediate push on start/stop/complete/error |
-| Config creation | `configs` table | On save | Frontend → `api.configs.create` |
 | File uploads | `files` table + `_storage` | On upload | 3-step: generateUrl → POST blob → create record |
 
 ### ConvexSyncService
@@ -369,7 +363,7 @@ A singleton service that uses `ConvexHttpClient` (non-React, server-side client)
 |--------|-------------|
 | `startSync(runId, convexRunId, resultDir)` | Begin periodic sync (every 30s) for a run |
 | `stopSync(runId)` | Stop periodic sync |
-| `createRun(configId, name, resultDir, totalSteps)` | Create a run record in Convex |
+| `createRun(name, resultDir, totalSteps)` | Create a run record in Convex |
 | `updateRunStatus(convexRunId, status, ...)` | Push status change to Convex |
 | `syncMolecules(convexRunId, resultDir)` | Read SQLite DBs → batch upsert molecules |
 | `syncRunStatus(convexRunId, resultDir)` | Parse `train.log` → update step count |
@@ -389,7 +383,6 @@ A singleton service that uses `ConvexHttpClient` (non-React, server-side client)
 |------|------|---------|
 | `useConvexAvailable()` | `hooks/useConvex.ts` | Check if Convex is configured and reachable |
 | `useConvexRuns()` | `hooks/useConvex.ts` | Subscribe to `api.runs.list` — returns null if unavailable |
-| `useConvexConfigs(limit)` | `hooks/useConvexConfigs.ts` | CRUD on configs — `listByLastUsed`, `create`, `update` |
 | `useUploadedFiles(fieldType)` | `hooks/useUploadedFiles.ts` | Upload/list/delete files by field type (protein_pdb, boltz_yaml, msa) |
 | `useAllUploadedFiles()` | `hooks/useUploadedFiles.ts` | Browse all uploaded files |
 
@@ -399,7 +392,6 @@ The frontend uses Convex's `useQuery` hooks which maintain **WebSocket subscript
 
 - `api.molecules.getTopByRun` — Dashboard molecule table auto-updates as sync pushes new molecules
 - `api.runs.list` — Run history sidebar reflects status changes in real-time
-- `api.configs.listByLastUsed` — Config dropdown stays current
 - `api.files.listByFieldType` — File selector shows newly uploaded files
 
 ---
@@ -414,9 +406,6 @@ User fills form in ConfigBuilder
         ▼
 OptConfig object assembled (Zod-validated)
         │
-        ├──▶ Save to Convex (api.configs.create)           [optional]
-        │
-        ▼
 POST /runs → Runner Server
         │
         ├──▶ Write config to temp YAML file

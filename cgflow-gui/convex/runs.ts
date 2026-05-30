@@ -4,7 +4,6 @@ import { mutation, query } from './_generated/server';
 const runValidator = v.object({
   _id: v.id('runs'),
   _creationTime: v.number(),
-  configId: v.id('configs'),
   name: v.string(),
   engine: v.union(v.literal('boltz'), v.literal('flashbind')),
   status: v.union(
@@ -26,7 +25,6 @@ const runValidator = v.object({
 
 export const create = mutation({
   args: {
-    configId: v.id('configs'),
     name: v.string(),
     engine: v.union(v.literal('boltz'), v.literal('flashbind')),
     resultDir: v.string(),
@@ -36,7 +34,6 @@ export const create = mutation({
   handler: async (ctx, args) => {
     const now = Date.now();
     return await ctx.db.insert('runs', {
-      configId: args.configId,
       name: args.name,
       engine: args.engine,
       status: 'idle',
@@ -133,18 +130,6 @@ export const list = query({
         .collect();
     }
     return await ctx.db.query('runs').order('desc').collect();
-  },
-});
-
-export const getByConfig = query({
-  args: { configId: v.id('configs') },
-  returns: v.array(runValidator),
-  handler: async (ctx, args) => {
-    return await ctx.db
-      .query('runs')
-      .withIndex('by_config', (q) => q.eq('configId', args.configId))
-      .order('desc')
-      .collect();
   },
 });
 

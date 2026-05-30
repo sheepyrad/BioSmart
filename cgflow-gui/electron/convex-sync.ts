@@ -6,13 +6,8 @@ import YAML from 'yaml';
 import type {
   BoltzScore,
   RewardCacheEntry,
-  OptimizationEngine,
 } from '../shared/types';
 import { api } from '../convex/_generated/api';
-import {
-  getFlashbindTopMolecules,
-} from './engines/flashbindAdapter';
-import { validateFilePath } from './pathSecurity';
 
 // Initialize SQL.js
 let SQL: Awaited<ReturnType<typeof initSqlJs>> | null = null;
@@ -24,7 +19,6 @@ async function initSQL() {
 }
 
 async function openDatabase(dbPath: string): Promise<SqlJsDatabase> {
-  validateFilePath(dbPath, 'read');
   const sql = await initSQL();
   const buffer = await fs.readFile(dbPath);
   return new sql.Database(buffer);
@@ -43,7 +37,6 @@ function queryAll<T>(db: SqlJsDatabase, sql: string, params: any[] = []): T[] {
 
 async function pathExists(targetPath: string): Promise<boolean> {
   try {
-    validateFilePath(targetPath, 'read');
     await fs.access(targetPath);
     return true;
   } catch {
@@ -53,7 +46,6 @@ async function pathExists(targetPath: string): Promise<boolean> {
 
 async function listSubdirectories(parentDir: string): Promise<string[]> {
   try {
-    validateFilePath(parentDir, 'read');
     const entries = await fs.readdir(parentDir, { withFileTypes: true });
     return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
   } catch {
@@ -77,7 +69,6 @@ async function loadTrajectoryMap(trainDir: string, smiles: string[]): Promise<Ma
 
   let files: string[] = [];
   try {
-    validateFilePath(trainDir, 'read');
     files = await fs.readdir(trainDir);
   } catch {
     return trajMap;
@@ -161,7 +152,6 @@ async function loadArtifactMolecules(resultDir: string, limit: number) {
 
       let smiles = '';
       try {
-        validateFilePath(yamlPath, 'read');
         const yamlRaw = await fs.readFile(yamlPath, 'utf-8');
         const parsed = YAML.parse(yamlRaw) as any;
         const sequences = Array.isArray(parsed?.sequences) ? parsed.sequences : [];
@@ -191,7 +181,6 @@ async function loadArtifactMolecules(resultDir: string, limit: number) {
 
       if (await pathExists(affinityPath)) {
         try {
-          validateFilePath(affinityPath, 'read');
           const raw = await fs.readFile(affinityPath, 'utf-8');
           const affinity = JSON.parse(raw) as Record<string, unknown>;
           affinityEnsemble = toFiniteOrNull(affinity.affinity_pred_value);
@@ -298,16 +287,14 @@ export class ConvexSyncService {
    * Create a run record in Convex and return its id.
    */
   async createRun(
-    configId: string,
     name: string,
-    engine: OptimizationEngine,
+    engine: 'boltz' | 'flashbind',
     resultDir: string,
     totalSteps: number
   ): Promise<string | null> {
     if (!this.client) return null;
     try {
       const runId = await this.client.mutation(api.runs.create, {
-        configId: configId as any,
         name,
         engine,
         resultDir,
@@ -354,39 +341,6 @@ export class ConvexSyncService {
    */
   private async syncMolecules(convexRunId: string, resultDir: string, limit = 1000) {
     if (!this.client) return;
-
-    const isFlashbindRun = await this.isFlashbindRun(resultDir);
-    if (isFlashbindRun) {
-      const flashbindMolecules = await getFlashbindTopMolecules(resultDir, limit, {
-        openDatabase,
-        queryAll,
-        pathExists,
-      });
-      if (flashbindMolecules.length === 0) return;
-      const mapped = flashbindMolecules.map((molecule) => ({
-        runId: convexRunId as any,
-        engine: 'flashbind' as const,
-        smiles: molecule.smiles,
-        reward: molecule.reward,
-        normalizedAffinity: molecule.normalizedScores?.affinity ?? molecule.boltzScores?.affinity_model1 ?? null,
-        normalizedProbability:
-          molecule.normalizedScores?.probability ?? molecule.boltzScores?.probability_model1 ?? null,
-        normalizedScore: molecule.normalizedScores?.score ?? molecule.reward,
-        trajectory: JSON.stringify(molecule.trajectory ?? []),
-        affinityEnsemble: molecule.boltzScores?.affinity_ensemble ?? null,
-        probabilityEnsemble: molecule.boltzScores?.probability_ensemble ?? null,
-        affinityModel1: molecule.boltzScores?.affinity_model1 ?? null,
-        probabilityModel1: molecule.boltzScores?.probability_model1 ?? null,
-        affinityModel2: molecule.boltzScores?.affinity_model2 ?? null,
-        probabilityModel2: molecule.boltzScores?.probability_model2 ?? null,
-        oracleIdx: molecule.oracleIdx ?? null,
-        molIdx: molecule.molIdx ?? null,
-        complexFileId: null,
-        iteration: molecule.boltzScores?.iteration ?? molecule.oracleIdx ?? 0,
-      }));
-      await this.client.mutation(api.molecules.batchUpsert, { molecules: mapped as any });
-      return;
-    }
 
     const rewardCachePath = path.join(resultDir, 'boltz_reward_cache.db');
     const trainDir = path.join(resultDir, 'train');
@@ -458,15 +412,8 @@ export class ConvexSyncService {
           const idx = indexMap.get(entry.smiles);
           return {
             runId: convexRunId as any,
-            engine: 'boltz' as const,
             smiles: entry.smiles,
             reward: entry.reward,
-            normalizedAffinity: boltz?.affinity_model1 ?? null,
-            normalizedProbability: boltz?.probability_model1 ?? null,
-            normalizedScore:
-              boltz?.affinity_model1 != null && boltz?.probability_model1 != null
-                ? normalizeReward(boltz.affinity_model1, boltz.probability_model1)
-                : entry.reward,
             trajectory: trajMap.get(entry.smiles) || '[]',
             affinityEnsemble: boltz?.affinity_ensemble ?? null,
             probabilityEnsemble: boltz?.probability_ensemble ?? null,
@@ -487,12 +434,8 @@ export class ConvexSyncService {
       const artifactRows = await loadArtifactMolecules(resultDir, limit);
       molecules = artifactRows.map((row) => ({
         runId: convexRunId as any,
-        engine: 'boltz' as const,
         smiles: row.smiles,
         reward: row.reward,
-        normalizedAffinity: row.affinityModel1,
-        normalizedProbability: row.probabilityModel1,
-        normalizedScore: row.reward,
         trajectory: '[]',
         affinityEnsemble: row.affinityEnsemble,
         probabilityEnsemble: row.probabilityEnsemble,
@@ -513,18 +456,6 @@ export class ConvexSyncService {
     await this.client.mutation(api.molecules.batchUpsert, { molecules: molecules as any });
   }
 
-  private async isFlashbindRun(resultDir: string): Promise<boolean> {
-    const rewardCachePath = path.join(resultDir, 'flashbind_reward_cache.db');
-    if (await pathExists(rewardCachePath)) return true;
-    try {
-      validateFilePath(path.join(resultDir, 'train'), 'read');
-      const files = await fs.readdir(path.join(resultDir, 'train'));
-      return files.some((name) => name.startsWith('flashbind_scores_') && name.endsWith('.db'));
-    } catch {
-      return false;
-    }
-  }
-
   /**
    * Sync run status from train.log
    */
@@ -534,7 +465,6 @@ export class ConvexSyncService {
     const logPath = path.join(resultDir, 'train.log');
     
     try {
-      validateFilePath(logPath, 'read');
       const content = await fs.readFile(logPath, 'utf-8');
       const lines = content.split('\n');
       
@@ -570,7 +500,6 @@ export class ConvexSyncService {
     if (!this.client) return null;
 
     try {
-      validateFilePath(filePath, 'read');
       const content = await fs.readFile(filePath);
       const fileName = path.basename(filePath);
 
