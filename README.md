@@ -10,11 +10,32 @@ CGFlow lives in `cgflow/` as a git submodule ([sheepyrad/cgflow](https://github.
 git submodule update --init --recursive
 cd cgflow
 
+# 1. Create and activate environment using mamba
 mamba create -n cgflow python=3.11
 mamba activate cgflow
+
+# 2. Install PyTorch + PyG via pip
+pip install torch==2.9.1 \
+    torch-geometric>=2.4.0 \
+    torch-scatter>=2.1.2 \
+    torch-sparse>=0.6.18 \
+    torch-cluster>=1.6.3 \
+    -f https://data.pyg.org/whl/torch-2.9.1+cu126.html
+
+# 3. Install cgflow (editable)
 pip install -e .
+
+# 4. Optional extras
+# AutoDock Vina
+pip install -e '.[vina]'
+# Unidock (GPU-accelerated docking)
+mamba install unidock
 pip install -e '.[unidock]'
+# Jupyter and other extras
+mamba install notebook
 pip install -e '.[extra]'
+
+# 5. Boltz with CUDA (upgrade to latest compatible release)
 pip install 'boltz[cuda]' -U
 ```
 
