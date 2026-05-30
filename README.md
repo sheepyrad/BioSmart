@@ -1,4 +1,4 @@
-# BioSmart / Drug Pipeline
+# BioSmart
 
 Monorepo for CGFlow molecular optimization, the CGFlow GUI (Electron + web), and FlashBind integration.
 
