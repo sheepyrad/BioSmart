@@ -114,7 +114,7 @@ The app supports two deployment modes:
 
 In both Electron and web modes the React frontend communicates with the **Runner Server** over HTTP (`http://127.0.0.1:45731`). When Electron is present, IPC is available as a fallback.
 
-In web mode, run-critical file/directory pickers are disabled. Users type runner-local paths for inputs and output directories. A runner status bar shows whether the local runner is ready, unavailable, or errored.
+In web mode, run-critical file/directory pickers are disabled. Users type runner-local paths for inputs and output directories. A runner status bar shows whether the local runner is ready, unavailable, or errored. Legacy `convex://` YAML paths are not resolved locally; reselect the corresponding local file or replace each value with a runner-readable path.
 
 ---
 

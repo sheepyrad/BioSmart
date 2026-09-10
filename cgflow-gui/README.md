@@ -79,7 +79,7 @@ For UI-only development without the runner:
 bun run dev:web:ui
 ```
 
-Web mode does not expose the browser filesystem to the runner. Type runner-local input/output paths in the Configuration form.
+Web mode does not expose the browser filesystem to the runner. Type runner-local input/output paths in the Configuration form. Legacy `convex://` YAML paths are not resolved locally; reselect the corresponding local file or replace each value with a runner-readable path.
 
 For npm/Node environments without Bun, run the runner with `npx tsx electron/runner.ts` instead of `bun run dev:runner`.
 
