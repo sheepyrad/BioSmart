@@ -1,7 +1,4 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent as ReactUIEvent } from 'react';
-import { useQuery } from 'convex/react';
-import { api } from '../../convex/_generated/api';
-import { useConvexRuns, useConvexAvailable } from '@/hooks/useConvex';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -12,13 +9,11 @@ import MolstarViewer from '@/components/MolstarViewer';
 import BoltzMetricsPanel from '@/components/BoltzMetricsPanel';
 import ParallelCoordinatesPanel from '@/components/ParallelCoordinatesPanel';
 import CompoundImageCell from '@/components/CompoundImageCell';
-import { computeBoltzMetrics } from '@shared/boltzMetrics';
-import type { BoltzMetricInputRow, BoltzMetricSeries, RunInfo, MoleculeResult } from '@shared/types';
+import type { BoltzMetricSeries, RunInfo, MoleculeResult } from '@shared/types';
 import {
   Beaker,
   CheckCircle2,
   Circle,
-  CloudUpload,
   FileText,
   FolderOpen,
   History,
@@ -76,12 +71,6 @@ function getStatusIcon(status: string) {
   }
 }
 
-function getRunOrigin(run: RunInfo): 'Cloud' | 'Synced' | 'Local' {
-  if (run.source === 'convex') return 'Cloud';
-  if (run.convexRunId) return 'Synced';
-  return 'Local';
-}
-
 function getStatusBadgeVariant(status: RunInfo['status']) {
   switch (status) {
     case 'running':
@@ -94,21 +83,6 @@ function getStatusBadgeVariant(status: RunInfo['status']) {
     default:
       return 'secondary';
   }
-}
-
-interface ConvexRun {
-  _id: string;
-  name: string;
-  engine?: 'boltz' | 'flashbind';
-  status: 'idle' | 'running' | 'paused' | 'completed' | 'error';
-  currentStep: number;
-  totalSteps: number;
-  resultDir: string;
-  checkpointPath: string | null;
-  error: string | null;
-  startedAt: number | null;
-  completedAt: number | null;
-  lastUpdatedAt: number;
 }
 
 const LOG_LINE_PATTERN = /^(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2})\s+-\s+(\w+)\s+-\s+([^-]+)\s+-\s+(.*)$/;
@@ -188,8 +162,6 @@ function renderLogLine(line: string, index: number): ReactNode {
 
 export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusChange }: DashboardProps) {
   const invoke = useIpcInvoke();
-  const convexRuns = useConvexRuns();
-  const isConvexAvailable = useConvexAvailable();
   const [runnerRuns, setRunnerRuns] = useState<RunInfo[]>([]);
   const [selectedRun, setSelectedRun] = useState<RunInfo | null>(activeRun);
   const [molecules, setMolecules] = useState<MoleculeResult[]>([]);
@@ -198,7 +170,6 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
   const [localBoltzMetrics, setLocalBoltzMetrics] = useState<BoltzMetricSeries | null>(null);
   const [isBoltzMetricsLoading, setIsBoltzMetricsLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
   const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
   const [isLogLoading, setIsLogLoading] = useState(false);
   const [dashboardView, setDashboardView] = useState<'run-info' | 'visualization'>('visualization');
@@ -228,90 +199,6 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       return new Set();
     }
   });
-
-  const convexMoleculeRows = useQuery(
-    api.molecules.getByRun,
-    isConvexAvailable && selectedRun?.source === 'convex'
-      ? { runId: selectedRun.id as any, orderBy: 'reward' }
-      : 'skip'
-  );
-
-  const convexMetricRows = useQuery(
-    api.molecules.getByRun,
-    isConvexAvailable && selectedRun?.source === 'convex'
-      ? { runId: selectedRun.id as any, orderBy: 'iteration' }
-      : 'skip'
-  );
-
-  const mappedConvexMolecules = useMemo<MoleculeResult[]>(() => {
-    if (!convexMoleculeRows) return [];
-    return convexMoleculeRows.map((row: any) => {
-      let trajectory: any[] = [];
-      try {
-        trajectory = row.trajectory ? JSON.parse(row.trajectory) : [];
-      } catch {
-        trajectory = [];
-      }
-
-      const hasScores =
-        row.affinityEnsemble !== null ||
-        row.probabilityEnsemble !== null ||
-        row.affinityModel1 !== null ||
-        row.probabilityModel1 !== null ||
-        row.affinityModel2 !== null ||
-        row.probabilityModel2 !== null;
-
-      return {
-        smiles: row.smiles,
-        reward: row.reward,
-        trajectory,
-        engine: row.engine ?? selectedRun?.engine ?? 'boltz',
-        normalizedScores:
-          row.normalizedAffinity != null &&
-          row.normalizedProbability != null &&
-          row.normalizedScore != null
-            ? {
-                affinity: row.normalizedAffinity,
-                probability: row.normalizedProbability,
-                score: row.normalizedScore,
-              }
-            : null,
-        boltzScores: hasScores
-          ? {
-              iteration: row.iteration ?? 0,
-              smiles: row.smiles,
-              docking_score: 0,
-              affinity_ensemble: row.affinityEnsemble ?? 0,
-              probability_ensemble: row.probabilityEnsemble ?? 0,
-              affinity_model1: row.affinityModel1 ?? 0,
-              probability_model1: row.probabilityModel1 ?? 0,
-              affinity_model2: row.affinityModel2 ?? 0,
-              probability_model2: row.probabilityModel2 ?? 0,
-            }
-          : null,
-        complexPath: null,
-        oracleIdx: row.oracleIdx ?? null,
-        molIdx: row.molIdx ?? null,
-      } as MoleculeResult;
-    });
-  }, [convexMoleculeRows, selectedRun?.engine]);
-
-  const convexMetricInputRows = useMemo<BoltzMetricInputRow[]>(() => {
-    if (!convexMetricRows) return [];
-    return convexMetricRows.map((row: any) => ({
-      iteration: row.iteration ?? 0,
-      smiles: row.smiles,
-      affinityModel1: row.affinityModel1 ?? null,
-      probabilityModel1: row.probabilityModel1 ?? null,
-    }));
-  }, [convexMetricRows]);
-
-  const convexBoltzMetrics = useMemo<BoltzMetricSeries | null>(() => {
-    if (convexMetricInputRows.length === 0) return null;
-    return computeBoltzMetrics(convexMetricInputRows);
-  }, [convexMetricInputRows]);
-
-  const activeBoltzMetrics = selectedRun?.source === 'convex' ? convexBoltzMetrics : localBoltzMetrics;
 
   useEffect(() => {
     if (activeRun) {
@@ -354,11 +241,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       try {
         const runs = await invoke('run:list');
         if (!mounted) return;
-        setRunnerRuns(
-          (runs ?? [])
-            .map((run) => ({ ...run, source: 'local' as const }))
-            .filter((run) => !hiddenRunIds.has(run.id))
-        );
+        setRunnerRuns((runs ?? []).filter((run) => !hiddenRunIds.has(run.id)));
       } catch {
         if (!mounted) return;
         setRunnerRuns([]);
@@ -374,52 +257,18 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     };
   }, [hiddenRunIds, invoke]);
 
-  const convertConvexRun = (run: ConvexRun): RunInfo => ({
-    id: run._id,
-    name: run.name,
-    configPath: '',
-    resultDir: run.resultDir,
-    status: run.status,
-    currentStep: run.currentStep,
-    totalSteps: run.totalSteps,
-    startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
-    lastUpdatedAt: run.lastUpdatedAt ? new Date(run.lastUpdatedAt).toISOString() : null,
-    checkpointPath: run.checkpointPath,
-    error: run.error,
-    engine: run.engine,
-    source: 'convex',
-  });
-
   const selectedEngine = selectedRun?.engine ?? 'boltz';
   const selectedEngineLabel = selectedEngine === 'flashbind' ? 'FlashBind' : 'Boltz';
 
-  const localRuns = [
-    ...runnerRuns.filter((run) => !hiddenRunIds.has(run.id)),
+  const allRuns: RunInfo[] = [
+    ...runnerRuns,
     ...(activeRun && !hiddenRunIds.has(activeRun.id) && !runnerRuns.find((run) => run.id === activeRun.id)
       ? [activeRun]
       : []),
-  ].map((run) => ({ ...run, source: 'local' as const }));
-
-  const convexRunList = convexRuns?.map(convertConvexRun) ?? [];
-  const localConvexIds = new Set(
-    localRuns.map((run) => run.convexRunId).filter((id): id is string => Boolean(id))
-  );
-
-  const allRuns: RunInfo[] = [
-    ...localRuns,
-    ...convexRunList.filter((run) => !localConvexIds.has(run.id)),
   ];
 
   useEffect(() => {
     if (!selectedRun) return;
-
-    if (selectedRun.source === 'convex') {
-      setMolecules(mappedConvexMolecules);
-      if (mappedConvexMolecules.length > 0 && !selectedMolecule) {
-        setSelectedMolecule(mappedConvexMolecules[0] ?? null);
-      }
-      return;
-    }
 
     const fetchMolecules = async () => {
       try {
@@ -436,15 +285,10 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     void fetchMolecules();
     const interval = setInterval(fetchMolecules, 5000);
     return () => clearInterval(interval);
-  }, [invoke, mappedConvexMolecules, selectedMolecule, selectedRun]);
+  }, [invoke, selectedMolecule, selectedRun]);
 
   useEffect(() => {
     if (!selectedRun) {
-      setLocalBoltzMetrics(null);
-      return;
-    }
-
-    if (selectedRun.source === 'convex') {
       setLocalBoltzMetrics(null);
       return;
     }
@@ -476,11 +320,6 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
       return;
     }
 
-    if (selectedRun.source === 'convex') {
-      setComplexContent(null);
-      return;
-    }
-
     const oracleIdx = selectedMolecule.oracleIdx;
     const molIdx = selectedMolecule.molIdx;
     if (oracleIdx == null || molIdx == null) {
@@ -502,11 +341,6 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
 
   useEffect(() => {
     if (!selectedRun) {
-      setRunLogLines([]);
-      return;
-    }
-
-    if (selectedRun.source === 'convex') {
       setRunLogLines([]);
       return;
     }
@@ -540,10 +374,6 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     if (!selectedRun) return;
     setIsLoading(true);
     try {
-      if (selectedRun.source === 'convex') {
-        setMolecules(mappedConvexMolecules);
-        return;
-      }
       const results = await invoke('db:get-top-molecules', selectedRun.id);
       setMolecules(results);
       const metrics = await invoke('run:get-boltz-metrics', selectedRun.id);
@@ -553,7 +383,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     } finally {
       setIsLoading(false);
     }
-  }, [invoke, mappedConvexMolecules, selectedRun]);
+  }, [invoke, selectedRun]);
 
   const handleSelectRun = useCallback((run: RunInfo) => {
     setSelectedRun(run);
@@ -563,7 +393,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
   }, []);
 
   const handleStopRun = useCallback(async (run: RunInfo) => {
-    if (run.source !== 'local' || run.status !== 'running') return;
+    if (run.status !== 'running') return;
     try {
       await invoke('run:stop', run.id);
     } catch (err) {
@@ -585,22 +415,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
     }
   }, [invoke]);
 
-  const handleSyncSelectedRunToCloud = useCallback(async () => {
-    if (!selectedRun || selectedRun.source === 'convex') return;
-    setIsSyncingCloud(true);
-    try {
-      const synced = await invoke('run:sync-to-cloud', selectedRun.id);
-      setSelectedRun(synced);
-      setRunnerRuns((prev) => prev.map((run) => (run.id === synced.id ? { ...synced, source: 'local' } : run)));
-    } catch (err) {
-      console.error('Failed to sync run to cloud:', err);
-    } finally {
-      setIsSyncingCloud(false);
-    }
-  }, [invoke, selectedRun]);
-
   const handleDeleteRun = useCallback(async (run: RunInfo) => {
-    if (run.source === 'convex') return;
     if (run.status === 'running') {
       window.alert('Stop this run before deleting it.');
       return;
@@ -910,18 +725,6 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
             <FolderOpen className="h-3.5 w-3.5" />
             {!isRunSidebarCollapsed ? 'Import Run' : null}
           </Button>
-          {!isRunSidebarCollapsed ? (
-            <Button
-            variant="outline"
-            size="sm"
-            className="mt-2 w-full justify-start gap-2"
-            onClick={handleSyncSelectedRunToCloud}
-            disabled={!selectedRun || selectedRun.source === 'convex' || isSyncingCloud}
-          >
-            <CloudUpload className="h-3.5 w-3.5" />
-            {isSyncingCloud ? 'Syncing...' : 'Sync to Cloud'}
-          </Button>
-          ) : null}
         </div>
 
         <ScrollArea className="flex-1">
@@ -950,16 +753,13 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                       <span className="truncate text-sm font-medium">{run.name}</span>
                     </div>
                     <div className="mt-1.5 flex items-center gap-2">
-                      <Badge variant="outline" className="h-5 px-1.5 font-data text-[9px] font-medium">
-                        {getRunOrigin(run)}
-                      </Badge>
                       <span className="font-data text-[10px] text-muted-foreground tabular-nums">
                         {run.currentStep}/{run.totalSteps}
                       </span>
                     </div>
                   </div>
                   <div className="mt-0.5 flex shrink-0 items-center gap-1">
-                    {run.source === 'local' && run.status === 'running' ? (
+                    {run.status === 'running' ? (
                       <Button
                         variant="ghost"
                         size="icon"
@@ -977,8 +777,8 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                       variant="ghost"
                       size="icon"
                       className="h-7 w-7"
-                      disabled={run.source !== 'local' || deletingRunId === run.id || run.status === 'running'}
-                      title={run.source === 'convex' ? 'Cloud run cannot be deleted here' : 'Delete run'}
+                      disabled={deletingRunId === run.id || run.status === 'running'}
+                      title="Delete run"
                       onClick={(event) => {
                         event.stopPropagation();
                         void handleDeleteRun(run);
@@ -1018,7 +818,6 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                   <h2 className="font-display text-xl font-semibold">{selectedRun.name}</h2>
                   <Badge variant={getStatusBadgeVariant(selectedRun.status)}>{selectedRun.status}</Badge>
                   <Badge variant="outline" className="font-data text-[9px]">{selectedEngineLabel}</Badge>
-                  <Badge variant="outline" className="font-data text-[9px]">{selectedRun.source}</Badge>
                 </div>
                 <p className="mt-0.5 font-data text-xs text-muted-foreground tabular-nums">
                   Iteration {selectedRun.currentStep} of {selectedRun.totalSteps}
@@ -1032,7 +831,7 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                   <RefreshCw className={`mr-2 h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
                   Refresh
                 </Button>
-                {selectedRun.source === 'local' && selectedRun.status === 'running' ? (
+                {selectedRun.status === 'running' ? (
                   <Button variant="destructive" size="sm" onClick={() => void handleStopRun(selectedRun)}>
                     <Square className="mr-2 h-3.5 w-3.5" />
                     Stop
@@ -1057,8 +856,8 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
               <div className="grid min-h-0 grid-rows-[auto_8px_auto] gap-3">
                 <BoltzMetricsPanel
                   className="shrink-0"
-                  metrics={activeBoltzMetrics}
-                  isLoading={selectedRun.source === 'convex' ? convexMetricRows === undefined : isBoltzMetricsLoading}
+                  metrics={localBoltzMetrics}
+                  isLoading={isBoltzMetricsLoading}
                   chartHeight={runInfoChartHeight}
                 />
 
@@ -1079,9 +878,6 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                     </div>
                   </CardHeader>
                   <CardContent className="min-h-0 flex-1">
-                    {selectedRun.source === 'convex' ? (
-                      <p className="text-sm text-muted-foreground">Logs are only available for local runs.</p>
-                    ) : (
                       <div className="h-full overflow-auto rounded-md border border-border bg-background p-3">
                         <div className="space-y-1 font-data text-[10px] leading-relaxed text-foreground">
                           {runLogLines.length > 0
@@ -1091,7 +887,6 @@ export default function Dashboard({ activeRun, onRunStatusChange: _onRunStatusCh
                               : 'No log output yet.'}
                         </div>
                       </div>
-                    )}
                   </CardContent>
                 </Card>
               </div>

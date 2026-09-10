@@ -6,7 +6,6 @@ import { spawn, ChildProcess, type SpawnOptions } from 'child_process';
 import { fileURLToPath } from 'url';
 import YAML from 'yaml';
 import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
-import { ConvexHttpClient } from 'convex/browser';
 import type {
   BoltzMetricInputRow,
   BoltzMetricSeries,
@@ -28,8 +27,6 @@ import {
 } from '../shared/types';
 import { normalizePdbResiduesToOneIndexed } from '../shared/pdbResidues';
 import { computeBoltzMetrics } from '../shared/boltzMetrics';
-import { getConvexSyncService } from './convex-sync';
-import { api } from '../convex/_generated/api';
 import {
   getFlashbindComplexContent,
   getFlashbindMetricRowsFromRunDir,
@@ -93,7 +90,6 @@ const RESULT_DIR_REFRESH_INTERVAL_MS = 10000;
 
 interface RunnerOptions {
   dataDir?: string;
-  convexUrl?: string;
   port?: number;
 }
 
@@ -123,13 +119,10 @@ function parseRunnerPortFromEnv(): number | undefined {
 
 export function parseRunnerOptionsFromEnv(overrides: RunnerOptions = {}): RunnerOptions {
   const port = overrides.port ?? parseRunnerPortFromEnv();
-  const convexUrl =
-    overrides.convexUrl ?? process.env.VITE_CONVEX_URL ?? process.env.CONVEX_URL;
 
   return {
     ...overrides,
     ...(port !== undefined ? { port } : {}),
-    ...(convexUrl ? { convexUrl } : {}),
   };
 }
 
@@ -280,8 +273,6 @@ async function listenRunnerServer(
 
 interface RunRecord extends RunInfo {
   pid: number | null;
-  convexRunId?: string | null;
-  source?: 'local';
   logPath?: string | null;
 }
 
@@ -402,16 +393,6 @@ function buildFailureMessage(params: {
     parts.push(...snippet);
   }
   return parts.join('\n');
-}
-
-function isConvexPath(value: string | null | undefined): boolean {
-  return typeof value === 'string' && value.startsWith('convex://');
-}
-
-function parseConvexPath(value: string): { id: string; name?: string } | null {
-  if (!value.startsWith('convex://')) return null;
-  const parts = value.replace('convex://', '').split('::');
-  return { id: parts[0]!, name: parts[1] };
 }
 
 function defaultImportedConfig(resultDir: string): OptConfig {
@@ -1160,9 +1141,6 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
   const dataDir = options.dataDir ?? path.join(os.homedir(), '.cgflow-runner');
   const runsDir = path.join(dataDir, 'runs');
   const runsFile = path.join(dataDir, 'runs.json');
-  const convexUrl = options.convexUrl ?? process.env.VITE_CONVEX_URL ?? process.env.CONVEX_URL;
-  const convexClient = convexUrl ? new ConvexHttpClient(convexUrl) : null;
-  const convexSync = getConvexSyncService(convexUrl);
 
   await ensureDir(runsDir);
 
@@ -1198,52 +1176,11 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
         run.error = 'Runner restarted; previous process not found.';
       }
       run.engine = normalizeEngine(run.engine);
-      run.source = 'local';
       state.runs.set(run.id, run);
     }
   }
 
   await loadRuns();
-
-  async function resolveConvexFile(convexPath: string, destDir: string): Promise<string> {
-    if (!convexClient) {
-      throw new Error('Convex not configured');
-    }
-    const parsed = parseConvexPath(convexPath);
-    if (!parsed) throw new Error('Invalid Convex file path');
-    const url = await convexClient.query(api.files.getUrl, { id: parsed.id as any });
-    if (!url) throw new Error('Convex file URL not available');
-
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Failed to download file: ${res.statusText}`);
-    const buffer = Buffer.from(await res.arrayBuffer());
-
-    const safeName = parsed.name ? parsed.name.replace(/[^a-zA-Z0-9._-]/g, '_') : 'file';
-    const destPath = path.join(destDir, `${parsed.id}_${safeName}`);
-    await fs.writeFile(destPath, buffer);
-    return destPath;
-  }
-
-  async function resolveConfigPaths(config: OptConfig, inputsDir: string): Promise<OptConfig> {
-    const resolved = JSON.parse(JSON.stringify(config)) as OptConfig;
-
-    const resolveFile = async (value: string | null): Promise<string | null> => {
-      if (!value) return null;
-      if (isConvexPath(value)) {
-        await ensureDir(inputsDir);
-        return await resolveConvexFile(value, inputsDir);
-      }
-      return value;
-    };
-
-    resolved.protein_path = (await resolveFile(resolved.protein_path)) ?? '';
-    resolved.ref_ligand_path = await resolveFile(resolved.ref_ligand_path);
-    resolved.pose_model = (await resolveFile(resolved.pose_model)) ?? resolved.pose_model;
-    resolved.boltz.msa_path = await resolveFile(resolved.boltz.msa_path);
-
-    return resolved;
-  }
-
 
   async function detectResultDir(baseDir: string, startedAt: number): Promise<string | null> {
     try {
@@ -1315,10 +1252,6 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
 
     await persistRuns();
     broadcast('run:status-changed', run);
-    if (run.convexRunId) {
-      convexSync.stopSync(runId);
-      convexSync.startSync(runId, run.convexRunId, nextResultDir, run.engine ?? 'boltz', 30000);
-    }
     return true;
   }
 
@@ -1395,7 +1328,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
 
     const engine = normalizeEngine(config.engine);
     const inputsDir = path.join(runMetaDir, 'inputs');
-    const resolvedConfig = await resolveConfigPaths(config, inputsDir);
+    const resolvedConfig = JSON.parse(JSON.stringify(config)) as OptConfig;
     await ensureDir(inputsDir);
     if (engine === 'boltz') {
       if (!resolvedConfig.protein_path) {
@@ -1428,27 +1361,12 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       error: null,
       engine,
       pid: null,
-      convexRunId: null,
-      source: 'local',
       logPath,
     };
 
     state.runs.set(runId, runInfo);
     state.outputs.set(runId, []);
     await persistRuns();
-
-    if (convexUrl) {
-      const convexRunId = await convexSync.createRun(
-        runInfo.name,
-        runInfo.engine ?? 'boltz',
-        runInfo.resultDir,
-        runInfo.totalSteps
-      );
-      if (convexRunId) {
-        runInfo.convexRunId = convexRunId;
-        await persistRuns();
-      }
-    }
 
     const args = [
       getOptScriptForEngine(engine),
@@ -1537,17 +1455,6 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
         broadcast('run:error', { runId, error: runInfo.error ?? `Process exited with code ${code}` });
       }
       broadcast('run:status-changed', runInfo);
-
-      if (runInfo.convexRunId) {
-        await convexSync.updateRunStatus(
-          runInfo.convexRunId,
-          runInfo.status,
-          runInfo.currentStep,
-          runInfo.checkpointPath,
-          runInfo.error
-        );
-        convexSync.stopSync(runId);
-      }
     });
 
     proc.on('error', async (err) => {
@@ -1559,17 +1466,6 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       await persistRuns();
       broadcast('run:error', { runId, error: err.message });
       broadcast('run:status-changed', runInfo);
-
-      if (runInfo.convexRunId) {
-        await convexSync.updateRunStatus(
-          runInfo.convexRunId,
-          'error',
-          runInfo.currentStep,
-          runInfo.checkpointPath,
-          runInfo.error
-        );
-        convexSync.stopSync(runId);
-      }
     });
 
     // Try to detect actual result directory and keep revalidating while running.
@@ -1586,11 +1482,6 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       await new Promise((resolve) => setTimeout(resolve, RESULT_DIR_INITIAL_DETECTION_INTERVAL_MS));
     }
     startResultDirRefresh(runId, config.result_dir, runStartedAt, resolvedConfigPath);
-
-    // Start Convex sync if configured
-    if (runInfo.convexRunId) {
-      convexSync.startSync(runId, runInfo.convexRunId, runInfo.resultDir, runInfo.engine ?? 'boltz', 30000);
-    }
 
     broadcast('run:status-changed', runInfo);
 
@@ -1692,17 +1583,6 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
         broadcast('run:error', { runId, error: run.error ?? `Process exited with code ${code}` });
       }
       broadcast('run:status-changed', run);
-
-      if (run.convexRunId) {
-        await convexSync.updateRunStatus(
-          run.convexRunId,
-          run.status,
-          run.currentStep,
-          run.checkpointPath,
-          run.error
-        );
-        convexSync.stopSync(runId);
-      }
     });
 
     proc.on('error', async (err) => {
@@ -1714,23 +1594,7 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       await persistRuns();
       broadcast('run:error', { runId, error: err.message });
       broadcast('run:status-changed', run);
-
-      if (run.convexRunId) {
-        await convexSync.updateRunStatus(
-          run.convexRunId,
-          'error',
-          run.currentStep,
-          run.checkpointPath,
-          run.error
-        );
-        convexSync.stopSync(runId);
-      }
     });
-
-    if (run.convexRunId) {
-      await convexSync.updateRunStatus(run.convexRunId, 'running', run.currentStep);
-      convexSync.startSync(runId, run.convexRunId, run.resultDir, run.engine ?? 'boltz', 30000);
-    }
 
     broadcast('run:status-changed', run);
 
@@ -1774,35 +1638,8 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       error: null,
       engine: importedConfig?.engine ?? 'boltz',
       pid: null,
-      convexRunId: null,
-      source: 'local',
       logPath: path.join(resultDir, 'train.log'),
     };
-
-    if (convexClient && convexUrl) {
-      try {
-        const convexRunId = await convexSync.createRun(
-          run.name,
-          run.engine ?? 'boltz',
-          run.resultDir,
-          run.totalSteps
-        );
-
-        if (convexRunId) {
-          run.convexRunId = convexRunId;
-          await convexSync.syncRun(run.id, convexRunId, run.resultDir, run.engine ?? 'boltz');
-          await convexSync.updateRunStatus(
-            convexRunId,
-            run.status,
-            run.currentStep,
-            run.checkpointPath,
-            run.error
-          );
-        }
-      } catch (err) {
-        console.error(`Failed to sync imported run ${run.id} to Convex:`, err);
-      }
-    }
 
     state.runs.set(run.id, run);
     await persistRuns();
@@ -1819,64 +1656,11 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
       throw new Error('Cannot delete a running run. Stop it first.');
     }
 
-    convexSync.stopSync(runId);
-
-    if (run.convexRunId && convexClient) {
-      try {
-        await convexClient.mutation(api.runs.remove, { id: run.convexRunId as any });
-      } catch (err) {
-        console.error(`Failed to delete cloud run for ${runId}:`, err);
-      }
-    }
-
     state.runs.delete(runId);
     state.outputs.delete(runId);
     state.processes.delete(runId);
     artifactMapCache.delete(run.resultDir);
     await persistRuns();
-  }
-
-  async function syncRunToCloud(runId: string): Promise<RunRecord> {
-    const run = state.runs.get(runId);
-    if (!run) {
-      throw new Error(`Run ${runId} not found`);
-    }
-    if (!convexClient || !convexUrl) {
-      throw new Error('Convex is not configured. Set VITE_CONVEX_URL/CONVEX_URL to enable cloud sync.');
-    }
-
-    if (!run.convexRunId) {
-      const convexRunId = await convexSync.createRun(
-        run.name,
-        run.engine ?? 'boltz',
-        run.resultDir,
-        run.totalSteps
-      );
-      if (!convexRunId) {
-        throw new Error('Failed to create run in cloud.');
-      }
-      run.convexRunId = convexRunId;
-    }
-
-    await convexSync.syncRun(run.id, run.convexRunId, run.resultDir, run.engine ?? 'boltz');
-    await convexSync.updateRunStatus(
-      run.convexRunId,
-      run.status,
-      run.currentStep,
-      run.checkpointPath,
-      run.error
-    );
-
-    // Keep periodic sync active only for actively running runs.
-    if (run.status === 'running') {
-      convexSync.startSync(run.id, run.convexRunId, run.resultDir, run.engine ?? 'boltz', 30000);
-    }
-
-    run.lastUpdatedAt = new Date().toISOString();
-    state.runs.set(run.id, run);
-    await persistRuns();
-    broadcast('run:status-changed', run);
-    return run;
   }
 
   async function loadTrajectoryMap(trainDir: string, smiles: string[]): Promise<Map<string, string>> {
@@ -2402,10 +2186,6 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
           run.lastUpdatedAt = new Date().toISOString();
           await persistRuns();
           broadcast('run:status-changed', run);
-          if (run.convexRunId) {
-            await convexSync.updateRunStatus(run.convexRunId, 'paused', run.currentStep, run.checkpointPath);
-            convexSync.stopSync(runId);
-          }
         }
         sendJson(200, { ok: true });
         return;
@@ -2456,16 +2236,6 @@ export async function startRunnerServer(options: RunnerOptions = {}) {
           sendJson(200, { ok: true });
         } catch (err) {
           sendText(500, err instanceof Error ? err.message : 'Failed to delete run');
-        }
-        return;
-      }
-
-      if (req.method === 'POST' && pathParts[2] === 'sync-cloud') {
-        try {
-          const run = await syncRunToCloud(runId);
-          sendJson(200, run);
-        } catch (err) {
-          sendText(500, err instanceof Error ? err.message : 'Failed to sync run to cloud');
         }
         return;
       }

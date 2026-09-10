@@ -6,9 +6,6 @@ dist/
 dist-electron/
 release/
 
-# Convex
-convex/_generated/
-
 # Environment
 .env
 .env.local

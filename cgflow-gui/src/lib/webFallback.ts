@@ -185,10 +185,6 @@ export const webFallback: {
     throw new Error('Not available in web mode');
   },
 
-  'run:sync-to-cloud': async (_runId: string) => {
-    throw new Error('Not available in web mode');
-  },
-
   'run:get-boltz-metrics': async (_runId: string) => {
     return null;
   },

@@ -11,7 +11,6 @@ import MolstarViewer from '@/components/MolstarViewer';
 import FileSelector from '@/components/FileSelector';
 import type { OptConfig, RunInfo, BoltzConfig, FlashBindConfig, OptimizationEngine } from '@shared/types';
 import { OptConfigSchema } from '@shared/types';
-import { normalizePdbResiduesToOneIndexed } from '@shared/pdbResidues';
 import YAML from 'yaml';
 import {
   FolderOpen,
@@ -149,10 +148,6 @@ interface ParsedProteinSequence {
 }
 
 type ResidueLimitsByChain = Record<string, number>;
-
-function oneIndexedPdbFileName(fileName: string): string {
-  return fileName.replace(/(\.pdb)?$/i, '.1indexed.pdb');
-}
 
 const RESIDUE_SELECTION_PATTERN = /^[A-Za-z0-9]+:[1-9]\d*$/;
 
@@ -443,23 +438,6 @@ export default function ConfigBuilder({
       setIsLoading(false);
     }
   }, [invoke]);
-
-  const preparePdbFileForUpload = useCallback(async (file: File) => {
-    const content = await file.text();
-    const normalized = normalizePdbResiduesToOneIndexed(content);
-    setPdbResidueMessage(normalized.message);
-
-    if (!normalized.converted) {
-      return { file, content };
-    }
-
-    return {
-      file: new File([normalized.content], oneIndexedPdbFileName(file.name), {
-        type: file.type || 'chemical/x-pdb',
-      }),
-      content: normalized.content,
-    };
-  }, []);
 
   const handleSelectMsa = useCallback(async (): Promise<string | null> => {
     return await invoke('file:select-msa');
@@ -764,7 +742,7 @@ export default function ConfigBuilder({
                 {webMode ? (
                   <div className="rounded-md border border-border/60 bg-secondary/20 px-3 py-2 text-xs text-muted-foreground">
                     Web mode uses runner-local paths. Type absolute or workspace-relative paths for
-                    inputs and directories, or use Convex uploads where available.
+                    inputs and directories.
                   </div>
                 ) : null}
                 <FileSelector
@@ -772,14 +750,10 @@ export default function ConfigBuilder({
                   value={config.protein_path}
                   onChange={(path) => setConfig((prev) => ({ ...prev, protein_path: path }))}
                   onContentLoaded={(content) => setPdbContent(content)}
-                  fieldType="protein_pdb"
-                  fileType="pdb"
-                  accept=".pdb"
                   placeholder="Select protein .pdb file"
                   pathInputPlaceholder="/path/to/protein.pdb"
                   onSelectLocal={handleSelectPdb}
                   onReadLocalContent={async (path) => await invoke('file:read-pdb', path)}
-                  prepareFileForUpload={preparePdbFileForUpload}
                   {...webPathInputProps}
                 />
 
@@ -806,9 +780,6 @@ export default function ConfigBuilder({
                     }))
                   }
                   onContentLoaded={(content) => setLigandContent(content)}
-                  fieldType="other"
-                  fileType="other"
-                  accept=".mol2,.sdf,.mol,.pdb,.cif,.mmcif"
                   placeholder="Select reference ligand file"
                   pathInputPlaceholder="/path/to/reference_ligand.sdf"
                   optional
@@ -865,9 +836,6 @@ export default function ConfigBuilder({
                         },
                       }))
                     }
-                    fieldType="other"
-                    fileType="other"
-                    accept=".json"
                     placeholder="Select FlashBind prots.json"
                     pathInputPlaceholder="/path/to/prots.json"
                     onSelectLocal={handleSelectProtsJson}
@@ -910,9 +878,6 @@ export default function ConfigBuilder({
                         boltz: { ...prev.boltz, msa_path: path || null },
                       }))
                     }
-                    fieldType="msa"
-                    fileType="msa"
-                    accept=".a3m"
                     placeholder="Select optional MSA file"
                     pathInputPlaceholder="/path/to/alignment.a3m"
                     optional
