@@ -5,7 +5,7 @@ import { normalizeRunnerPathInput } from '@/lib/webMode';
 import { runnerClient } from '@/lib/runnerClient';
 
 function isBrowserOnlyPath(value: string): boolean {
-  return value.startsWith('web://') || value.startsWith('convex://');
+  return value.startsWith('web://');
 }
 
 async function invokeFileChannel<K extends keyof IpcChannels>(
@@ -63,7 +63,6 @@ export function useIpcInvoke() {
         'run:get-output',
         'run:delete',
         'run:import-existing',
-        'run:sync-to-cloud',
         'run:get-boltz-metrics',
         'db:get-top-molecules',
         'boltz:get-complex',
@@ -103,8 +102,6 @@ export function useIpcInvoke() {
                 args[0] as string,
                 (args[1] as string | null | undefined) ?? null
               ) as Awaited<ReturnType<IpcChannels[K]>>;
-            case 'run:sync-to-cloud':
-              return runnerClient.syncRunToCloud(args[0] as string) as Awaited<ReturnType<IpcChannels[K]>>;
             case 'run:get-boltz-metrics':
               return runnerClient.getBoltzMetrics(args[0] as string) as Awaited<ReturnType<IpcChannels[K]>>;
             case 'db:get-top-molecules':
@@ -127,7 +124,6 @@ export function useIpcInvoke() {
       if (
         channel === 'run:delete' ||
         channel === 'run:import-existing' ||
-        channel === 'run:sync-to-cloud' ||
         channel === 'run:get-boltz-metrics'
       ) {
         throw new Error('Runner server is not available for this operation.');

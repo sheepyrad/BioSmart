@@ -246,17 +246,6 @@ class RunnerClient {
     return await parseJsonResponse(res, RunInfoSchema, 'import run');
   }
 
-  async syncRunToCloud(runId: string): Promise<RunInfo> {
-    const res = await fetch(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/sync-cloud`, {
-      method: 'POST',
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || 'Failed to sync run to cloud');
-    }
-    return await parseJsonResponse(res, RunInfoSchema, 'sync run');
-  }
-
   async getBoltzMetrics(runId: string): Promise<BoltzMetricSeries | null> {
     const res = await fetch(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/boltz-metrics`);
     if (res.status === 404) return null;

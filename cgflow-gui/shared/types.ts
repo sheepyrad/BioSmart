@@ -178,8 +178,6 @@ export const RunInfoSchema = z.object({
   checkpointPath: nullableSafePathSchema,
   error: z.string().nullable(),
   engine: OptimizationEngineSchema.optional(),
-  convexRunId: z.string().nullable().optional(),
-  source: z.enum(['local', 'convex']).optional(),
 });
 
 export type RunInfo = z.infer<typeof RunInfoSchema>;
@@ -334,7 +332,6 @@ export interface IpcChannels {
   'run:get-checkpoints': (runId: string) => Promise<string[]>;
   'run:get-output': (runId: string, tail?: number) => Promise<string[]>;
   'run:import-existing': (resultDir: string, name?: string | null) => Promise<RunInfo>;
-  'run:sync-to-cloud': (runId: string) => Promise<RunInfo>;
   'run:get-boltz-metrics': (runId: string) => Promise<BoltzMetricSeries | null>;
 
   'db:get-generated-objects': (dbPath: string, limit?: number, offset?: number) => Promise<GeneratedObject[]>;

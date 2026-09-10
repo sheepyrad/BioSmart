@@ -5,9 +5,7 @@ import fs from 'fs/promises';
 import { spawn, ChildProcess, type SpawnOptions } from 'child_process';
 import YAML from 'yaml';
 import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
-import { ConvexHttpClient } from 'convex/browser';
 import { startRunnerServer, parseRunnerOptionsFromEnv } from './runner';
-import { api } from '../convex/_generated/api';
 import type {
   OptConfig,
   RunInfo,
@@ -40,8 +38,6 @@ const CONDA_ENV_NAME = process.env.CGFLOW_CONDA_ENV?.trim() || 'cgflow';
 function getOptScriptForEngine(engine: OptConfig['engine'] | RunInfo['engine']): string {
   return engine === 'flashbind' ? OPT_FLASHBIND_SCRIPT : OPT_BOLTZ_SCRIPT;
 }
-const CONVEX_URL = process.env.VITE_CONVEX_URL ?? process.env.CONVEX_URL;
-const convexClient = CONVEX_URL ? new ConvexHttpClient(CONVEX_URL) : null;
 
 function spawnCgflowPython(args: string[], options: SpawnOptions): ChildProcess {
   return spawn(
@@ -102,94 +98,7 @@ function queryAll<T>(db: SqlJsDatabase, sql: string, params: any[] = []): T[] {
   return results;
 }
 
-function isConvexPath(value: string | null | undefined): boolean {
-  return typeof value === 'string' && value.startsWith('convex://');
-}
-
-function parseConvexPath(value: string): { id: string; name?: string } | null {
-  if (!value.startsWith('convex://')) return null;
-  const parts = value.replace('convex://', '').split('::');
-  return { id: parts[0]!, name: parts[1] };
-}
-
-async function readConvexFileText(convexPath: string): Promise<string> {
-  if (!convexClient) {
-    throw new Error('Convex is not configured. Set VITE_CONVEX_URL or CONVEX_URL.');
-  }
-  const parsed = parseConvexPath(convexPath);
-  if (!parsed) {
-    throw new Error(`Invalid Convex file path: ${convexPath}`);
-  }
-  const url = await convexClient.query(api.files.getUrl, { id: parsed.id as any });
-  if (!url) {
-    throw new Error(`Convex file URL not available for: ${parsed.id}`);
-  }
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Failed to download Convex file (${res.status}): ${res.statusText}`);
-  }
-  return await res.text();
-}
-
-async function resolveConvexFileToLocalPath(convexPath: string, destDir: string): Promise<string> {
-  if (!convexClient) {
-    throw new Error('Convex is not configured. Set VITE_CONVEX_URL or CONVEX_URL.');
-  }
-  const parsed = parseConvexPath(convexPath);
-  if (!parsed) {
-    throw new Error(`Invalid Convex file path: ${convexPath}`);
-  }
-  const url = await convexClient.query(api.files.getUrl, { id: parsed.id as any });
-  if (!url) {
-    throw new Error(`Convex file URL not available for: ${parsed.id}`);
-  }
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Failed to download Convex file (${res.status}): ${res.statusText}`);
-  }
-  const buffer = Buffer.from(await res.arrayBuffer());
-  const safeName = parsed.name ? parsed.name.replace(/[^a-zA-Z0-9._-]/g, '_') : 'file';
-  await fs.mkdir(destDir, { recursive: true });
-  const destPath = path.join(destDir, `${parsed.id}_${safeName}`);
-  await fs.writeFile(destPath, buffer);
-  return destPath;
-}
-
-async function resolveConfigConvexPaths(config: OptConfig, destDir: string): Promise<OptConfig> {
-  const resolved = JSON.parse(JSON.stringify(config)) as OptConfig;
-  const resolveOne = async (value: string | null): Promise<string | null> => {
-    if (!value) return null;
-    if (!isConvexPath(value)) return value;
-    return await resolveConvexFileToLocalPath(value, destDir);
-  };
-
-  resolved.protein_path = (await resolveOne(resolved.protein_path)) ?? '';
-  resolved.ref_ligand_path = await resolveOne(resolved.ref_ligand_path);
-  resolved.pose_model = (await resolveOne(resolved.pose_model)) ?? resolved.pose_model;
-  resolved.boltz.msa_path = await resolveOne(resolved.boltz.msa_path);
-  return resolved;
-}
-
-function configHasConvexPaths(config: OptConfig): boolean {
-  return [
-    config.protein_path,
-    config.ref_ligand_path,
-    config.pose_model,
-    config.boltz.msa_path,
-  ].some((value) => isConvexPath(value ?? null));
-}
-
-function safeFileName(fileName: string): string {
-  return fileName.replace(/[^a-zA-Z0-9._-]/g, '_') || 'protein.pdb';
-}
-
 function normalizedPdbPathFor(filePath: string): string {
-  const parsedConvexPath = parseConvexPath(filePath);
-  if (parsedConvexPath) {
-    const normalizedDir = path.join(app.getPath('userData'), 'normalized-pdbs');
-    return path.join(normalizedDir, `${parsedConvexPath.id}_${safeFileName(parsedConvexPath.name || 'protein.pdb')}`);
-  }
-
   const parsedPath = path.parse(filePath);
   const extension = parsedPath.ext || '.pdb';
   return path.join(parsedPath.dir, `${parsedPath.name}.1indexed${extension}`);
@@ -347,23 +256,15 @@ ipcMain.handle('file:select-directory', async () => {
 });
 
 ipcMain.handle('file:read-pdb', async (_event, filePath: string) => {
-  if (isConvexPath(filePath)) {
-    return await readConvexFileText(filePath);
-  }
   return fs.readFile(filePath, 'utf-8');
 });
 
 ipcMain.handle('file:read-text', async (_event, filePath: string) => {
-  if (isConvexPath(filePath)) {
-    return await readConvexFileText(filePath);
-  }
   return fs.readFile(filePath, 'utf-8');
 });
 
 ipcMain.handle('file:normalize-pdb-residues', async (_event, filePath: string) => {
-  const content = isConvexPath(filePath)
-    ? await readConvexFileText(filePath)
-    : await fs.readFile(filePath, 'utf-8');
+  const content = await fs.readFile(filePath, 'utf-8');
   const normalized = normalizePdbResiduesToOneIndexed(content);
 
   if (!normalized.converted) {
@@ -398,16 +299,6 @@ ipcMain.handle('file:write-yaml', async (_event, filePath: string, config: OptCo
 });
 
 ipcMain.handle('file:exists', async (_event, filePath: string) => {
-  if (isConvexPath(filePath)) {
-    try {
-      const parsed = parseConvexPath(filePath);
-      if (!parsed || !convexClient) return false;
-      const url = await convexClient.query(api.files.getUrl, { id: parsed.id as any });
-      return Boolean(url);
-    } catch {
-      return false;
-    }
-  }
   try {
     await fs.access(filePath);
     return true;
@@ -430,13 +321,9 @@ function emitToRenderer(channel: string, ...args: unknown[]) {
 
 ipcMain.handle('run:start', async (_event, payload: { config: OptConfig; configPath?: string | null; name?: string | null }) => {
   const runId = generateRunId();
-  const resolvedInputsDir = path.join(app.getPath('userData'), 'inputs', runId);
-  const hasConvexPaths = configHasConvexPaths(payload.config);
-  const config = hasConvexPaths
-    ? await resolveConfigConvexPaths(payload.config, resolvedInputsDir)
-    : payload.config;
+  const config = payload.config;
   let configPath = payload.configPath ?? null;
-  if (!configPath || hasConvexPaths) {
+  if (!configPath) {
     const path = `./configs/opt/generated_${Date.now()}.yaml`;
     const content = YAML.stringify(config);
     await fs.writeFile(path, content, 'utf-8');

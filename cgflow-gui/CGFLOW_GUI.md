@@ -1,6 +1,6 @@
 # CGFlow GUI — Architecture & Feature Reference
 
-A hybrid Electron / Web application for configuring, launching, and monitoring **CGFlow** molecular optimization runs powered by **Boltz-2**. The GUI spawns Python processes locally, reads their SQLite output databases, and optionally syncs everything to a **Convex** cloud backend for cross-machine access and real-time dashboarding.
+A hybrid Electron / Web application for configuring, launching, and monitoring **CGFlow** molecular optimization runs powered by **Boltz-2**. The GUI spawns Python processes locally and reads their SQLite output databases for dashboards and 3D viewing.
 
 ---
 
@@ -17,15 +17,9 @@ A hybrid Electron / Web application for configuring, launching, and monitoring *
    - [The Runner Server](#the-runner-server)
    - [Electron IPC (Legacy Path)](#electron-ipc-legacy-path)
    - [Process Lifecycle](#process-lifecycle)
-7. [Convex Backend Integration](#convex-backend-integration)
-   - [Schema](#convex-schema)
-   - [What Gets Synced](#what-gets-synced)
-   - [ConvexSyncService](#convexsyncservice)
-   - [Frontend Hooks](#frontend-convex-hooks)
-   - [Real-Time Subscriptions](#real-time-subscriptions)
-8. [Data Flow End-to-End](#data-flow-end-to-end)
-9. [Shared Types](#shared-types)
-10. [Tech Stack](#tech-stack)
+7. [Data Flow End-to-End](#data-flow-end-to-end)
+8. [Shared Types](#shared-types)
+9. [Tech Stack](#tech-stack)
 
 ---
 
@@ -40,26 +34,24 @@ A hybrid Electron / Web application for configuring, launching, and monitoring *
 │  │  (Renderer)  │     │  (HTTP client) │     │  (Node.js HTTP)   │  │
 │  │              │     └────────────────┘     │  port 45731       │  │
 │  │  - Config    │                            │                   │  │
-│  │  - Dashboard │     ┌────────────────┐     │  spawn('python',  │  │
-│  │  - Mol*      │────▶│  Convex Client │     │   opt_unidock_    │  │
-│  │  - RDKit     │     │  (React hooks) │     │   boltz.py ...)   │  │
-│  └──────┬───────┘     └───────┬────────┘     └────────┬──────────┘  │
-│         │                     │                       │              │
-│         │ IPC (Electron)      │ WebSocket             │ stdout/err   │
-│         ▼                     ▼                       ▼              │
-│  ┌──────────────┐     ┌────────────────┐     ┌───────────────────┐  │
-│  │  Electron    │     │    Convex      │     │  cgflow Python    │  │
-│  │  Main Proc   │     │    Cloud       │     │  process          │  │
-│  │  (optional)  │     │                │     │                   │  │
-│  └──────────────┘     │  - runs        │     │  Writes to:       │  │
-│                       │  - molecules   │     │  - train.log      │  │
-│  ┌──────────────┐     │  - files       │     │  - SQLite DBs     │  │
-│  │  Convex Sync │────▶│  - annotations │     │  - checkpoints    │  │
-│  │  Service     │     │                │     │  - Boltz outputs  │  │
-│  │  (Node.js)   │     └────────────────┘     └───────────────────┘  │
-│  └──────────────┘                                                    │
+│  │  - Dashboard │                            │  spawn('python',  │  │
+│  │  - Mol*      │                            │   opt_boltz.py    │  │
+│  │  - RDKit     │                            │   / opt_flashbind)│  │
+│  └──────┬───────┘                            └────────┬──────────┘  │
+│         │                                             │              │
+│         │ IPC (Electron)                              │ stdout/err   │
+│         ▼                                             ▼              │
+│  ┌──────────────┐                            ┌───────────────────┐  │
+│  │  Electron    │                            │  cgflow Python    │  │
+│  │  Main Proc   │                            │  process          │  │
+│  │  (optional)  │                            │                   │  │
+│  └──────────────┘                            │  Writes to:       │  │
+│                                              │  - train.log      │  │
+│                                              │  - SQLite DBs     │  │
+│                                              │  - checkpoints    │  │
+│                                              │  - Boltz outputs  │  │
+│                                              └───────────────────┘  │
 │         │                                                            │
-│         │ Reads SQLite DBs every 30s                                 │
 │         ▼                                                            │
 │  ┌───────────────────────────────────────┐                           │
 │  │  Local SQLite Databases               │                           │
@@ -77,21 +69,19 @@ A hybrid Electron / Web application for configuring, launching, and monitoring *
 ```
 cgflow-gui/
 ├── src/                           # Frontend (React + Vite)
-│   ├── main.tsx                   #   Entry point, Convex provider setup
+│   ├── main.tsx                   #   Entry point
 │   ├── App.tsx                    #   Tab navigation (Config / Dashboard)
 │   ├── pages/
 │   │   ├── ConfigBuilder.tsx      #   Configuration form + Mol* viewer
 │   │   └── Dashboard.tsx          #   Run monitoring + molecule analysis
 │   ├── components/
-│   │   ├── FileSelector.tsx       #   Local + Convex file picker
+│   │   ├── FileSelector.tsx       #   Local file picker / path input
 │   │   ├── MoleculeCard.tsx       #   2D molecule (RDKit SVG)
 │   │   ├── MolstarViewer.tsx      #   3D protein viewer (Mol*)
 │   │   ├── ReactionPathway.tsx    #   Reaction trajectory visualization
 │   │   └── ui/                    #   shadcn/ui primitives
 │   ├── hooks/
-│   │   ├── useConvex.ts           #   Convex availability + runs
-│   │   ├── useIpc.ts              #   IPC / Runner client abstraction
-│   │   └── useUploadedFiles.ts    #   File upload to Convex storage
+│   │   └── useIpc.ts              #   IPC / Runner client abstraction
 │   └── lib/
 │       ├── runnerClient.ts        #   HTTP client for runner server
 │       ├── utils.ts               #   cn() helper
@@ -100,23 +90,14 @@ cgflow-gui/
 ├── electron/                      # Electron main process
 │   ├── main.ts                    #   Window creation, IPC handlers
 │   ├── preload.ts                 #   Context bridge
-│   ├── runner.ts                  #   Standalone HTTP runner server
-│   └── convex-sync.ts             #   SQLite → Convex sync service
-│
-├── convex/                        # Convex backend functions
-│   ├── schema.ts                  #   Database schema (4 tables)
-│   ├── runs.ts                    #   Run lifecycle
-│   ├── molecules.ts               #   Molecule upsert + queries
-│   ├── files.ts                   #   File storage operations
-│   └── annotations.ts             #   User annotations on molecules
+│   └── runner.ts                  #   Standalone HTTP runner server
 │
 ├── shared/
 │   └── types.ts                   #   Zod schemas shared across all layers
 │
 ├── vite.config.ts                 #   Electron build (main + preload + runner)
 ├── vite.config.web.ts             #   Web-only build (no Electron)
-├── package.json
-└── convex.json
+└── package.json
 ```
 
 ---
@@ -125,15 +106,15 @@ cgflow-gui/
 
 The app supports two deployment modes:
 
-| Mode | Command | Electron | Runner Server | Convex |
-|------|---------|----------|---------------|--------|
-| **Electron** | `npm run dev` / `bun run electron:dev` | Yes — full desktop app | Started automatically by Electron main process | Optional |
-| **Web (full)** | `bun run dev:web` | No — browser-only | Started automatically alongside Vite | Optional |
-| **Web (UI only)** | `bun run dev:web:ui` | No — browser-only | Must be started separately with `bun run dev:runner` | Optional |
+| Mode | Command | Electron | Runner Server |
+|------|---------|----------|---------------|
+| **Electron** | `npm run dev` / `bun run electron:dev` | Yes — full desktop app | Started automatically by Electron main process |
+| **Web (full)** | `bun run dev:web` | No — browser-only | Started automatically alongside Vite |
+| **Web (UI only)** | `bun run dev:web:ui` | No — browser-only | Must be started separately with `bun run dev:runner` |
 
-In both Electron and web modes the React frontend communicates with the **Runner Server** over HTTP (`http://127.0.0.1:45731`). When Electron is present, IPC is available as a fallback. When Convex is configured (`VITE_CONVEX_URL`), data is also synced to the cloud.
+In both Electron and web modes the React frontend communicates with the **Runner Server** over HTTP (`http://127.0.0.1:45731`). When Electron is present, IPC is available as a fallback.
 
-In web mode, run-critical file/directory pickers are disabled. Users type runner-local paths for inputs and output directories, or use Convex uploads where supported. A runner status bar shows whether the local runner is ready, unavailable, or errored.
+In web mode, run-critical file/directory pickers are disabled. Users type runner-local paths for inputs and output directories. A runner status bar shows whether the local runner is ready, unavailable, or errored. Legacy `convex://` YAML paths are not resolved locally; reselect the corresponding local file or replace each value with a runner-readable path.
 
 ---
 
@@ -147,8 +128,8 @@ A split-panel form for assembling a CGFlow optimization configuration.
 
 | Section | Description |
 |---------|-------------|
-| **Load / Save** | Load YAML from disk, save YAML locally, save to Convex cloud |
-| **Input Files** | Select Protein PDB, Boltz Base YAML, MSA path — via local filesystem or Convex uploads |
+| **Load / Save** | Load YAML from disk, save YAML locally |
+| **Input Files** | Select Protein PDB, Boltz Base YAML, MSA path — via local filesystem or typed runner-local paths |
 | **Target Residues** | Click-to-select residues in the Mol* viewer or type manually (format `A:123`) |
 | **Directories** | Result directory and environment directory paths |
 | **Optimization Params** | Steps, Samples/Step, Max Atoms, Seed, Temperature range, Pose model, etc. |
@@ -169,13 +150,13 @@ A monitoring and analysis view for active and completed runs.
 
 | Area | Description |
 |------|-------------|
-| **Left sidebar** | Scrollable run history — shows all local + Convex runs with status icons and step progress. Click to select. Auto-refreshes every 5 seconds. |
+| **Left sidebar** | Scrollable run history — shows local runner runs with status icons and step progress. Click to select. Auto-refreshes every 5 seconds. |
 | **KPI cards** (top) | 5 metric cards: Status, Progress, Best Affinity, Best Probability, Molecule Count |
 | **Molecule detail** (left) | Selected molecule's 2D structure (RDKit), Boltz-2 scores (affinity/probability for ensemble + individual models), reaction trajectory pathway |
 | **Mol\* viewer** (right) | 3D visualization of the Boltz-2 predicted protein-ligand complex for the selected molecule |
 | **Molecule table** (bottom) | Top 50 molecules ranked by reward — columns: SMILES, Reward, Affinity, Probability, Steps. Click to select and inspect. |
 
-**Data sources are merged:** the Dashboard combines local runs (from the Runner Server) with Convex cloud runs into a unified list. Each run is tagged with `source: 'local'` or `source: 'convex'`.
+**Data source:** the Dashboard lists local runs from the Runner Server (`GET /runs`) and polls SQLite-backed molecule, metric, log, and complex endpoints.
 
 ---
 
@@ -201,12 +182,11 @@ A monitoring and analysis view for active and completed runs.
 - Shows action names, fragment SMILES, and intermediate structures
 - Animated timeline layout
 
-### `FileSelector` — Unified File Picker
+### `FileSelector` — Local File Picker
 
-- Dropdown supporting both local file selection (via IPC dialog) and Convex cloud uploads
-- Lists previously uploaded files per field type
-- Upload/delete operations on Convex storage
-- Falls back to local-only when Convex is unavailable
+- Local file selection via IPC dialog in Electron
+- Typed runner-local paths in web mode
+- Optional content callback for Mol* preview after a path is chosen
 
 ---
 
@@ -320,85 +300,6 @@ Run metadata is persisted to a JSON file (`runs.json`) in the runner's data dire
 
 ---
 
-## Convex Backend Integration
-
-Convex is an **optional** cloud backend. When configured (via `VITE_CONVEX_URL`), it provides:
-
-- **Cross-machine access** — view runs and molecules from any browser
-- **Real-time updates** — Convex subscriptions push data to the UI automatically
-- **Cloud file storage** — upload PDB/YAML/MSA files to Convex storage
-
-When Convex is not configured, the app operates in local-only mode with full functionality via the Runner Server.
-
-### Convex Schema
-
-**Location:** `convex/schema.ts`
-
-| Table | Purpose | Key Indexes |
-|-------|---------|-------------|
-| `runs` | Training run records (status, progress, result dir) | `by_status` |
-| `molecules` | Generated molecules synced from local SQLite | `by_run`, `by_run_reward`, `by_smiles` |
-| `files` | Uploaded files (PDB, YAML, MSA) with Convex storage refs | `by_run`, `by_type`, `by_field_type` |
-| `annotations` | User notes, stars, and tags on molecules | `by_molecule` |
-
-### What Gets Synced
-
-The `ConvexSyncService` (`electron/convex-sync.ts`) runs in the Node.js layer and periodically pushes local data to Convex:
-
-| Data Source | Sync Target | Frequency | Mechanism |
-|-------------|-------------|-----------|-----------|
-| `boltz_reward_cache.db` | `molecules` table | Every 30 seconds | Reads SQLite → `api.molecules.batchUpsert` |
-| `boltz_scores_0.db` | `molecules` table (score fields) | Every 30 seconds | Joined with reward cache entries |
-| `generated_objs_*.db` | `molecules` table (trajectory field) | Every 30 seconds | Trajectory JSON extracted per SMILES |
-| `train.log` | `runs` table (currentStep) | Every 30 seconds | Parses last iteration number |
-| Run status changes | `runs` table | On event | Immediate push on start/stop/complete/error |
-| File uploads | `files` table + `_storage` | On upload | 3-step: generateUrl → POST blob → create record |
-
-### ConvexSyncService
-
-**Location:** `electron/convex-sync.ts`
-
-A singleton service that uses `ConvexHttpClient` (non-React, server-side client) to push data.
-
-**Key methods:**
-
-| Method | Description |
-|--------|-------------|
-| `startSync(runId, convexRunId, resultDir)` | Begin periodic sync (every 30s) for a run |
-| `stopSync(runId)` | Stop periodic sync |
-| `createRun(name, resultDir, totalSteps)` | Create a run record in Convex |
-| `updateRunStatus(convexRunId, status, ...)` | Push status change to Convex |
-| `syncMolecules(convexRunId, resultDir)` | Read SQLite DBs → batch upsert molecules |
-| `syncRunStatus(convexRunId, resultDir)` | Parse `train.log` → update step count |
-| `uploadFile(filePath, fileType)` | Upload a local file to Convex storage |
-
-**Molecule sync process in detail:**
-
-1. Open `boltz_reward_cache.db` — query top 1000 entries by reward
-2. Scan `generated_objs_*.db` files in `train/` — extract trajectory JSON per SMILES
-3. Open `boltz_scores_0.db` — join Boltz affinity/probability scores per SMILES
-4. Parse `info` JSON from reward cache — extract `oracle_idx` and `mol_idx`
-5. Assemble molecule objects and call `api.molecules.batchUpsert`
-
-### Frontend Convex Hooks
-
-| Hook | File | Purpose |
-|------|------|---------|
-| `useConvexAvailable()` | `hooks/useConvex.ts` | Check if Convex is configured and reachable |
-| `useConvexRuns()` | `hooks/useConvex.ts` | Subscribe to `api.runs.list` — returns null if unavailable |
-| `useUploadedFiles(fieldType)` | `hooks/useUploadedFiles.ts` | Upload/list/delete files by field type (protein_pdb, boltz_yaml, msa) |
-| `useAllUploadedFiles()` | `hooks/useUploadedFiles.ts` | Browse all uploaded files |
-
-### Real-Time Subscriptions
-
-The frontend uses Convex's `useQuery` hooks which maintain **WebSocket subscriptions**. When data changes server-side, the UI updates automatically — no polling needed for Convex data.
-
-- `api.molecules.getTopByRun` — Dashboard molecule table auto-updates as sync pushes new molecules
-- `api.runs.list` — Run history sidebar reflects status changes in real-time
-- `api.files.listByFieldType` — File selector shows newly uploaded files
-
----
-
 ## Data Flow End-to-End
 
 ### 1. Configure & Start a Run
@@ -412,7 +313,6 @@ OptConfig object assembled (Zod-validated)
 POST /runs → Runner Server
         │
         ├──▶ Write config to temp YAML file
-        ├──▶ Create Convex run (ConvexSyncService.createRun) [optional]
         ├──▶ spawn('python', ['opt_boltz.py', ...])
         │
         ▼
@@ -423,12 +323,8 @@ Python process starts, writing to result_dir/
 
 ```
 Python writes to stdout ──▶ Runner captures lines ──▶ SSE broadcast
-Python writes train.log ──▶ ConvexSync reads log   ──▶ api.runs.updateStatus
-Python writes SQLite DBs ──▶ ConvexSync reads DBs  ──▶ api.molecules.batchUpsert
-                                                           │
-                                                           ▼
-                                              Convex useQuery subscriptions
-                                              auto-update Dashboard UI
+Python writes train.log ──▶ Dashboard polls GET /runs/:id/output
+Python writes SQLite DBs ──▶ Dashboard polls GET /runs/:id/molecules
 ```
 
 ### 3. View Results
@@ -436,9 +332,7 @@ Python writes SQLite DBs ──▶ ConvexSync reads DBs  ──▶ api.molecules
 ```
 Dashboard selects run
         │
-        ├──▶ Local run: GET /runs/:id/molecules → reads SQLite on demand
-        │
-        ├──▶ Convex run: useQuery(api.molecules.getTopByRun) → real-time
+        ├──▶ GET /runs/:id/molecules → reads SQLite on demand
         │
         ▼
 Molecules displayed in table
@@ -448,23 +342,7 @@ User clicks molecule
         ├──▶ 2D structure rendered via RDKit.js
         ├──▶ Boltz scores displayed
         ├──▶ Reaction trajectory visualized
-        └──▶ 3D complex loaded in Mol* (GET /runs/:id/complex/:oracle/:mol)
-```
-
-### 4. Convex File Resolution
-
-When a config references a Convex-uploaded file (format `convex://fileId::filename`):
-
-```
-Runner receives config with convex:// path
-        │
-        ▼
-resolveConvexFile(path)
-        │
-        ├──▶ api.files.getUrl(fileId) → get download URL
-        ├──▶ fetch(url) → download file content
-        ├──▶ Write to local temp file
-        └──▶ Return local path for Python to use
+        └──▶ 3D complex loaded in Mol* (GET /runs/:id/complex)
 ```
 
 ---
@@ -473,7 +351,7 @@ resolveConvexFile(path)
 
 **Location:** `shared/types.ts`
 
-All layers (frontend, Electron main, runner, Convex) share Zod-validated type definitions:
+All layers (frontend, Electron main, runner) share Zod-validated type definitions:
 
 | Type | Description |
 |------|-------------|
@@ -500,7 +378,6 @@ All layers (frontend, Electron main, runner, Convex) share Zod-validated type de
 | **3D Viewer** | Mol* (Molstar 4.5) |
 | **2D Chemistry** | RDKit.js |
 | **Desktop** | Electron 34 |
-| **Backend** | Convex 1.17 (optional cloud) |
 | **Process Mgmt** | Node.js `child_process.spawn` |
 | **Local Data** | SQLite via sql.js |
 | **Validation** | Zod 3.24 |

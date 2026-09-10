@@ -25,7 +25,6 @@ const ALLOWED_CHANNELS = [
   'run:get-checkpoints',
   'run:get-output',
   'run:import-existing',
-  'run:sync-to-cloud',
   'run:get-boltz-metrics',
   // Database queries
   'db:get-generated-objects',
