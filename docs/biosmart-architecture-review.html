@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BioSmart — Architecture Review &amp; Overhaul Plan</title>
+<style>
+  :root{
+    --bg:#0f1115;--panel:#161a22;--panel2:#1c212b;--line:#2a3140;--text:#e6e9ef;--muted:#9aa4b5;
+    --accent:#6ee7b7;--accent2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;--good:#4ade80;--code:#0b0d12;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme: light){
+    :root{--bg:#f7f8fa;--panel:#ffffff;--panel2:#f1f3f7;--line:#dfe3ea;--text:#151922;--muted:#5b6474;--code:#f1f3f7;
+      --accent:#0f9d6e;--accent2:#0369a1;--warn:#b45309;--bad:#b91c1c;--good:#15803d}
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 var(--sans)}
+  a{color:var(--accent2);text-decoration:none}a:hover{text-decoration:underline}
+  code,pre{font-family:var(--mono);font-size:.88em}
+  code{background:var(--code);padding:.1em .35em;border-radius:4px;border:1px solid var(--line)}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto;line-height:1.45}
+  pre code{background:none;border:0;padding:0}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 28px 80px}
+  header.hero{padding:56px 0 28px;border-bottom:1px solid var(--line)}
+  header.hero h1{font-size:34px;margin:0 0 6px;letter-spacing:-.01em}
+  header.hero p.sub{color:var(--muted);margin:0;font-size:16px}
+  .meta{display:flex;gap:18px;flex-wrap:wrap;color:var(--muted);font-size:13px;margin-top:14px}
+  nav.toc{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);padding:10px 0;margin-bottom:24px}
+  nav.toc ul{list-style:none;margin:0;padding:0;display:flex;gap:6px 18px;flex-wrap:wrap;font-size:13px}
+  nav.toc a{color:var(--muted)}nav.toc a:hover{color:var(--text)}
+  h2{font-size:24px;margin:52px 0 14px;padding-top:8px;letter-spacing:-.01em}
+  h2 .n{color:var(--accent);font-family:var(--mono);font-size:15px;margin-right:10px}
+  h3{font-size:17px;margin:30px 0 10px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  p{margin:0 0 12px}
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+  .g3{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+  .g4{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+  .card h3{margin-top:0}
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .kpi .v{font-size:30px;font-weight:700;letter-spacing:-.02em;line-height:1.1}
+  .kpi .l{color:var(--muted);font-size:13px;margin-top:4px}
+  .kpi.bad .v{color:var(--bad)}.kpi.warn .v{color:var(--warn)}.kpi.good .v{color:var(--good)}
+  table{width:100%;border-collapse:collapse;font-size:14px;margin:10px 0 18px;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  th,td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left}
+  th{background:var(--panel2);font-weight:600;color:var(--muted);font-size:12.5px;text-transform:uppercase;letter-spacing:.05em}
+  tr:last-child td{border-bottom:0}
+  .tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:600;border:1px solid}
+  .tag.bad{color:var(--bad);border-color:var(--bad)}.tag.warn{color:var(--warn);border-color:var(--warn)}
+  .tag.good{color:var(--good);border-color:var(--good)}.tag.info{color:var(--accent2);border-color:var(--accent2)}
+  .tag.bold{color:var(--accent);border-color:var(--accent)}
+  .callout{border-left:4px solid var(--accent);background:var(--panel);padding:12px 16px;border-radius:0 8px 8px 0;margin:14px 0}
+  .callout.warn{border-color:var(--warn)}.callout.bad{border-color:var(--bad)}
+  .diagram{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:16px;overflow:auto}
+  .diagram pre{border:0;background:none;padding:0;margin:0;font-size:12.5px}
+  .steps{counter-reset:s;list-style:none;padding:0;margin:0}
+  .steps li{counter-increment:s;position:relative;padding:8px 0 8px 40px;border-bottom:1px dashed var(--line)}
+  .steps li:last-child{border-bottom:0}
+  .steps li::before{content:counter(s);position:absolute;left:0;top:9px;width:26px;height:26px;border-radius:50%;background:var(--panel2);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--muted)}
+  .steps li .who{font-size:12px;color:var(--muted);margin-left:6px}
+  .phase{border:1px solid var(--line);border-radius:10px;overflow:hidden;margin:14px 0;background:var(--panel)}
+  .phase .ph{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 16px;background:var(--panel2);border-bottom:1px solid var(--line)}
+  .phase .ph b{font-size:15px}
+  .phase .pb{padding:12px 16px}
+  .phase ul{margin:6px 0 6px 18px;padding:0}
+  .bar{height:8px;border-radius:4px;background:var(--panel2);overflow:hidden;border:1px solid var(--line)}
+  .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--accent2),var(--accent))}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media (max-width:800px){.two{grid-template-columns:1fr}}
+  .before,.after{border-radius:10px;padding:14px 16px;border:1px solid var(--line)}
+  .before{background:color-mix(in srgb,var(--bad) 7%,var(--panel))}
+  .after{background:color-mix(in srgb,var(--good) 7%,var(--panel))}
+  .before h4,.after h4{margin-top:0}
+  ul.tight{margin:4px 0 10px 18px;padding:0}ul.tight li{margin:3px 0}
+  .small{font-size:13px;color:var(--muted)}
+  footer{margin-top:60px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
+  details{border:1px solid var(--line);border-radius:8px;background:var(--panel);margin:8px 0}
+  summary{cursor:pointer;padding:10px 14px;font-weight:600}
+  details .in{padding:0 14px 12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>BioSmart — Architecture Review &amp; Overhaul Plan</h1>
+  <p class="sub">A deep reflection on <code>cgflow</code> (Python engine) and <code>cgflow-gui</code> (Electron/React frontend), with the goal of making BioSmart installable and usable by non-technical scientists.</p>
+  <div class="meta">
+    <span>Repo: <code>BioSmart</code> @ <code>50ee96b</code> · submodule <code>cgflow</code> @ <code>3627b3a</code></span>
+    <span>Date: 16 Sep 2026</span>
+    <span>Scope: installation, distribution, architecture, code quality</span>
+    <span>Backward compatibility: not required</span>
+    <span><span class="tag good">Consensus reached 16 Sep 2026</span> — see §0.5 and <code>docs/adr/0001–0005</code></span>
+  </div>
+</header>
+
+<nav class="toc"><ul>
+  <li><a href="#tldr">TL;DR</a></li>
+  <li><a href="#consensus">0.5 · Consensus</a></li>
+  <li><a href="#today">1 · Today</a></li>
+  <li><a href="#friction">2 · Friction inventory</a></li>
+  <li><a href="#findings">3 · Findings</a></li>
+  <li><a href="#principles">4 · Design principles</a></li>
+  <li><a href="#target">5 · Target architecture</a></li>
+  <li><a href="#proposals">6 · Proposals</a></li>
+  <li><a href="#roadmap">7 · Roadmap</a></li>
+  <li><a href="#storage">8 · Storage model</a></li>
+  <li><a href="#decisions">9 · Decisions</a></li>
+  <li><a href="#appendix">Appendix</a></li>
+</ul></nav>
+
+<!-- ============================================================ -->
+<section id="tldr">
+<h2><span class="n">00</span>TL;DR</h2>
+
+<div class="grid g4" style="margin-bottom:18px">
+  <div class="kpi bad"><div class="v">3–5</div><div class="l">conda envs required (3 mutually incompatible torch stacks)</div></div>
+  <div class="kpi bad"><div class="v">~25</div><div class="l">manual steps for a first successful FlashBind run</div></div>
+  <div class="kpi warn"><div class="v">0</div><div class="l">tests in CI, lint gates, packaged installers, onboarding screens</div></div>
+  <div class="kpi warn"><div class="v">2,345</div><div class="l">lines in <code>runner.ts</code>, the TypeScript process that re-implements what Python already knows</div></div>
+</div>
+
+<p><b>Diagnosis.</b> BioSmart is a research pipeline with a developer console bolted on. The engine assumes a Linux GPU workstation hand-configured with three conda environments, weights fetched from Google Drive and Hugging Face, an Enamine-derived Building-block library (today <code>env_dir</code>) that is not in the repo, and absolute paths from the author's machine baked into example configs. The GUI assumes it is running from the monorepo checkout next to <code>../cgflow</code> with <code>conda</code> on <code>PATH</code>, and it cannot be packaged as-is. Nothing in the system checks whether the machine is actually ready before a user hits <em>Start</em>.</p>
+
+<p><b>The central architectural mistake</b> is that the two halves are coupled at the filesystem level (sibling directories, <code>__dirname</code> tricks, BFS scans of cgflow's output tree, regex parsing of log lines, a Zod schema that shadows a Python dataclass) while being decoupled at the level that matters: neither side owns the contract for "what is a run, what is its config, what is its state".</p>
+
+<div class="callout">
+<b>Recommended direction (bold, no backward compatibility):</b>
+<ol style="margin:8px 0 0 18px">
+  <li><b>Ship the engine as one container image</b> (all Python envs baked in via micromamba/pixi, weights fetched by an in-image <code>biosmart assets sync</code>). Host requirement collapses to: Linux + NVIDIA driver + Docker. Optional host-native path via <code>pixi</code> from the same lockfile.</li>
+  <li><b>Move the runner into Python</b> (FastAPI inside the engine). It already spawns Python and reads SQLite; a Python server does that natively. Delete <code>runner.ts</code>, <code>main.ts</code> IPC handlers, and sql.js.</li>
+  <li><b>Drop Electron and Bun from the deployment story.</b> The UI becomes a static Vite build served by the engine on <code>127.0.0.1</code>; the scientist opens it in the workstation's browser. Electron never solved a real problem here because compute lives on the Linux box anyway.</li>
+  <li><b>One canonical schema, generated once.</b> A pydantic <code>RunSpec</code> in Python exports JSON Schema and TypeScript types; the UI form and the YAML written to disk are both derived from it.</li>
+  <li><b>Structured events instead of regex.</b> The trainer emits JSONL progress events and writes a <code>run.json</code> manifest; the API no longer guesses where Boltz put a CIF.</li>
+  <li><b>Replace the config form with a 3-step wizard + presets and a Doctor screen</b> that refuses to start until GPU, environments, weights and a Building-block library are all green.</li>
+</ol>
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="consensus">
+<h2><span class="n">0.5</span>Consensus decisions</h2>
+<p>Outcome of a four-round design review (Q1–Q36). These supersede any earlier wording in this document where they differ. Vocabulary follows <code>CONTEXT.md</code>; the four load-bearing decisions are recorded as ADRs in <code>docs/adr/</code>.</p>
+<table>
+<thead><tr><th>Topic</th><th>Decision</th></tr></thead>
+<tbody>
+<tr><td>Topology</td><td><b>Solo Linux GPU workstation, always.</b> Server binds <code>127.0.0.1</code> only; no token, no LAN mode. Shared-server use is deferred, not designed against.</td></tr>
+<tr><td>Distribution</td><td>One container image from one <code>pixi.lock</code>; pixi host-native as fallback. <code>install.sh --with-docker</code> installs Docker + NVIDIA toolkit on Ubuntu via sudo, otherwise prints commands. <span class="tag info">ADR-0001</span></td></tr>
+<tr><td>Hardware</td><td>Single GPU, 24 GB VRAM floor. One Run on the GPU at a time; FIFO queue, cancellable.</td></tr>
+<tr><td>Scorers</td><td>Exactly two user-selectable Scorers: <b>Boltz-2</b> and <b>FlashBind</b>. FABind+ is FlashBind's internal pose provider behind a pluggable seam (CGFlow-pose alternative: lowest priority). UniDock/Vina code retained for parity with upstream <code>tsa87/cgflow</code>, not a product Scorer. Boltzina deleted.</td></tr>
+<tr><td>Building-block library</td><td>Built in-app from Enamine Catalog, Enamine Stock (user toggles; different extraction scripts) or <code>.smi</code>. Drug-like filter off by default, switchable. Multiple libraries; newest default; Run records its library. 30-day staleness reminder (configurable), reminder only. <b>No demo library</b>; Doctor self-test is <code>--dry-run</code>.</td></tr>
+<tr><td>Pocket</td><td>v1: residues for Boltz-2, Reference ligand for FlashBind. Future: generator → Boltz-2 co-fold → Reference ligand.</td></tr>
+<tr><td>Presets</td><td>Quick 100×16 · Standard 1000×32 · Thorough 2000×64. ETA from observed Scoring-round durations, never hard-coded (64k Boltz-2 scorings ≈ 2 weeks on one RTX 3090, ~300 aa).</td></tr>
+<tr><td>Inputs</td><td>Uploads + mounted <code>~/BioSmart/inputs</code> browsable in the UI. No arbitrary paths.</td></tr>
+<tr><td>Retention</td><td><b>Nothing deleted</b>; Scorer working files retained. Runs root user-configurable (network drive allowed). Dedup of per-Candidate Target/MSA processing: verify later.</td></tr>
+<tr><td>Network</td><td>Internet for one-time asset downloads by the Doctor; Boltz MSA server on by default, labelled, switchable to uploaded <code>.a3m</code>.</td></tr>
+<tr><td>Run contract</td><td>pydantic <code>RunSpec</code>; JSONL events; self-contained Run folder; Stop/Resume for both Scorers. <span class="tag info">ADR-0002</span></td></tr>
+<tr><td>Storage</td><td>Hybrid: engine-owned Run database per Run folder + rebuildable central Index; SQLite (WAL). <span class="tag info">ADR-0003</span> Global Scorer cache keyed by scoring-context hash + canonical SMILES. <span class="tag info">ADR-0004</span></td></tr>
+<tr><td>Provenance</td><td>Full: spec, seed, Library/Target/Pocket hashes, Pose-model hash, Scorer and FABind+ versions, exact Scorer command lines, MSA source with returned <code>.a3m</code> hash, image digest, engine SHA, GPU, timings.</td></tr>
+<tr><td>Repository</td><td>Submodule dissolved (no upstream sync). <code>experiments/</code>, <code>experimental/</code>, pretraining/multi-pocket scripts, Boltzina, <code>wandb</code>: tagged <code>research-archive</code>, removed from <code>main</code>. Renamed <code>biosmart</code>.</td></tr>
+<tr><td>Legacy</td><td>One-off importer for today's Boltz-2 result folders; low priority.</td></tr>
+</tbody></table>
+</section>
+
+<!-- ============================================================ -->
+<section id="today">
+<h2><span class="n">01</span>How BioSmart works today</h2>
+
+<div class="diagram"><pre>
+ Developer laptop / GPU workstation (must be the SAME Linux box)
+ ┌──────────────────────────────────────────────────────────────────────────────────────────┐
+ │  cgflow-gui/  (Bun + Vite + Electron 40)                                                 │
+ │  ┌───────────────┐   HTTP :45731 / SSE   ┌──────────────────────────────────────────┐    │
+ │  │ React renderer│ ─────────────────────▶│ electron/runner.ts  (2,345 LOC, Node)     │    │
+ │  │ ConfigBuilder │ ◀── fallback IPC ──── │  · writes config.resolved.yaml            │    │
+ │  │ Dashboard     │   electron/main.ts    │  · generates boltz_base.generated.yaml    │    │
+ │  │ (Zod schema)  │   (749 LOC, dup logic)│  · spawn("conda run -n cgflow python ...")│    │
+ │  └───────────────┘                       │  · regex /iteration (\d+)/ on stdout      │    │
+ │        RDKit via unpkg CDN               │  · sql.js loads whole *.db into RAM       │    │
+ │                                          │  · BFS depth-6 for boltz_cofold/**/*.cif  │    │
+ │                                          └───────────────┬──────────────────────────┘    │
+ │                                    path.resolve(__dirname,'../../cgflow')  ▼             │
+ │  cgflow/  (git submodule, sys.path hacks, no console entry points)                       │
+ │  ┌────────────────────────────────────────────────────────────────────────────────────┐  │
+ │  │ scripts/opt/opt_boltz.py │ opt_flashbind.py   ──▶ scripts/opt/tasks/*.py           │  │
+ │  │   env "cgflow"  py3.11  torch 2.6+cu124 (or 2.9+cu126 per upstream README)         │  │
+ │  │     ├─ in-process: CGFlow pose model (weights/cgflow_crossdock.ckpt, Google Drive) │  │
+ │  │     ├─ subprocess: `boltz predict` (same env; multi-GB cache on first run)         │  │
+ │  │     ├─ conda run -n fabind        py3.8  torch 1.12+cu113  (+ gcc'd LD_PRELOAD shim)│  │
+ │  │     └─ conda run -n flashaffinity py3.11 torch 2.7.1+cu126 (ESM3 gated on HF)      │  │
+ │  │ inputs: env_dir (Enamine → c_create_env.py, NOT in repo), PDB, MSA .a3m, ...       │  │
+ │  │ outputs: {result_dir}/{YYMMDD_HHMMSS}/ train/*.db, *_reward_cache.db, model_state_*│  │
+ │  └────────────────────────────────────────────────────────────────────────────────────┘  │
+ └──────────────────────────────────────────────────────────────────────────────────────────┘
+</pre></div>
+
+<div class="grid g3" style="margin-top:16px">
+  <div class="card"><h3>cgflow (engine)</h3>
+    <ul class="tight">
+      <li>~60k LOC under <code>src/</code>: <code>cgflow</code> 18.5k, <code>FlashBind</code> 18.1k (vendored), <code>gflownet</code> 10.5k (vendored fork), <code>synthflow</code> 7.8k, <code>rxnflow</code> 4.8k (namespace pkg, no <code>__init__</code>).</li>
+      <li>Entry points are scripts that <code>sys.path.insert</code> <code>src/</code>; <code>pyproject.toml</code> has no <code>[project.scripts]</code>.</li>
+      <li>Config: argparse → OmegaConf → nested dataclasses via <code>init_empty</code>; ~65 <code>*Config</code> classes; no exported schema.</li>
+      <li>Resume exists only for Boltz; SIGINT cleanup exists only for Boltz.</li>
+    </ul>
+  </div>
+  <div class="card"><h3>cgflow-gui (frontend)</h3>
+    <ul class="tight">
+      <li>~6k LOC renderer + 3.6k LOC Electron/runner. <code>ConfigBuilder.tsx</code> 1,299, <code>Dashboard.tsx</code> 1,033.</li>
+      <li>HTTP runner is the live path; IPC run handlers in <code>main.ts</code> are a stale ~400 LOC duplicate.</li>
+      <li>No onboarding, no environment check, no tests, no lint, no CI; toasts/framer-motion/3 components unused.</li>
+      <li>electron-builder packs only <code>dist/</code> + <code>dist-electron/</code>; a packaged app cannot find cgflow or conda.</li>
+    </ul>
+  </div>
+  <div class="card"><h3>Glue &amp; assets</h3>
+    <ul class="tight">
+      <li>Conda bridging via <code>synthflow/utils/conda_env.py</code>: locates conda base heuristically, runs <code>conda run --no-capture-output -n …</code>.</li>
+      <li>Assets: pose ckpt (gdown), FABind+ 360 MB + FlashBind 250 MB (HF, scripted), ESM3 (gated HF), Boltz cache (multi-GB, first use), <code>env_dir</code> (user builds from Enamine SDF).</li>
+      <li>Hard-coded <code>/media/data/conrad_hku/…</code> in shipped configs and GUI defaults (<code>hf_cache</code>).</li>
+    </ul>
+  </div>
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="friction">
+<h2><span class="n">02</span>Friction inventory — what a new user must do today</h2>
+<p>Reconstructed from <code>README.md</code>, <code>cgflow/README.md</code>, <code>cgflow/data/README.md</code>, <code>src/FlashBind/env.yaml</code>, <code>FABind_plus/README.md</code>, and GUI docs. Steps marked <span class="tag bad">trap</span> have a documented or observed way to silently go wrong.</p>
+
+<ol class="steps">
+  <li>Obtain a Linux x86_64 machine with an NVIDIA GPU; check glibc (20.04 → torch 2.6/cu124; 22.04+ → 2.9/cu126; flashaffinity needs ≥2.33). <span class="tag bad">trap</span></li>
+  <li>Install git, git-lfs (for upstream FABind path), mamba/conda, CUDA driver, gcc (needed at runtime to build the iJIT <code>LD_PRELOAD</code> stub for fabind).</li>
+  <li><code>git clone --recurse-submodules</code>; verify submodule is on the right branch (README says <code>feat/flashbind-integration</code>, status says <code>drug-pipeline-v1</code>). <span class="tag bad">trap</span></li>
+  <li>Create env <code>cgflow</code>: choose torch pin by OS, install PyG wheels from the matching index, <code>pip install -e .</code> (pulls 2 git+https deps), install Boltz with a constraints file so pip does not upgrade torch. <span class="tag bad">trap</span></li>
+  <li>Discover <code>medchem</code> is imported but not declared; install it manually. <span class="tag bad">trap</span></li>
+  <li>Create env <code>flashaffinity</code> from a 250-line <code>env.yaml</code> with order-sensitive pip installs (torch before flash-attn), cuequivariance CUDA ops, mmseqs2, ray.</li>
+  <li>Create env <code>fabind</code> (Python 3.8, torch 1.12/cu113, graph-tool, torchdrug, rdkit 2021) — a 2022-era stack that increasingly does not resolve on modern conda channels. <span class="tag bad">trap</span></li>
+  <li>Run <code>./scripts/setup-cgflow-assets.sh</code> for FABind+/FlashBind checkpoints (≈610 MB).</li>
+  <li><code>gdown</code> the CGFlow pose checkpoint from Google Drive into <code>cgflow/weights/</code> (Drive rate limits; no checksum).</li>
+  <li>Accept the ESM3 license on Hugging Face, create a token, <code>huggingface-cli login</code> inside the flashaffinity env. <span class="tag bad">trap</span></li>
+  <li>Set <code>hf_cache</code>/<code>HF_HOME</code> to a big disk; edit shipped YAML that points at <code>/media/data/conrad_hku/hf_cache</code>. <span class="tag bad">trap</span></li>
+  <li>Download an Enamine building-block SDF (requires Enamine account), run <code>a_stock_to_smi.py</code> → optional <code>b_druglike_filter.py</code> → <code>c_create_env.py</code> (CPU-hours) to produce <code>data/envs/…</code>. <span class="tag bad">trap</span></li>
+  <li>Let <code>boltz predict</code> download its model + CCD cache on first oracle call (multi-GB, mid-run). <span class="tag bad">trap</span></li>
+  <li>Prepare inputs: PDB, optional reference ligand <code>.mol2</code>, MSA <code>.a3m</code> (or enable MSA server), for FlashBind a <code>prot.json</code> and a PDB whose stem equals <code>protein_id</code> with no underscores. <span class="tag bad">trap</span></li>
+  <li>Install Bun (or Node 18+), <code>cd cgflow-gui &amp;&amp; bun install</code> (downloads Electron).</li>
+  <li>Create <code>cgflow-gui/.env.local</code> with <code>CGFLOW_ALLOWED_WORKSPACE_PATHS</code> if data lives outside <code>$HOME</code>. <span class="tag bad">trap</span></li>
+  <li><code>bun run electron:dev</code> (or <code>dev:web</code>), keep the terminal open; handle "Port 45733 in use" with <code>fuser -k</code>.</li>
+  <li>In the UI, type absolute paths for PDB, MSA, result dir, env dir (web mode has no pickers). Hidden defaults still point to <code>./weights/cgflow_crossdock.ckpt</code> and <code>./data/envs/enamine_stock_new</code>. <span class="tag bad">trap</span></li>
+  <li>Click Start. If anything above is wrong, read the red log box.</li>
+</ol>
+
+<div class="callout bad" style="margin-top:18px">
+<b>Time to first run for a new lab member:</b> realistically 1–3 days with help, unbounded without. Nine of nineteen steps have silent failure modes. None of this is the science.
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="findings">
+<h2><span class="n">03</span>Findings (evidence)</h2>
+
+<h3>3.1 Environment &amp; dependency topology</h3>
+<table>
+<thead><tr><th>Env</th><th>Python</th><th>Torch / CUDA</th><th>Why it exists</th><th>Defined where</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td><code>cgflow</code></td><td>3.11</td><td>2.6.0+cu124 (BioSmart) <i>or</i> 2.9.1+cu126 (upstream)</td><td>Trainer, CGFlow pose model, Boltz CLI</td><td>README prose + <code>pyproject.toml</code></td><td><span class="tag warn">two conflicting recipes</span></td></tr>
+<tr><td><code>flashaffinity</code></td><td>3.11.0</td><td>2.7.1+cu126</td><td>FlashBind scoring, ESM3/TorchDrug representations</td><td><code>src/FlashBind/env.yaml</code> (250 lines, fully pinned)</td><td><span class="tag warn">glibc ≥ 2.33</span></td></tr>
+<tr><td><code>fabind</code></td><td>3.8</td><td>1.12.0+cu113</td><td>FABind+ docking</td><td><code>FABind_plus/README.md</code> prose</td><td><span class="tag bad">2022 stack, needs LD_PRELOAD shim</span></td></tr>
+<tr><td><code>boltzina</code>, <code>unidock-env</code></td><td>?</td><td>?</td><td>Alternative oracles (not used by GUI)</td><td>hard-coded names only</td><td><span class="tag bad">no recipe</span></td></tr>
+</tbody></table>
+<p class="small">Source: <code>synthflow/utils/conda_env.py</code>, <code>scripts/opt/tasks/{fabind,flashbind,unidock_boltzina}.py</code>, <code>synthflow/utils/{unidock,boltzina_setup,boltzina_integration}.py</code>.</p>
+
+<h3>3.2 Contract drift between engine and GUI</h3>
+<table>
+<thead><tr><th>Concern</th><th>Engine truth</th><th>GUI's copy</th><th>Failure mode</th></tr></thead>
+<tbody>
+<tr><td>Config schema</td><td>Nested dataclasses + OmegaConf; some keys read via <code>getattr</code> (e.g. <code>hf_cache</code>) and not declared</td><td>Zod <code>OptConfigSchema</code> in <code>shared/types.ts</code> (366 LOC), with alias normalisation on import</td><td>Silent drift; Zod rejects empty hidden FlashBind fields with "validation failed"</td></tr>
+<tr><td>Progress</td><td><code>logger.info("iteration {it} : k:v …")</code> every 10 steps; Boltz-only <code>[Boltz iteration summary]</code></td><td><code>/iteration\s+(\d+)/i</code> on stdout and on <code>train.log</code></td><td>FlashBind has no summary lines; log format changes break the bar</td></tr>
+<tr><td>Result location</td><td><code>{result_dir}/{YYMMDD_HHMMSS}/</code>, chosen by Python at start</td><td>Polls for dirs matching <code>^\d{6}_\d{6}$</code> with mtime ≥ start−5 s</td><td>Two runs started within a second collide; clock skew</td></tr>
+<tr><td>Complex structures</td><td><code>boltz_cofold/oracle{N}/mol_{i}/…/predictions/**</code> or <code>flashbind_oracle/oracle{N}/fabind_output/</code></td><td>BFS to depth 6 for first <code>*.cif|*.pdb</code>; separate adapter for FlashBind</td><td>Wrong file picked; O(files) per click</td></tr>
+<tr><td>SQLite</td><td>Python writes <code>results</code> / <code>entries</code> tables continuously</td><td>sql.js reads the entire <code>.db</code> into memory on every poll (5 s)</td><td>Memory + IO grows with run length; no WAL-aware reads</td></tr>
+<tr><td>Process ownership</td><td>Python child of <code>conda run</code> wrapper</td><td>Stores wrapper PID in <code>runs.json</code>; on restart, live jobs become un-stoppable orphans</td><td>Lost control of GPU jobs</td></tr>
+<tr><td>Stop / resume</td><td>SIGINT → <code>KeyboardInterrupt</code> cleanup (Boltz only); <code>--resume_from</code> Boltz only, interactive prompt on oracle mismatch</td><td>Offers Stop/Resume for both engines</td><td>FlashBind "resume" cannot work; interactive prompt hangs a headless child</td></tr>
+</tbody></table>
+
+<h3>3.3 Code quality snapshot</h3>
+<div class="grid g2">
+  <div class="card"><h3>Python (<code>cgflow</code>)</h3>
+    <ul class="tight">
+      <li>13 files &gt; 800 LOC; <code>scripts/opt/tasks/boltz.py</code> is 1,071 LOC and holds oracle, cache, resume, logging, process-group management.</li>
+      <li>Five near-copy opt entry points (<code>opt_boltz</code>, <code>opt_flashbind</code>, <code>opt_unidock</code>, <code>opt_vina</code>, <code>opt_unidock_boltzina</code>); <code>build_training_data_loader</code> duplicated.</li>
+      <li>~118 TODO/FIXME/HACK; ~236 <code>print(</code> vs ~72 logger calls in the opt/synthflow scope.</li>
+      <li>Ruff configured but pre-commit only gates <code>scripts/</code> with <code>--exit-zero</code>; 12 test files, one real <code>unittest</code>, no pytest config.</li>
+      <li>Committed blob: <code>FABind_plus/inference_examples/…/processed_protein.pt</code> 12 MB; <code>inference_examples/</code> 14 MB total; <code>experimental/</code> 4 MB scratch.</li>
+      <li>Undeclared runtime import <code>medchem</code>; git+https deps for <code>druglikeness</code>, <code>pharmaconet</code>.</li>
+    </ul></div>
+  <div class="card"><h3>TypeScript (<code>cgflow-gui</code>)</h3>
+    <ul class="tight">
+      <li><code>runner.ts</code> 2,345 LOC: HTTP routing, SSE, YAML generation, PDB→sequence, sql.js, filesystem allowlists, run registry, artifact scanning in one file.</li>
+      <li>~350–450 LOC duplicated between <code>main.ts</code> IPC and <code>runner.ts</code> (spawn, DB, complex lookup) with divergent behaviour.</li>
+      <li>State is <code>useState</code> sprawl across two 1k-line pages; no store, no toasts wired despite the dependency.</li>
+      <li>Unused: <code>MoleculeCard</code>, <code>ReactionPathway</code>, <code>SmilesCell</code>, <code>framer-motion</code>, 7 Radix packages.</li>
+      <li>RDKit WASM is loaded from <code>unpkg.com</code> at runtime → the "offline desktop app" needs internet.</li>
+      <li>Security: no auth on <code>:45731</code>; runner can read any file under <code>$HOME</code>; IPC file handlers have no allowlist at all.</li>
+      <li>No ESLint, no tests, no CI, no <code>release/</code> artefact ever built.</li>
+    </ul></div>
+</div>
+
+<h3>3.4 What is actually good and should be kept</h3>
+<ul class="tight">
+  <li>The <b>science core</b>: CGFlow pose model + RxnFlow synthesis GFN + pluggable oracle tasks (<code>BaseDockingTask</code> seam) is a sound design and already engine-agnostic at the trainer level.</li>
+  <li>The <b>HTTP+SSE runner model</b> (as opposed to IPC) was the right call; only its language and location are wrong.</li>
+  <li><b>Mol* residue picking</b>, the <b>parallel-coordinates filter</b>, and the <b>ECharts metrics</b> are genuinely useful UI and should be lifted into the new shell largely unchanged.</li>
+  <li>HF-based asset download with a shell wrapper (<code>download_flashbind_assets.sh</code>) is the right pattern; it needs to be generalised, not replaced.</li>
+  <li><code>pathSecurity.ts</code> shows the right instinct; it just belongs on the server side, in Python.</li>
+</ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="principles">
+<h2><span class="n">04</span>Design principles for the overhaul</h2>
+<div class="grid g3">
+  <div class="card"><h3>1. One machine, one artefact</h3><p>The GPU box gets exactly one thing installed: a container image (or one <code>pixi</code> workspace). Everything else—Python, torch × 3, weights, building blocks—lives inside it or is pulled by it.</p></div>
+  <div class="card"><h3>2. Python owns the run</h3><p>Config schema, run registry, progress events, artefact manifest, and process supervision live in the language that already runs the science. The UI is a pure client.</p></div>
+  <div class="card"><h3>3. Browser is the client</h3><p>Scientists use whatever laptop they have. A URL on the lab network beats a DMG that has to ssh to a Linux box anyway.</p></div>
+  <div class="card"><h3>4. Green before Start</h3><p>A <em>Doctor</em> check (GPU, VRAM, disk, environments, weights, Building-block library, HF token) gates the Start button and offers one-click fixes.</p></div>
+  <div class="card"><h3>5. Derive, don't duplicate</h3><p>JSON Schema, TS types, the form, the YAML on disk and the CLI flags are all generated from a single pydantic model.</p></div>
+  <div class="card"><h3>6. Presets over parameters</h3><p>Default experience is: upload PDB → click residues → pick “Quick / Standard / Thorough” → Start. Everything else sits behind an “Advanced” disclosure.</p></div>
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="target">
+<h2><span class="n">05</span>Target architecture</h2>
+
+<div class="diagram"><pre>
+ Scientist's Linux GPU workstation (NVIDIA driver + Docker; nothing else on the host)
+ ┌──────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │  Browser → http://127.0.0.1:8000          one container  ghcr.io/…/biosmart:<ver>                    │
+ │  ┌─────────────────────────┐              ┌────────────────────────────────────────────────────────┐  │
+ │  │ Static React SPA        │  REST + SSE  │ biosmart-server  (FastAPI + uvicorn, binds 127.0.0.1)  │  │
+ │  │  · Doctor               │ ───────────▶ │  · /doctor /assets /libraries /inputs /runs /search    │  │
+ │  │  · Libraries            │              │  · pydantic RunSpec → JSON Schema → TS types           │  │
+ │  │  · New Run wizard       │ ◀── static / │  · registry + Index (SQLite WAL); FIFO GPU queue       │  │
+ │  │  · Runs / Candidates    │              │  · supervisor: setsid, pgid, heartbeat, reattach       │  │
+ │  │  · Mol*, ECharts, RDKit │              │  · ingest events → Index, descriptors, fingerprints     │  │
+ │  │    (all bundled)        │              └───────────────┬────────────────────────────────────────┘  │
+ │  └─────────────────────────┘                              │ subprocess (same image)                    │
+ │                                            ┌──────────────▼────────────────────────────────────────┐  │
+ │  `biosmart` CLI (same code paths)          │ biosmart-engine  `biosmart run <spec.json>`           │  │
+ │  doctor · assets · library build · run     │  env cgflow ─┬─ CGFlow pose model (in-process)        │  │
+ │  runs import|archive · serve               │              ├─ worker: Boltz-2 (resident, batched)     │  │
+ │                                            │              ├─ worker: fabind       (Pose provider)   │  │
+ │                                            │              └─ worker: flashaffinity (Scorer: FlashBind)│  │
+ │                                            │  consults global Scorer cache; emits JSONL events;    │  │
+ │                                            │  writes Run folder: run.sqlite, run.json, provenance  │  │
+ │                                            └───────────────────────────────────────────────────────┘  │
+ │  Mounts:  <Runs root> (user-chosen, may be a network drive)  ·  /data/assets  ·  ~/BioSmart/inputs   │
+ └──────────────────────────────────────────────────────────────────────────────────────────────────────┘
+</pre></div>
+
+<div class="two" style="margin-top:16px">
+  <div class="before"><h4>Before</h4>
+    <ul class="tight">
+      <li>Install: 19 steps, 3 envs, 5 asset sources, edit YAML</li>
+      <li>Run on the same box as the UI; Electron + Bun + conda on host</li>
+      <li>TS runner guesses at Python's behaviour</li>
+      <li>Zod schema ≈ dataclasses (by hand)</li>
+      <li>Regex on stdout; BFS for files; sql.js in RAM</li>
+      <li>Absolute paths typed into a form</li>
+      <li>No readiness check, no auth, no tests</li>
+    </ul></div>
+  <div class="after"><h4>After</h4>
+    <ul class="tight">
+      <li>Install: <code>curl -fsSL …/install.sh | sh</code> → (optionally installs Docker + NVIDIA toolkit) → pulls image → opens <code>http://127.0.0.1:8000</code></li>
+      <li>UI in the workstation's browser; engine in the container; CLI optional</li>
+      <li>Python API supervises Python jobs</li>
+      <li>pydantic → JSON Schema → TS (generated, CI-checked)</li>
+      <li>JSONL events; <code>run.json</code> manifest; server-side sqlite3</li>
+      <li>Upload PDB / pick from server library; paths never shown</li>
+      <li>Doctor gate, localhost-only, pytest + vitest + Playwright smoke, image build in CI</li>
+    </ul></div>
+</div>
+
+<h3>5.1 Proposed repository layout (monorepo, submodule dissolved)</h3>
+<pre><code>biosmart/
+├── engine/                     # Python package "biosmart" (was cgflow)  — pixi workspace
+│   ├── pyproject.toml          # [project.scripts] biosmart = "biosmart.cli:app"
+│   ├── pixi.toml / pixi.lock   # environments: server (FastAPI+RDKit, no torch), default (cgflow+boltz), fabind, flashaffinity
+│   ├── src/biosmart/
+│   │   ├── cli.py              # doctor | assets | library | run | runs | serve | export-schema
+│   │   ├── spec.py             # pydantic RunSpec / ScorerSpec / Presets  (single source of truth)
+│   │   ├── doctor/             # gpu, disk, envs, assets, library checks → Check[] with fix hints
+│   │   ├── assets/             # registry.yaml (HF repos, sha256, sizes) + sync()
+│   │   ├── libraries/          # Enamine catalog/stock/.smi → Building-block library build job
+│   │   ├── server/             # FastAPI app (server env), routers, SSE, registry + Index (SQLite WAL), static SPA
+│   │   ├── jobs/               # in-process supervisor: setsid, pgid, heartbeat, reattach, FIFO GPU queue
+│   │   ├── events.py           # JSONL event types (run.started … run.failed)
+│   │   ├── storage/            # Run database schema, Run folder layout, provenance, importer
+│   │   ├── scorers/            # Scorer interface; boltz2.py, flashbind.py; persistent worker protocol
+│   │   └── poses/              # PoseProvider interface; fabind.py (default), cgflow.py (later)
+│   └── src/{cgflow,rxnflow,synthflow,gflownet}/   # research core; UniDock/Vina kept for upstream parity
+├── third_party/
+│   └── flashbind/              # vendored, minus inference_examples
+├── web/                        # React 18 + Vite + Tailwind/shadcn SPA — no Electron, no runner
+│   ├── src/api/                # generated client + types from OpenAPI (openapi-typescript)
+│   ├── src/features/{doctor,libraries,new-run,runs,viewer}/
+│   └── vite.config.ts          # build → engine/src/biosmart/server/static (Node only at build time)
+├── deploy/
+│   ├── Dockerfile              # FROM nvidia/cuda:12.x-runtime; installs from pixi.lock
+│   ├── compose.yaml            # one service, GPU reservation, runs as invoking user, restart: unless-stopped
+│   └── install.sh              # [--with-docker] → pull → mounts (Runs root, assets, ~/BioSmart/inputs) → desktop launcher → open URL
+├── docs/                       # user guide, dev guide, adr/
+└── .github/workflows/          # python.yml web.yml image.yml schema-drift.yml
+</code></pre>
+<p class="small"><code>experiments/</code>, <code>experimental/</code>, pretraining and multi-pocket scripts, Boltzina and <code>wandb</code> are tagged <code>research-archive</code> and removed from <code>main</code>.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="proposals">
+<h2><span class="n">06</span>Proposals (as agreed)</h2>
+<p>Ranked by impact on the stated goal. Tags: <span class="tag bold">bold</span> = structural change, <span class="tag info">quick</span> = can be done in days. Every item below reflects the consensus in §0.5; the load-bearing ones are ADRs.</p>
+
+<h3>P1 · One container image; host prerequisites are "driver + Docker" <span class="tag bold">bold</span> <span class="tag info">ADR-0001</span></h3>
+<p>Bake four Python environments into a single image built from one <code>pixi.lock</code>: <code>server</code> (FastAPI, RDKit, no torch), <code>default</code> (cgflow + Boltz-2), <code>flashaffinity</code>, <code>fabind</code>. Environments are addressed by interpreter path (<code>/envs/&lt;env&gt;/bin/python</code>); <code>conda_env.py</code>'s base-discovery heuristics and the runtime-compiled iJIT stub go away (the stub, if still needed by torch 1.12, is built once at image build). <code>compose.yaml</code>: one service, GPU reservation, runs as the invoking user, <code>restart: unless-stopped</code>, mounts for the Runs root, assets and <code>~/BioSmart/inputs</code>. <code>install.sh [--with-docker]</code> installs Docker + NVIDIA Container Toolkit on Ubuntu via sudo, otherwise prints the commands; then pulls, drops a desktop launcher, and opens <code>http://127.0.0.1:8000</code>. Images published to GHCR from CI.</p>
+<div class="callout"><b>Expected image size:</b> 18–25 GB (three CUDA torch stacks). Accepted as a one-time pull. Weights are <em>not</em> baked in; they land in the assets mount via P3. Host-native fallback: <code>pixi install</code> from the same lockfile.</div>
+
+<h3>P2 · The runner is Python: FastAPI server in the image, TypeScript backend deleted <span class="tag bold">bold</span> <span class="tag info">ADR-0002</span></h3>
+<p>The server runs in the <code>server</code> environment with a single uvicorn worker; the supervisor and FIFO GPU queue are in-process asyncio tasks with durable state in the registry. It spawns the engine as a subprocess in the same container (<code>start_new_session=True</code>, pgid + heartbeat recorded, reattach on restart by tailing <code>events.jsonl</code>). Events reach the browser over Server-Sent Events; commands are REST. Deleted: <code>runner.ts</code> (2,345), <code>main.ts</code> (749), <code>preload.*</code>, <code>flashbindAdapter.ts</code>, <code>pathSecurity.ts</code>, <code>webFallback.ts</code>, <code>useIpc.ts</code>, sql.js, electron, electron-builder, vite-plugin-electron, concurrently, wait-on. Net ≈4,000 LOC removed; one runtime instead of three.</p>
+<table>
+<thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>GET /api/v1/doctor</code> · <code>POST /doctor/fix/{id}</code></td><td>Readiness checks {id, status, detail, fix?}; automatable fixes (assets sync, HF token)</td></tr>
+<tr><td><code>GET /api/v1/schema/run-spec</code></td><td>JSON Schema of <code>RunSpec</code> + Presets; Advanced panel is rendered from it</td></tr>
+<tr><td><code>POST /api/v1/inputs</code> · <code>GET /inputs</code> · <code>GET /inputs/{id}/residues</code></td><td>Upload, or browse the mounted <code>~/BioSmart/inputs</code>; server-side residue parse for Mol*. No raw paths cross the API.</td></tr>
+<tr><td><code>GET|POST /api/v1/libraries</code> · <code>POST /libraries/build</code></td><td>Building-block libraries: list, build job with progress, staleness</td></tr>
+<tr><td><code>POST /api/v1/runs</code> · <code>POST /runs/{id}/{stop,resume,cancel}</code> · <code>DELETE /runs/{id}</code></td><td>Lifecycle; FIFO single-GPU queue</td></tr>
+<tr><td><code>GET /api/v1/runs/{id}/candidates?sort&amp;filter&amp;limit&amp;cursor</code></td><td>Server-side pagination and filtering over the Index</td></tr>
+<tr><td><code>GET /api/v1/runs/{id}/artifacts/{kind}/{candidate}</code></td><td>Resolved from the <code>artifacts</code> table, not BFS</td></tr>
+<tr><td><code>GET /runs/{id}/export?format=sdf|csv&amp;top=N</code> · <code>POST /runs/{id}/archive</code> · <code>POST /runs/import</code></td><td>Outputs and Run-folder portability</td></tr>
+<tr><td><code>GET /api/v1/search?smarts=|similar_to=</code></td><td>Cross-Run substructure / similarity search over the Index</td></tr>
+<tr><td><code>GET /api/v1/events</code> (SSE)</td><td>Multiplexed JSONL events from all Runs (replaces polling loops)</td></tr>
+</tbody></table>
+
+<h3>P3 · Asset manager with a checksummed registry <span class="tag info">quick</span></h3>
+<p>One <code>assets/registry.yaml</code> lists every downloadable artefact: CGFlow Pose model (mirrored from Google Drive to a BioSmart Hugging Face organisation, with sha256), FABind+ and FlashBind checkpoints, Boltz-2 weights + CCD (pre-warmed by the Doctor instead of downloaded mid-Run), and ESM3 (gated: the Doctor asks for a Hugging Face token once and stores it in the assets mount). <code>biosmart assets sync [--only …]</code> is idempotent, resumable, shows progress, verifies checksums, and is what the Doctor "Fix" button calls. Building-block libraries are <em>not</em> assets: they are built in-app (P6).</p>
+
+<h3>P4 · Single canonical <code>RunSpec</code> in pydantic; generate everything else <span class="tag bold">bold</span> <span class="tag info">ADR-0002</span></h3>
+<p>Replace the argparse → OmegaConf → dataclass chain with a pydantic v2 model tree: <code>RunSpec{target, pocket, budget, scorer: Boltz2Spec|FlashBindSpec, library_id, advanced}</code>. Export JSON Schema (<code>biosmart export-schema</code>), generate TS types from OpenAPI (<code>openapi-typescript</code>), fail CI on drift. The engine consumes the same JSON the UI posted; the YAML on disk is an <em>output</em> for provenance, never an input users edit. Machine plumbing (checkpoint paths, interpreter paths, caches) lives in server <code>Settings</code>, not in the spec.</p>
+
+<h3>P5 · Structured run protocol: JSONL events + Run folder <span class="tag bold">bold</span> <span class="tag info">ADR-0002</span></h3>
+<pre><code>{"t":"run.started","run_id":"r_01J…","spec_hash":"…"}
+{"t":"iteration","iteration":120,"of":2000,"loss":1.23,"reward_avg":0.41,"top100":0.63,"secs":41}
+{"t":"round.started","round_no":13,"scorer":"boltz2","n_sent":32}
+{"t":"candidate","round_no":13,"candidate_id":"c_…","smiles":"…","status":"scored","reward":0.52,"scores":{…},"artifacts":{"complex":"scorer/round_13/c_…/model_0.pdb"}}
+{"t":"round.finished","round_no":13,"n_ok":29,"n_failed":3,"secs":184,"gpu_mem_peak":18.2}
+{"t":"checkpoint","iteration":100,"path":"checkpoints/model_state_100.pt"}
+{"t":"run.paused"}   {"t":"run.finished","best_reward":0.71}   {"t":"run.failed","reason":"…"}</code></pre>
+<p>The engine appends these to <code>events.jsonl</code> in the Run folder and the supervisor tails it; <code>train.log</code> stays human-only. Stop = SIGTERM handled by the trainer: checkpoint, flush Scorer cache, exit → <em>Paused</em>, for both Scorers. Resume is non-interactive and driven by the Run database, never a prompt.</p>
+
+<h3>P6 · Product UI: Doctor → Libraries → Wizard → Runs <span class="tag bold">bold</span></h3>
+<div class="grid g4">
+  <div class="card"><h3>Doctor</h3><p>First screen until all green: driver/VRAM/idle, GPU visible in container, Runs root writable + free space, each environment imports, each asset present with checksum (ESM3 token via Fix), at least one Library (+ staleness), HF/MSA reachability (informational), engine <code>--dry-run</code> self-test. Items 1–6 block Start.</p></div>
+  <div class="card"><h3>Libraries</h3><p>Build from Enamine Catalog / Enamine Stock / <code>.smi</code> (source toggle), drug-like filter off by default, progress bar, list with created-at, block count, source; newest is default; 30-day staleness reminder (configurable), reminder only.</p></div>
+  <div class="card"><h3>New Run wizard</h3><p><b>1 Target:</b> upload PDB or pick from <code>~/BioSmart/inputs</code>; chains auto-detected; MSA "server (default)" or upload <code>.a3m</code>. <b>2 Pocket:</b> Boltz-2 → click residues in Mol*; FlashBind → upload Reference ligand. <b>3 Scorer &amp; Preset:</b> Boltz-2 / FlashBind with one-sentence explanations; Quick 100×16 · Standard 1000×32 · Thorough 2000×64 with ETA from observed Scoring-round durations. <b>Advanced</b> disclosure rendered from JSON Schema.</p></div>
+  <div class="card"><h3>Runs</h3><p>Queue + history; live progress and ETA from SSE; paginated Candidates table with filters; Mol* complex; parallel coordinates; substructure/similarity search; Export top-N SDF/CSV; Archive; Import. Metrics labelled per Scorer.</p></div>
+</div>
+<p>Implementation: keep React 18 + Vite + Tailwind/shadcn and port Mol*, ECharts, parallel coordinates and the Candidates table into <code>features/*</code>; bundle <code>@rdkit/rdkit</code> WASM locally (no unpkg); TanStack Query for server state, a small Zustand store for wizard state; hand-written wizard, custom minimal JSON-Schema renderer for Advanced; vitest + Playwright smoke against a mocked API; remove unused deps.</p>
+
+<h3>P7 · Dissolve the submodule; hygiene pass <span class="tag info">quick</span></h3>
+<ul class="tight">
+  <li>Import <code>cgflow</code> into the monorepo with history; no upstream sync. Tag <code>research-archive</code>, then remove <code>experiments/</code>, <code>experimental/</code>, pretraining/multi-pocket scripts, Boltzina (tasks, utils, configs, script), <code>wandb</code>, <code>inference_examples/</code> (14 MB) and the 12 MB <code>.pt</code>. UniDock/Vina code stays for parity with <code>tsa87/cgflow</code>.</li>
+  <li>Declare <code>medchem</code>; pin <code>druglikeness</code>/<code>pharmaconet</code> by commit; add <code>[tool.setuptools.packages.find]</code> and an <code>__init__.py</code> for <code>rxnflow</code>.</li>
+  <li>Strip every <code>/media/…</code>, <code>/home/…</code> path; example configs become Presets in code.</li>
+  <li>Ruff + mypy (gradual) on <code>src/</code>; pytest with a CPU end-to-end Run using a <code>FakeScorer</code>; ESLint + tsc + vitest on web; image build on tag.</li>
+</ul>
+
+<h3>P8 · Job supervision done properly <span class="tag info">quick</span></h3>
+<p>In-process supervisor in the single uvicorn worker: spawn with <code>start_new_session=True</code>, record pid + pgid + heartbeat in the registry, reattach on server restart, kill by process group, one Run on the GPU at a time with a FIFO queue (cancel allowed). Container runs as the invoking user so Run folders on the user's disk or network drive are owned by them.</p>
+
+<h3>P9 · Persistent Scorer workers and a formal Scorer interface <span class="tag bold">bold</span> <span class="tag info">ADR-0005</span></h3>
+<p>Today every Scoring round launches fresh processes and reloads models: FABind+ three scripts, FlashBind two <code>predict.py</code> calls, Boltz-2 one <code>boltz predict</code> <em>per Candidate</em>. The engine instead starts one long-lived worker per environment at Run start (models loaded once, JSON-lines over stdin/stdout, dies with the Run); Boltz-2 becomes a resident worker predicting in batches via Boltz's Python entry point. Interface: <code>Scorer.prepare(target, pocket) → context_hash</code>, <code>Scorer.score(round_no, candidates) → ScoreResult[]</code>, <code>Scorer.flush()</code>; FlashBind composes a <code>PoseProvider</code> (FABind+ default; CGFlow Pose model as a lowest-priority alternative). Environment consolidation (porting FABind+, aligning torch pins) is <b>not</b> planned: FABind+'s speed is the reason FlashBind exists.</p>
+
+<h3>P10 · Security defaults for a solo workstation <span class="tag info">quick</span></h3>
+<p>Bind <code>127.0.0.1</code> only; no token. Uploads and the mounted <code>~/BioSmart/inputs</code> folder instead of arbitrary path reads; artefact reads confined to the Runs root. A LAN/token mode is a later, additive feature if a shared-server topology is ever wanted.</p>
+
+<h3>Considered and not chosen</h3>
+<ul class="tight">
+  <li><b>Fixing Electron packaging</b> (extraResources + bundled conda): still requires host conda/CUDA management; multiplies installer variants.</li>
+  <li><b>Rewriting the science code</b>: no user-facing benefit; risk of changing results. Wrap it, don't rewrite it.</li>
+  <li><b>Separate worker container or long-lived engine daemon</b>: defers cleanly; the server↔engine boundary (spec, events, Run folder) makes it a compose change later.</li>
+  <li><b>Postgres</b>, <b>per-user auth</b>, <b>LAN mode</b>, <b>HPC/Apptainer</b>: not needed for a solo workstation; none is precluded.</li>
+  <li><b>Server-rendered UI (HTMX)</b> or a fresh SPA: would discard Mol*, ECharts and RDKit.js work that is the reason a browser client is right.</li>
+  <li><b>Demo or prebuilt Building-block library</b>: the scientist builds their own from their Enamine file; the Doctor self-test is a <code>--dry-run</code>.</li>
+</ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="roadmap">
+<h2><span class="n">07</span>Roadmap (as agreed)</h2>
+<p>Solo developer. Each phase leaves the system usable; engine CLI and server are built together on the same spec, supervisor and event reader; UI last, generated from the schema.</p>
+
+<div class="phase"><div class="ph"><b>Phase 0 — Hygiene</b><span class="small">~1 week</span></div><div class="pb">
+  <ul><li>Dissolve submodule; tag <code>research-archive</code>; remove Boltzina, experiments, experimental, scratch blobs, wandb; declare <code>medchem</code>; pin git deps; fix <code>rxnflow</code> packaging; strip absolute paths; ruff/pytest/tsc/eslint CI (P7).</li>
+  <li><code>pixi.toml</code> with four environments and a lockfile that installs on Ubuntu 22.04; replace <code>conda run</code> with interpreter paths (P1).</li>
+  <li><b>Done when:</b> fresh clone → <code>pixi install</code> → the NS5 Boltz-2 config runs headless.</li></ul>
+  <div class="bar"><i style="width:15%"></i></div></div></div>
+
+<div class="phase"><div class="ph"><b>Phase 1 — Engine + server core</b><span class="small">~4–5 weeks</span></div><div class="pb">
+  <ul><li>pydantic <code>RunSpec</code> + Presets; <code>biosmart</code> CLI; JSONL events; Run folder + Run database; SIGTERM checkpoint/resume for both Scorers; provenance (P4, P5).</li>
+  <li>Scorer / PoseProvider interface; persistent workers for fabind, flashaffinity and Boltz-2; global Scorer cache (P9, ADR-0004, ADR-0005). <code>FakeScorer</code> for CI.</li>
+  <li>Doctor; assets registry + sync (Pose model mirrored to HF); Library build job (P3, P6).</li>
+  <li>FastAPI server in the <code>server</code> env: registry, FIFO queue, in-process supervisor with reattach, Index ingest with descriptors and fingerprints, SSE, static SPA (P2, P8).</li>
+  <li><b>Done when:</b> Doctor is green on the lab box; a Run started from the API streams events, survives a server restart, resumes after Stop; the CPU end-to-end test passes in CI.</li></ul>
+  <div class="bar"><i style="width:55%"></i></div></div></div>
+
+<div class="phase"><div class="ph"><b>Phase 2 — Image + installer</b><span class="small">~1–2 weeks</span></div><div class="pb">
+  <ul><li>Dockerfile from <code>pixi.lock</code>; <code>compose.yaml</code> (runs as user, restart policy, mounts); <code>install.sh [--with-docker]</code>; desktop launcher; GHCR publish (P1).</li>
+  <li><b>Done when:</b> clean Ubuntu 22.04 + GPU: <code>install.sh</code> → Doctor green → a Quick Run completes without opening an editor.</li></ul>
+  <div class="bar"><i style="width:70%"></i></div></div></div>
+
+<div class="phase"><div class="ph"><b>Phase 3 — UI</b><span class="small">~3–4 weeks</span></div><div class="pb">
+  <ul><li>Doctor, Libraries, New Run wizard (Advanced from schema), Runs (queue, ETA, paginated Candidates, parallel coordinates, Mol*, search, export, archive, import); bundle RDKit locally; TanStack Query + store; vitest + Playwright smoke; delete <code>cgflow-gui/electron/</code> (P6).</li>
+  <li><b>Done when:</b> a scientist with no terminal experience completes a Quick Run from upload to exported SDF.</li></ul>
+  <div class="bar"><i style="width:95%"></i></div></div></div>
+
+<div class="phase"><div class="ph"><b>Phase 4 — Low-priority tail</b><span class="small">ongoing</span></div><div class="pb">
+  <ul><li>Legacy Boltz-2 result-folder importer; verify per-Run dedup of Boltz-2 Target/MSA processing; CGFlow Pose model as FlashBind PoseProvider; scaffold grouping; relational route analytics.</li></ul>
+  <div class="bar"><i style="width:100%"></i></div></div></div>
+
+<div class="callout" style="margin-top:18px"><b>Target end state:</b> a scientist runs one script on their GPU workstation (10 minutes plus downloads), builds a Building-block library once from their Enamine file, and opens <code>http://127.0.0.1:8000</code> from the desktop launcher. First Run: upload PDB, click six residues, choose “Standard”, press Start. No terminal, no YAML, no paths.</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="storage">
+<h2><span class="n">08</span>Storage model (agreed)</h2>
+<p>Design goal: a Run folder is fully interpretable on its own; the server adds cross-Run capabilities without ever becoming the source of truth. See <span class="tag info">ADR-0003</span>, <span class="tag info">ADR-0004</span>.</p>
+
+<div class="grid g2">
+  <div class="card"><h3>Registry (<code>biosmart.sqlite</code>, server-owned)</h3>
+    <ul class="tight">
+      <li><code>runs</code>, <code>run_queue</code>, <code>libraries</code>, <code>targets</code>, <code>settings</code>, <code>doctor_results</code></li>
+      <li><code>scorer_cache(scorer, scorer_version, context_hash, canonical_smiles, scores_json, artifact_ref)</code> — <i>context_hash</i> = Target file hash + Pocket definition + MSA hash</li>
+      <li><b>Index</b> (derived, rebuildable): <code>candidate_index(run_id, candidate_id, canonical_smiles, inchikey, status, best_score, …)</code>, <code>candidate_props(mw, logp, hbd, hba, tpsa, qed, sa, rings, lilly, pains, …)</code>, <code>candidate_fp(morgan2048)</code></li>
+    </ul></div>
+  <div class="card"><h3>Run database (<code>run.sqlite</code>, engine-owned, one per Run)</h3>
+    <ul class="tight">
+      <li><code>meta(schema_version, …)</code></li>
+      <li><code>candidates(id, iteration, round_no, canonical_smiles, status ∈ {scored, filtered, failed}, failure_reason, reward, route_json, pose_ref, temperature)</code></li>
+      <li><code>scores(candidate_id, scorer, affinity_*, probability_*, raw_json)</code></li>
+      <li><code>scoring_rounds(round_no, scorer, n_sent, n_ok, n_failed, secs, gpu_mem_peak)</code> — feeds Preset ETAs</li>
+      <li><code>iterations(iteration, loss, reward_avg, top10, top100, top1000, temperature_lo, temperature_hi, n_valid, secs, …)</code> — every key the trainer logs today</li>
+      <li><code>artifacts(candidate_id, kind, path)</code></li>
+    </ul></div>
+</div>
+
+<h3>Run folder</h3>
+<pre><code>&lt;Runs root&gt;/&lt;run_id&gt;/
+├── spec.json  run.json  provenance.json  events.jsonl  run.sqlite
+├── target/            # copied Target file + Pocket definition
+├── library.json       # name, source, created-at, block count, hash
+├── checkpoints/
+├── poses/round_{N}.sdf
+└── scorer/round_{N}/  # all Scorer working files, retained in full</code></pre>
+<ul class="tight">
+  <li>Descriptors and fingerprints are computed once by the server at ingest; v1 search = substructure (RDKit over one Run) + similarity (Morgan in the Index). Scaffold grouping and relational route analytics later; routes are JSON blobs in v1.</li>
+  <li>Failed and filtered Candidates are stored with a reason.</li>
+  <li>"Import Run" rebuilds the Index from a folder; "Archive Run" produces one <code>.tar.zst</code>.</li>
+  <li>Open verification (later): whether Boltz-2's per-Candidate Target/MSA processing can be computed once per Run and shared, which would remove most Scorer working-file volume (today ≈1–3 MB per Candidate, 60–200 GB per 64k-Candidate Run).</li>
+</ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="decisions">
+<h2><span class="n">09</span>Decisions (resolved)</h2>
+<table>
+<thead><tr><th>#</th><th>Decision</th><th>Resolution</th></tr></thead>
+<tbody>
+<tr><td>D1</td><td>Primary distribution</td><td>Both Docker and pixi from one lockfile; Docker is the documented default; <code>install.sh --with-docker</code> for Ubuntu</td></tr>
+<tr><td>D2</td><td>Building-block library</td><td>In-app build from Enamine Catalog / Stock / <code>.smi</code>; no prebuilt or demo library shipped; 30-day staleness reminder</td></tr>
+<tr><td>D3</td><td>Hosting of mirrored weights</td><td>Hugging Face organisation</td></tr>
+<tr><td>D4</td><td>Fate of FABind+</td><td>Kept as FlashBind's pose provider (speed of FABind+ is the point of FlashBind); pluggable seam; CGFlow-pose alternative lowest priority</td></tr>
+<tr><td>D5</td><td>Research code</td><td>Tagged <code>research-archive</code>, removed from <code>main</code>; UniDock/Vina code kept for upstream parity, Boltzina deleted</td></tr>
+<tr><td>D6</td><td>Naming</td><td>Renamed <code>biosmart</code>; CGFlow remains the method name</td></tr>
+<tr><td>D7</td><td>Multi-user / network</td><td>Solo workstation only; localhost bind; no auth; FIFO single-GPU queue for one user</td></tr>
+<tr><td>D8</td><td>Storage</td><td>Hybrid per-Run database + central Index; global Scorer cache; SQLite WAL; full provenance; nothing deleted</td></tr>
+</tbody></table>
+</section>
+
+<!-- ============================================================ -->
+<section id="appendix">
+<h2><span class="n">A</span>Appendix — detailed evidence</h2>
+
+<details><summary>A1 · Conda bridging (<code>synthflow/utils/conda_env.py</code>)</summary><div class="in">
+<p>Locates conda base via <code>CONDA_PREFIX</code> → <code>CONDA_EXE</code> → six well-known directories → <code>PATH</code>; runs <code>&lt;base&gt;/bin/conda run -n &lt;env&gt; --no-capture-output …</code>. For <code>conda_env == "fabind"</code> it compiles a C shim with <code>gcc</code> into <code>~/.cache/synthflow/libittnotify_stub.so</code> and prepends it to <code>LD_PRELOAD</code> to satisfy missing iJIT symbols in torch 1.12. Call sites: <code>tasks/fabind.py</code> (fabind), <code>tasks/flashbind.py</code> (flashaffinity), <code>utils/unidock.py</code> (unidock-env), <code>utils/boltzina_*.py</code> (boltzina), <code>tasks/unidock_boltzina.py</code> (cgflow, PoseBusters). Boltz is invoked with plain <code>subprocess.Popen(["boltz","predict",…])</code> in the current env.</p></div></details>
+
+<details><summary>A2 · Assets and where the code expects them</summary><div class="in">
+<table><thead><tr><th>Asset</th><th>Size</th><th>Expected path / env</th><th>Automated</th></tr></thead><tbody>
+<tr><td>CGFlow pose ckpt</td><td>n/a (Drive)</td><td><code>./weights/cgflow_crossdock.ckpt</code></td><td>No — <code>gdown</code> by hand</td></tr>
+<tr><td>Building-block env</td><td>large, user-built</td><td><code>./data/envs/enamine_stock_*</code></td><td>No — Enamine SDF → 3 scripts</td></tr>
+<tr><td>FABind+ ckpts</td><td>~360 MB</td><td><code>src/FlashBind/FABind_plus/ckpt/*.bin</code></td><td>Yes — HF script</td></tr>
+<tr><td>FlashBind ckpts</td><td>~250 MB</td><td><code>src/FlashBind/checkpoints/*.ckpt</code></td><td>Yes — HF script</td></tr>
+<tr><td>ESM3</td><td>multi-GB, gated</td><td>HF cache via <code>flashbind.hf_cache</code></td><td>On first use; needs token</td></tr>
+<tr><td>Boltz-2 weights + CCD</td><td>multi-GB</td><td><code>boltz.cache_dir</code> or <code>~/.boltz</code>; code default string <code>~/project/boltz_cache</code></td><td>On first oracle call, mid-run</td></tr>
+<tr><td>Example NS5 inputs</td><td>&lt;1 MB</td><td><code>data/examples/</code>; <code>NS5_crop_renum.yaml</code> hard-codes an absolute MSA path</td><td>Committed</td></tr>
+</tbody></table></div></details>
+
+<details><summary>A3 · Result directory contract (what the GUI parses)</summary><div class="in">
+<pre><code>{result_dir}/{YYMMDD_HHMMSS}/
+├── train.log                          # "DD/MM/YYYY HH:MM:SS - INFO - logger - iteration {it} : k:v …"
+├── model_state.pt, model_state_{it}.pt
+├── train/generated_objs_{w}.db        # table results(smi, r, traj, fr_0…, ci_*)
+├── train/boltz_scores_{w}.db          # table results(iteration, smiles, docking_score, affinity_ensemble,
+│   or flashbind_scores_{w}.db         #   probability_ensemble, affinity_model1, probability_model1, …_model2)
+├── boltz_reward_cache.db              # table entries(smiles UNIQUE, reward, info JSON)
+│   or flashbind_reward_cache.db
+├── pose/oracle{N}.sdf
+├── boltz_cofold/oracle{N}/mol_{i}/…/predictions/**/*.cif, affinity_*.json
+│   or flashbind_oracle/oracle{N}/{fabind_output,flashbind_binary,flashbind_value}/
+└── boltz_metrics.log</code></pre></div></details>
+
+<details><summary>A4 · GUI runner facts</summary><div class="in">
+<ul class="tight">
+<li>Spawn: <code>spawn('conda', ['run','--no-capture-output','-n', CGFLOW_CONDA_ENV, 'python', opt_*.py, '--config', …, '--result_dir', …, '--env_dir', …], {cwd: CGFLOW_ROOT})</code>.</li>
+<li>Data dir: <code>~/.cgflow-runner/</code> (CLI) or <code>userData/runner</code> (Electron); <code>runs.json</code> stores wrapper PID.</li>
+<li>Polling: health 10 s, runs 5 s, molecules 5 s, logs 4 s; plus SSE.</li>
+<li>Result dir detection: poll for <code>^\d{6}_\d{6}$</code> dirs, 30×1 s then every 10 s.</li>
+<li>CORS only when <code>NODE_ENV=development</code>; no auth; reads under <code>$HOME</code> allowed by default.</li>
+<li>electron-builder <code>files</code>: <code>dist/**</code>, <code>dist-electron/**</code> only; no <code>extraResources</code>.</li>
+</ul></div></details>
+
+<details><summary>A5 · UI form fields today</summary><div class="in">
+<p>Visible: engine, config name, protein PDB*, reference ligand*, FlashBind <code>protein_id</code>, FlashBind <code>prots_json</code>*, MSA*, Boltz workers, target residues, iterations, samples/iter, max atoms, seed, result dir*, env dir* (* = filesystem path; 4–6 must be typed as absolute paths in web mode). Hidden but sent: <code>pose_model</code>, <code>pose_steps</code>, <code>sampling_tau</code>, <code>random_action_prob</code>, <code>replay_*</code>, <code>temperature</code>, <code>subsampling_ratio</code>, <code>center</code>, <code>size</code>, Boltz <code>base_yaml/cache_dir/use_msa_server</code>, all FlashBind checkpoint/env/<code>hf_cache</code> fields (<code>hf_cache</code> default is <code>/media/data/conrad_hku/hf_cache</code>).</p></div></details>
+
+<details><summary>A6 · Subagent reports used for this synthesis</summary><div class="in">
+<p>Four parallel audits were run: Python environment &amp; dependencies; cgflow core pipeline &amp; outputs; GUI runner/Electron backend; React frontend UX. Their findings are consolidated above; numbers (line counts, sizes, versions) were taken directly from the working tree at the commit noted in the header.</p></div></details>
+
+</section>
+
+<footer>
+  BioSmart architecture review · generated 16 Sep 2026 · companion plan: <code>docs/OVERHAUL_PLAN.md</code>
+</footer>
+</div>
+</body>
+</html>

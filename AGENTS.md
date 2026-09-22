@@ -19,3 +19,18 @@
 - Install cgflow editable from the submodule root (`pip install -e .`) so `src/` packages such as `rxnflow` resolve in scripts.
 - On this machine, miniforge/conda envs and large artifacts live under `/media/data/conrad_hku/` (`miniforge3`, `cgflow_env`, `cgflow_web/result`, `hf_cache`).
 - CGFlow runner write allowlist: set `CGFLOW_ALLOWED_WORKSPACE_PATHS` in `cgflow-gui/.env.local` for writable `/media/data/conrad_hku/...` paths (evaluated lazily after `.env.local` loads).
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for `sheepyrad/BioSmart` (via `gh`). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `CONTEXT.md` plus `docs/adr/`. See `docs/agents/domain.md`.
+
