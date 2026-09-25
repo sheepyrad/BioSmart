@@ -55,7 +55,6 @@ def test_fakescorer_run_writes_events_run_folder_and_index(tmp_path: Path) -> No
     env["PYTHONPATH"] = str(BIOSMART_SRC)
     env["BIOSMART_RUNS_ROOT"] = str(runs_root)
     env["BIOSMART_REGISTRY"] = str(registry)
-    env["BIOSMART_SKIP_DOCTOR"] = "1"
     env["CUDA_VISIBLE_DEVICES"] = ""
 
     completed = subprocess.run(
@@ -175,7 +174,6 @@ def test_fakescorer_failure_records_provenance_and_failed_index(tmp_path: Path) 
     env["BIOSMART_RUNS_ROOT"] = str(runs_root)
     env["BIOSMART_REGISTRY"] = str(registry)
     env["BIOSMART_FAKE_SCORER_FAIL"] = "1"
-    env["BIOSMART_SKIP_DOCTOR"] = "1"
     env["CUDA_VISIBLE_DEVICES"] = ""
 
     completed = subprocess.run(
