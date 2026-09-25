@@ -24,10 +24,10 @@ LIBRARY = Path(
         "/media/data/conrad_hku/cache/cgflow_env/envs/enamine_stock",
     )
 )
-# One Iteration and a handful of Candidates. The checked-in config is 2000×32.
-# A single Candidate can be chemically invalid and then leaves no score row.
+# One Iteration at the config's sampling width. The checked-in budget is 2000×32.
+# Fewer Candidates can all fail the Lilly filter, and then Boltz never starts.
 NUM_STEPS = "1"
-NUM_SAMPLING_PER_STEP = "4"
+NUM_SAMPLING_PER_STEP = "32"
 RUN_TIMEOUT_S = 90 * 60
 
 
