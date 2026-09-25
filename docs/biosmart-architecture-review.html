@@ -132,9 +132,9 @@
 <div class="callout">
 <b>Recommended direction (bold, no backward compatibility):</b>
 <ol style="margin:8px 0 0 18px">
-  <li><b>Ship the engine as one container image</b> (all Python envs baked in via micromamba/pixi, weights fetched by an in-image <code>biosmart assets sync</code>). Host requirement collapses to: Linux + NVIDIA driver + Docker. Optional host-native path via <code>pixi</code> from the same lockfile.</li>
+  <li><b>Ship the engine as one container image</b> (all Python envs baked in via micromamba/pixi, weights fetched by an in-image <code>biosmart assets sync</code>). The scientist’s install is that image. Lab 3090s develop and validate with <code>pixi</code> from the same lockfile.</li>
   <li><b>Move the runner into Python</b> (FastAPI inside the engine). It already spawns Python and reads SQLite; a Python server does that natively. Delete <code>runner.ts</code>, <code>main.ts</code> IPC handlers, and sql.js.</li>
-  <li><b>Drop Electron and Bun from the deployment story.</b> The UI becomes a static Vite build served by the engine on <code>127.0.0.1</code>; the scientist opens it in the workstation's browser. Electron never solved a real problem here because compute lives on the Linux box anyway.</li>
+  <li><b>Drop Electron and Bun from the deployment story.</b> The UI becomes a static Vite build. In v1 the host serves it on <code>127.0.0.1</code>. In v2 the host also serves it on its Tailscale address, and a worker install has no UI (<span class="tag info">ADR-0006</span>).</li>
   <li><b>One canonical schema, generated once.</b> A pydantic <code>RunSpec</code> in Python exports JSON Schema and TypeScript types; the UI form and the YAML written to disk are both derived from it.</li>
   <li><b>Structured events instead of regex.</b> The trainer emits JSONL progress events and writes a <code>run.json</code> manifest; the API no longer guesses where Boltz put a CIF.</li>
   <li><b>Replace the config form with a 3-step wizard + presets and a Doctor screen</b> that refuses to start until GPU, environments, weights and a Building-block library are all green.</li>
@@ -145,12 +145,12 @@
 <!-- ============================================================ -->
 <section id="consensus">
 <h2><span class="n">0.5</span>Consensus decisions</h2>
-<p>Outcome of a four-round design review (Q1–Q36). These supersede any earlier wording in this document where they differ. Vocabulary follows <code>CONTEXT.md</code>; the four load-bearing decisions are recorded as ADRs in <code>docs/adr/</code>.</p>
+<p>Outcome of a four-round design review (Q1–Q36), amended 25 Sep 2026. These supersede any earlier wording in this document where they differ. Vocabulary follows <code>CONTEXT.md</code>. Load-bearing decisions are recorded as ADRs in <code>docs/adr/</code>. There is no schedule. v2 is <span class="tag info">ADR-0006</span>.</p>
 <table>
 <thead><tr><th>Topic</th><th>Decision</th></tr></thead>
 <tbody>
-<tr><td>Topology</td><td><b>Solo Linux GPU workstation, always.</b> Server binds <code>127.0.0.1</code> only; no token, no LAN mode. Shared-server use is deferred, not designed against.</td></tr>
-<tr><td>Distribution</td><td>One container image from one <code>pixi.lock</code>; pixi host-native as fallback. <code>install.sh --with-docker</code> installs Docker + NVIDIA toolkit on Ubuntu via sudo, otherwise prints commands. <span class="tag info">ADR-0001</span></td></tr>
+<tr><td>Topology</td><td><b>v1: one Linux GPU workstation.</b> Server binds <code>127.0.0.1</code> only; no token, no LAN mode. <b>v2</b> (<span class="tag info">ADR-0006</span>): install as host or worker. The host serves the UI on localhost and on its Tailscale address. A worker has no UI. A scientist opens the host from their own computer. Tailnet membership is the trust boundary.</td></tr>
+<tr><td>Distribution</td><td>One image from one <code>pixi.lock</code>. Lab 3090s use pixi on the host. The container is the scientist’s install. <code>install.sh --with-docker</code> installs Docker + NVIDIA toolkit on Ubuntu via sudo, otherwise prints commands. v2 chooses host or worker at install. <span class="tag info">ADR-0001</span> <span class="tag info">ADR-0006</span></td></tr>
 <tr><td>Hardware</td><td>Single GPU, 24 GB VRAM floor. One Run on the GPU at a time; FIFO queue, cancellable.</td></tr>
 <tr><td>Scorers</td><td>Exactly two user-selectable Scorers: <b>Boltz-2</b> and <b>FlashBind</b>. FABind+ is FlashBind's internal pose provider behind a pluggable seam (CGFlow-pose alternative: lowest priority). UniDock/Vina code retained for parity with upstream <code>tsa87/cgflow</code>, not a product Scorer. Boltzina deleted.</td></tr>
 <tr><td>Building-block library</td><td>Built in-app from Enamine Catalog, Enamine Stock (user toggles; different extraction scripts) or <code>.smi</code>. Drug-like filter off by default, switchable. Multiple libraries; newest default; Run records its library. 30-day staleness reminder (configurable), reminder only. <b>No demo library</b>; Doctor self-test is <code>--dry-run</code>.</td></tr>
@@ -162,7 +162,7 @@
 <tr><td>Run contract</td><td>pydantic <code>RunSpec</code>; JSONL events; self-contained Run folder; Stop/Resume for both Scorers. <span class="tag info">ADR-0002</span></td></tr>
 <tr><td>Storage</td><td>Hybrid: engine-owned Run database per Run folder + rebuildable central Index; SQLite (WAL). <span class="tag info">ADR-0003</span> Global Scorer cache keyed by scoring-context hash + canonical SMILES. <span class="tag info">ADR-0004</span></td></tr>
 <tr><td>Provenance</td><td>Full: spec, seed, Library/Target/Pocket hashes, Pose-model hash, Scorer and FABind+ versions, exact Scorer command lines, MSA source with returned <code>.a3m</code> hash, image digest, engine SHA, GPU, timings.</td></tr>
-<tr><td>Repository</td><td>Submodule dissolved (no upstream sync). <code>experiments/</code>, <code>experimental/</code>, pretraining/multi-pocket scripts, Boltzina, <code>wandb</code>: tagged <code>research-archive</code>, removed from <code>main</code>. Renamed <code>biosmart</code>.</td></tr>
+<tr><td>Repository</td><td>Submodule dissolved (no upstream sync). Research code stays unmodified, including <code>experiments/</code>, <code>experimental/</code>, pretraining, multi-pocket scripts, and <code>wandb</code>. Boltzina is the only removal. Renamed <code>biosmart</code>.</td></tr>
 <tr><td>Legacy</td><td>One-off importer for today's Boltz-2 result folders; low priority.</td></tr>
 </tbody></table>
 </section>
@@ -335,6 +335,7 @@
 <!-- ============================================================ -->
 <section id="target">
 <h2><span class="n">05</span>Target architecture</h2>
+<p>The diagram is v1: one workstation, UI on <code>127.0.0.1</code>. v2 adds a host/worker install and a Tailscale listener (<span class="tag info">ADR-0006</span>).</p>
 
 <div class="diagram"><pre>
  Scientist's Linux GPU workstation (NVIDIA driver + Docker; nothing else on the host)
@@ -416,17 +417,17 @@
 ├── docs/                       # user guide, dev guide, adr/
 └── .github/workflows/          # python.yml web.yml image.yml schema-drift.yml
 </code></pre>
-<p class="small"><code>experiments/</code>, <code>experimental/</code>, pretraining and multi-pocket scripts, Boltzina and <code>wandb</code> are tagged <code>research-archive</code> and removed from <code>main</code>.</p>
+<p class="small">Research code stays unmodified, including <code>experiments/</code>, <code>experimental/</code>, pretraining, multi-pocket scripts, and <code>wandb</code>. Boltzina is the only removal.</p>
 </section>
 
 <!-- ============================================================ -->
 <section id="proposals">
 <h2><span class="n">06</span>Proposals (as agreed)</h2>
-<p>Ranked by impact on the stated goal. Tags: <span class="tag bold">bold</span> = structural change, <span class="tag info">quick</span> = can be done in days. Every item below reflects the consensus in §0.5; the load-bearing ones are ADRs.</p>
+<p>Ranked by impact on the stated goal. Tags: <span class="tag bold">bold</span> = structural change, <span class="tag info">quick</span> = a local change. Every item below reflects the consensus in §0.5; the load-bearing ones are ADRs. There is no schedule.</p>
 
 <h3>P1 · One container image; host prerequisites are "driver + Docker" <span class="tag bold">bold</span> <span class="tag info">ADR-0001</span></h3>
-<p>Bake four Python environments into a single image built from one <code>pixi.lock</code>: <code>server</code> (FastAPI, RDKit, no torch), <code>default</code> (cgflow + Boltz-2), <code>flashaffinity</code>, <code>fabind</code>. Environments are addressed by interpreter path (<code>/envs/&lt;env&gt;/bin/python</code>); <code>conda_env.py</code>'s base-discovery heuristics and the runtime-compiled iJIT stub go away (the stub, if still needed by torch 1.12, is built once at image build). <code>compose.yaml</code>: one service, GPU reservation, runs as the invoking user, <code>restart: unless-stopped</code>, mounts for the Runs root, assets and <code>~/BioSmart/inputs</code>. <code>install.sh [--with-docker]</code> installs Docker + NVIDIA Container Toolkit on Ubuntu via sudo, otherwise prints the commands; then pulls, drops a desktop launcher, and opens <code>http://127.0.0.1:8000</code>. Images published to GHCR from CI.</p>
-<div class="callout"><b>Expected image size:</b> 18–25 GB (three CUDA torch stacks). Accepted as a one-time pull. Weights are <em>not</em> baked in; they land in the assets mount via P3. Host-native fallback: <code>pixi install</code> from the same lockfile.</div>
+<p>Bake four Python environments into a single image built from one <code>pixi.lock</code>: <code>server</code> (FastAPI, RDKit, no torch), <code>default</code> (cgflow + Boltz-2), <code>flashaffinity</code>, <code>fabind</code>. Environments are addressed by interpreter path (<code>/envs/&lt;env&gt;/bin/python</code>); <code>conda_env.py</code>'s base-discovery heuristics and the runtime-compiled iJIT stub go away (the stub, if still needed by torch 1.12, is built once at image build). <code>compose.yaml</code>: one service, GPU reservation, runs as the invoking user, <code>restart: unless-stopped</code>, mounts for the Runs root, assets and <code>~/BioSmart/inputs</code>. <code>install.sh [--with-docker]</code> installs Docker + NVIDIA Container Toolkit on Ubuntu via sudo, otherwise prints the commands; then pulls, drops a desktop launcher, and opens <code>http://127.0.0.1:8000</code>. Images published to GHCR from CI. On the lab 3090s the same lockfile is installed with pixi and used for validation. v2 chooses host or worker at install (<span class="tag info">ADR-0006</span>); a worker does not serve the UI.</p>
+<div class="callout"><b>Expected image size:</b> 18–25 GB (three CUDA torch stacks). Accepted as a one-time pull. Weights are <em>not</em> baked in; they land in the assets mount via P3. Lab machines use <code>pixi install</code> from the same lockfile.</div>
 
 <h3>P2 · The runner is Python: FastAPI server in the image, TypeScript backend deleted <span class="tag bold">bold</span> <span class="tag info">ADR-0002</span></h3>
 <p>The server runs in the <code>server</code> environment with a single uvicorn worker; the supervisor and FIFO GPU queue are in-process asyncio tasks with durable state in the registry. It spawns the engine as a subprocess in the same container (<code>start_new_session=True</code>, pgid + heartbeat recorded, reattach on restart by tailing <code>events.jsonl</code>). Events reach the browser over Server-Sent Events; commands are REST. Deleted: <code>runner.ts</code> (2,345), <code>main.ts</code> (749), <code>preload.*</code>, <code>flashbindAdapter.ts</code>, <code>pathSecurity.ts</code>, <code>webFallback.ts</code>, <code>useIpc.ts</code>, sql.js, electron, electron-builder, vite-plugin-electron, concurrently, wait-on. Net ≈4,000 LOC removed; one runtime instead of three.</p>
@@ -472,7 +473,7 @@
 
 <h3>P7 · Dissolve the submodule; hygiene pass <span class="tag info">quick</span></h3>
 <ul class="tight">
-  <li>Import <code>cgflow</code> into the monorepo with history; no upstream sync. Tag <code>research-archive</code>, then remove <code>experiments/</code>, <code>experimental/</code>, pretraining/multi-pocket scripts, Boltzina (tasks, utils, configs, script), <code>wandb</code>, <code>inference_examples/</code> (14 MB) and the 12 MB <code>.pt</code>. UniDock/Vina code stays for parity with <code>tsa87/cgflow</code>.</li>
+  <li>Import <code>cgflow</code> into the monorepo with history; no upstream sync. Leave <code>experiments/</code>, <code>experimental/</code>, pretraining/multi-pocket scripts, and <code>wandb</code> unmodified. Remove Boltzina only (tasks, utils, configs, script). UniDock/Vina code stays for parity with <code>tsa87/cgflow</code>.</li>
   <li>Declare <code>medchem</code>; pin <code>druglikeness</code>/<code>pharmaconet</code> by commit; add <code>[tool.setuptools.packages.find]</code> and an <code>__init__.py</code> for <code>rxnflow</code>.</li>
   <li>Strip every <code>/media/…</code>, <code>/home/…</code> path; example configs become Presets in code.</li>
   <li>Ruff + mypy (gradual) on <code>src/</code>; pytest with a CPU end-to-end Run using a <code>FakeScorer</code>; ESLint + tsc + vitest on web; image build on tag.</li>
@@ -485,14 +486,14 @@
 <p>Today every Scoring round launches fresh processes and reloads models: FABind+ three scripts, FlashBind two <code>predict.py</code> calls, Boltz-2 one <code>boltz predict</code> <em>per Candidate</em>. The engine instead starts one long-lived worker per environment at Run start (models loaded once, JSON-lines over stdin/stdout, dies with the Run); Boltz-2 becomes a resident worker predicting in batches via Boltz's Python entry point. Interface: <code>Scorer.prepare(target, pocket) → context_hash</code>, <code>Scorer.score(round_no, candidates) → ScoreResult[]</code>, <code>Scorer.flush()</code>; FlashBind composes a <code>PoseProvider</code> (FABind+ default; CGFlow Pose model as a lowest-priority alternative). Environment consolidation (porting FABind+, aligning torch pins) is <b>not</b> planned: FABind+'s speed is the reason FlashBind exists.</p>
 
 <h3>P10 · Security defaults for a solo workstation <span class="tag info">quick</span></h3>
-<p>Bind <code>127.0.0.1</code> only; no token. Uploads and the mounted <code>~/BioSmart/inputs</code> folder instead of arbitrary path reads; artefact reads confined to the Runs root. A LAN/token mode is a later, additive feature if a shared-server topology is ever wanted.</p>
+<p>v1 binds <code>127.0.0.1</code> only; no token. Uploads and the mounted <code>~/BioSmart/inputs</code> folder instead of arbitrary path reads; artefact reads confined to the Runs root. v2 (<span class="tag info">ADR-0006</span>) adds a Tailscale listener on the host and a worker role with no UI. Trust is tailnet membership, not a LAN token.</p>
 
 <h3>Considered and not chosen</h3>
 <ul class="tight">
   <li><b>Fixing Electron packaging</b> (extraResources + bundled conda): still requires host conda/CUDA management; multiplies installer variants.</li>
   <li><b>Rewriting the science code</b>: no user-facing benefit; risk of changing results. Wrap it, don't rewrite it.</li>
   <li><b>Separate worker container or long-lived engine daemon</b>: defers cleanly; the server↔engine boundary (spec, events, Run folder) makes it a compose change later.</li>
-  <li><b>Postgres</b>, <b>per-user auth</b>, <b>LAN mode</b>, <b>HPC/Apptainer</b>: not needed for a solo workstation; none is precluded.</li>
+  <li><b>Postgres</b>, <b>per-user auth</b>, <b>public LAN bind</b>, <b>HPC/Apptainer</b>: not in v1. v2 remote access is the tailnet host/worker split in <span class="tag info">ADR-0006</span>, not a tokenised LAN server.</li>
   <li><b>Server-rendered UI (HTMX)</b> or a fresh SPA: would discard Mol*, ECharts and RDKit.js work that is the reason a browser client is right.</li>
   <li><b>Demo or prebuilt Building-block library</b>: the scientist builds their own from their Enamine file; the Doctor self-test is a <code>--dry-run</code>.</li>
 </ul>
@@ -501,37 +502,37 @@
 <!-- ============================================================ -->
 <section id="roadmap">
 <h2><span class="n">07</span>Roadmap (as agreed)</h2>
-<p>Solo developer. Each phase leaves the system usable; engine CLI and server are built together on the same spec, supervisor and event reader; UI last, generated from the schema.</p>
+<p>Solo developer. Phases are a dependency order. Each phase leaves the system usable. There is no schedule. Engine CLI and server are built together on the same spec, supervisor and event reader; UI last, generated from the schema. v2 (<span class="tag info">ADR-0006</span>) comes after this sequence.</p>
 
-<div class="phase"><div class="ph"><b>Phase 0 — Hygiene</b><span class="small">~1 week</span></div><div class="pb">
-  <ul><li>Dissolve submodule; tag <code>research-archive</code>; remove Boltzina, experiments, experimental, scratch blobs, wandb; declare <code>medchem</code>; pin git deps; fix <code>rxnflow</code> packaging; strip absolute paths; ruff/pytest/tsc/eslint CI (P7).</li>
+<div class="phase"><div class="ph"><b>Phase 0 — Hygiene</b></div><div class="pb">
+  <ul><li>Dissolve submodule. Leave experiments, experimental, pretraining, multi-pocket scripts, and wandb unmodified. Remove Boltzina only. Declare <code>medchem</code>; pin git deps; fix <code>rxnflow</code> packaging; strip absolute paths; ruff/pytest/tsc/eslint CI (P7).</li>
   <li><code>pixi.toml</code> with four environments and a lockfile that installs on Ubuntu 22.04; replace <code>conda run</code> with interpreter paths (P1).</li>
   <li><b>Done when:</b> fresh clone → <code>pixi install</code> → the NS5 Boltz-2 config runs headless.</li></ul>
-  <div class="bar"><i style="width:15%"></i></div></div></div>
+  </div></div>
 
-<div class="phase"><div class="ph"><b>Phase 1 — Engine + server core</b><span class="small">~4–5 weeks</span></div><div class="pb">
+<div class="phase"><div class="ph"><b>Phase 1 — Engine + server core</b></div><div class="pb">
   <ul><li>pydantic <code>RunSpec</code> + Presets; <code>biosmart</code> CLI; JSONL events; Run folder + Run database; SIGTERM checkpoint/resume for both Scorers; provenance (P4, P5).</li>
   <li>Scorer / PoseProvider interface; persistent workers for fabind, flashaffinity and Boltz-2; global Scorer cache (P9, ADR-0004, ADR-0005). <code>FakeScorer</code> for CI.</li>
   <li>Doctor; assets registry + sync (Pose model mirrored to HF); Library build job (P3, P6).</li>
   <li>FastAPI server in the <code>server</code> env: registry, FIFO queue, in-process supervisor with reattach, Index ingest with descriptors and fingerprints, SSE, static SPA (P2, P8).</li>
   <li><b>Done when:</b> Doctor is green on the lab box; a Run started from the API streams events, survives a server restart, resumes after Stop; the CPU end-to-end test passes in CI.</li></ul>
-  <div class="bar"><i style="width:55%"></i></div></div></div>
+  </div></div>
 
-<div class="phase"><div class="ph"><b>Phase 2 — Image + installer</b><span class="small">~1–2 weeks</span></div><div class="pb">
+<div class="phase"><div class="ph"><b>Phase 2 — Image + installer</b></div><div class="pb">
   <ul><li>Dockerfile from <code>pixi.lock</code>; <code>compose.yaml</code> (runs as user, restart policy, mounts); <code>install.sh [--with-docker]</code>; desktop launcher; GHCR publish (P1).</li>
   <li><b>Done when:</b> clean Ubuntu 22.04 + GPU: <code>install.sh</code> → Doctor green → a Quick Run completes without opening an editor.</li></ul>
-  <div class="bar"><i style="width:70%"></i></div></div></div>
+  </div></div>
 
-<div class="phase"><div class="ph"><b>Phase 3 — UI</b><span class="small">~3–4 weeks</span></div><div class="pb">
+<div class="phase"><div class="ph"><b>Phase 3 — UI</b></div><div class="pb">
   <ul><li>Doctor, Libraries, New Run wizard (Advanced from schema), Runs (queue, ETA, paginated Candidates, parallel coordinates, Mol*, search, export, archive, import); bundle RDKit locally; TanStack Query + store; vitest + Playwright smoke; delete <code>cgflow-gui/electron/</code> (P6).</li>
   <li><b>Done when:</b> a scientist with no terminal experience completes a Quick Run from upload to exported SDF.</li></ul>
-  <div class="bar"><i style="width:95%"></i></div></div></div>
+  </div></div>
 
-<div class="phase"><div class="ph"><b>Phase 4 — Low-priority tail</b><span class="small">ongoing</span></div><div class="pb">
+<div class="phase"><div class="ph"><b>Phase 4 — Low-priority tail</b></div><div class="pb">
   <ul><li>Legacy Boltz-2 result-folder importer; verify per-Run dedup of Boltz-2 Target/MSA processing; CGFlow Pose model as FlashBind PoseProvider; scaffold grouping; relational route analytics.</li></ul>
-  <div class="bar"><i style="width:100%"></i></div></div></div>
+  </div></div>
 
-<div class="callout" style="margin-top:18px"><b>Target end state:</b> a scientist runs one script on their GPU workstation (10 minutes plus downloads), builds a Building-block library once from their Enamine file, and opens <code>http://127.0.0.1:8000</code> from the desktop launcher. First Run: upload PDB, click six residues, choose “Standard”, press Start. No terminal, no YAML, no paths.</div>
+<div class="callout" style="margin-top:18px"><b>Target end state:</b> a scientist runs one script on their GPU workstation, builds a Building-block library once from their Enamine file, and opens <code>http://127.0.0.1:8000</code> from the desktop launcher. First Run: upload PDB, click six residues, choose “Standard”, press Start. No terminal, no YAML, no paths. In v2 they can open the host’s tailnet URL from their own computer.</div>
 </section>
 
 <!-- ============================================================ -->
@@ -579,13 +580,13 @@
 <table>
 <thead><tr><th>#</th><th>Decision</th><th>Resolution</th></tr></thead>
 <tbody>
-<tr><td>D1</td><td>Primary distribution</td><td>Both Docker and pixi from one lockfile; Docker is the documented default; <code>install.sh --with-docker</code> for Ubuntu</td></tr>
+<tr><td>D1</td><td>Primary distribution</td><td>One lockfile. Lab 3090s use pixi on the host. The container is the scientist’s install. <code>install.sh --with-docker</code> for Ubuntu. v2 install role is host or worker (<span class="tag info">ADR-0006</span>)</td></tr>
 <tr><td>D2</td><td>Building-block library</td><td>In-app build from Enamine Catalog / Stock / <code>.smi</code>; no prebuilt or demo library shipped; 30-day staleness reminder</td></tr>
 <tr><td>D3</td><td>Hosting of mirrored weights</td><td>Hugging Face organisation</td></tr>
 <tr><td>D4</td><td>Fate of FABind+</td><td>Kept as FlashBind's pose provider (speed of FABind+ is the point of FlashBind); pluggable seam; CGFlow-pose alternative lowest priority</td></tr>
-<tr><td>D5</td><td>Research code</td><td>Tagged <code>research-archive</code>, removed from <code>main</code>; UniDock/Vina code kept for upstream parity, Boltzina deleted</td></tr>
+<tr><td>D5</td><td>Research code</td><td>Stays unmodified in the tree, including experiments and wandb. UniDock/Vina code kept for upstream parity. Boltzina is the only removal</td></tr>
 <tr><td>D6</td><td>Naming</td><td>Renamed <code>biosmart</code>; CGFlow remains the method name</td></tr>
-<tr><td>D7</td><td>Multi-user / network</td><td>Solo workstation only; localhost bind; no auth; FIFO single-GPU queue for one user</td></tr>
+<tr><td>D7</td><td>Multi-user / network</td><td>v1: one workstation, localhost bind, no auth, one Run at a time. v2: host UI on the tailnet, worker installs without a UI, tailnet membership is the trust boundary (<span class="tag info">ADR-0006</span>)</td></tr>
 <tr><td>D8</td><td>Storage</td><td>Hybrid per-Run database + central Index; global Scorer cache; SQLite WAL; full provenance; nothing deleted</td></tr>
 </tbody></table>
 </section>
@@ -641,7 +642,7 @@
 </section>
 
 <footer>
-  BioSmart architecture review · generated 16 Sep 2026 · companion plan: <code>docs/OVERHAUL_PLAN.md</code>
+  BioSmart architecture review · generated 16 Sep 2026 · amended 25 Sep 2026 · companion plan: <code>docs/OVERHAUL_PLAN.md</code> · v2: <code>docs/adr/0006-v2-host-worker-tailnet-ui.md</code>
 </footer>
 </div>
 </body>

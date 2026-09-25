@@ -17,4 +17,4 @@ BioSmart needs three mutually incompatible Python/CUDA stacks (cgflow+Boltz-2, f
 
 - Host prerequisites collapse to Linux + NVIDIA driver + Docker (installer can install the latter two on Ubuntu).
 - Image is large (≈20 GB); accepted as a one-time cost.
-- Multi-user and remote access are out of scope for v1.
+- Multi-user and remote access are out of scope for v1. v2 host/worker installs and a tailnet UI are [ADR 0006](0006-v2-host-worker-tailnet-ui.md). This decision remains the v1 topology.
