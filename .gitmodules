@@ -1,4 +1,0 @@
-[submodule "cgflow"]
-	path = cgflow
-	url = https://github.com/sheepyrad/cgflow.git
-	branch = main

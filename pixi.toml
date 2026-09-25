@@ -1,0 +1,117 @@
+[workspace]
+name = "biosmart"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+# Default environment: CGFlow + Boltz-2.
+# Ubuntu 20.04 (glibc 2.31) needs torch==2.6.0+cu124. PyG wheels built for
+# torch 2.9.x+cu126 require glibc 2.32+ and fail to import torch_scatter.
+[dependencies]
+python = "3.11.*"
+
+[pypi-options]
+extra-index-urls = ["https://download.pytorch.org/whl/cu124"]
+find-links = [{ url = "https://data.pyg.org/whl/torch-2.6.0+cu124.html" }]
+# The cu124 index also publishes unrelated names (for example requests) at old
+# versions. Torch stays pinned to 2.6.0+cu124, which exists only on that index.
+index-strategy = "unsafe-best-match"
+
+[pypi-dependencies]
+numpy = "==1.26.4"
+medchem = "==2.0.5"
+torch = "==2.6.0+cu124"
+torch-geometric = "==2.8.0"
+torch-scatter = "==2.1.2+pt26cu124"
+torch-sparse = "==0.6.18+pt26cu124"
+torch-cluster = "==1.6.3+pt26cu124"
+boltz = "==2.0.3"
+pytest = ">=8"
+cgflow = { path = "cgflow", editable = true }
+
+# Torch-free API environment. Does not include the default feature.
+[feature.server.dependencies]
+python = "3.11.*"
+rdkit = ">=2024.3"
+
+[feature.server.pypi-dependencies]
+fastapi = ">=0.115"
+uvicorn = ">=0.32"
+pydantic = ">=2"
+
+# FABind+ pose provider. Python 3.8 / torch 1.12+cu113, own wheel index.
+[feature.fabind.dependencies]
+python = "3.8.*"
+
+[feature.fabind.pypi-options]
+extra-index-urls = ["https://download.pytorch.org/whl/cu113"]
+find-links = [{ url = "https://data.pyg.org/whl/torch-1.12.0+cu113.html" }]
+# The cu113 index publishes some non-torch names at old versions. Torch stays
+# pinned to the wheel that exists only on that index.
+index-strategy = "unsafe-best-match"
+
+[feature.fabind.pypi-dependencies]
+numpy = "==1.24.4"
+torch = "==1.12.0+cu113"
+torchvision = "==0.13.0+cu113"
+torchaudio = "==0.12.0+cu113"
+torch-geometric = "==2.4.0"
+torch-scatter = "==2.1.0+pt112cu113"
+torch-sparse = "==0.6.15+pt112cu113"
+torch-cluster = "==1.6.0+pt112cu113"
+torch-spline-conv = "==1.2.1+pt112cu113"
+pyg-lib = "==0.2.0+pt112cu113"
+torchmetrics = "==0.10.2"
+torchdrug = "==0.1.2"
+accelerate = ">=0.20"
+lmdb = ">=1.4"
+fair-esm = "==2.0.0"
+biopython = ">=1.79"
+tensorboard = ">=2.11"
+tqdm = ">=4.64"
+pyarrow = ">=10"
+mlcrate = ">=0.2"
+
+# FlashBind scoring. torch 2.7.1+cu126 and its PyG index, separate from CGFlow.
+# Those PyG wheels need glibc >= 2.32, so torch_scatter does not import on Ubuntu 20.04.
+[feature.flashaffinity.dependencies]
+python = "3.11.*"
+
+[feature.flashaffinity.pypi-options]
+extra-index-urls = ["https://download.pytorch.org/whl/cu126"]
+find-links = [{ url = "https://data.pyg.org/whl/torch-2.7.1+cu126.html" }]
+index-strategy = "unsafe-best-match"
+
+[feature.flashaffinity.pypi-dependencies]
+numpy = "==2.1.1"
+torch = "==2.7.1+cu126"
+torchvision = "==0.22.1+cu126"
+torch-geometric = "==2.7.0"
+torch-scatter = "==2.1.2+pt27cu126"
+torch-sparse = "==0.6.18+pt27cu126"
+torch-cluster = "==1.6.3+pt27cu126"
+pyg-lib = "==0.5.0+pt27cu126"
+pytorch-lightning = "==2.5.0"
+torchmetrics = "==1.7.3"
+rdkit = "==2025.9.1"
+biopython = "==1.84"
+biotite = ">=1.3"
+einops = "==0.8.0"
+gemmi = "==0.6.5"
+lmdb = ">=1.4"
+pandas = "==2.2.3"
+scipy = "==1.13.1"
+scikit-learn = "==1.6.1"
+pyyaml = "==6.0.2"
+requests = "==2.32.3"
+joblib = ">=1.4"
+tqdm = ">=4.66"
+xxhash = ">=3.4"
+timeout-decorator = "==0.5.0"
+esm = "==3.2.0"
+huggingface-hub = "==0.35.3"
+
+[environments]
+default = { solve-group = "cgflow" }
+server = { features = ["server"], no-default-feature = true, solve-group = "server" }
+fabind = { features = ["fabind"], no-default-feature = true, solve-group = "fabind" }
+flashaffinity = { features = ["flashaffinity"], no-default-feature = true, solve-group = "flashaffinity" }
