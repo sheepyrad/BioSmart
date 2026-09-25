@@ -13,7 +13,7 @@ CGFlow is part of this repo. One `pixi.lock` defines four environments that are 
 | `fabind` | FABind+ | `cu113`, torch `1.12.0+cu113` |
 | `flashaffinity` | FlashBind | `cu126`, torch `2.7.1+cu126` |
 
-`server`, `fabind`, and `flashaffinity` set `no-default-feature` and do not share a solve-group with `default`. On Ubuntu 20.04 (glibc 2.31) the CGFlow stack stays on torch `2.6.0+cu124`. PyG wheels for torch 2.9.x+cu126 need glibc 2.32+.
+`server`, `fabind`, and `flashaffinity` set `no-default-feature` and do not share a solve-group with `default`. On Ubuntu 20.04 (glibc 2.31) the CGFlow stack stays on torch `2.6.0+cu124`. PyG wheels for torch 2.9.x+cu126 need glibc 2.32+. The default environment takes RDKit from conda-forge (`2026.03.1`); the PyPI RDKit wheel segfaults when Boltz imports scikit-learn.
 
 ```bash
 pixi install
