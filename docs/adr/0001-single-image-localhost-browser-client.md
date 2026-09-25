@@ -11,10 +11,10 @@ BioSmart needs three mutually incompatible Python/CUDA stacks (cgflow+Boltz-2, f
 
 - Fix Electron packaging (`extraResources`, bundled conda): still requires host conda/CUDA management and multiplies installer variants.
 - Docker only, no host-native path: rejected because some sites cannot run a Docker daemon; pixi from the same lockfile covers them.
-- LAN-exposed shared server with tokens: deferred. Solo workstation is the sole v1 topology; LAN mode can be added later without changing the architecture.
+- LAN-exposed shared server with tokens: rejected for v1. Solo workstation is the sole v1 topology. v2 remote access is the tailnet address in [ADR 0006](0006-v2-host-worker-tailnet-ui.md), not binding `0.0.0.0`.
 
 ## Consequences
 
 - Host prerequisites collapse to Linux + NVIDIA driver + Docker (installer can install the latter two on Ubuntu).
 - Image is large (≈20 GB); accepted as a one-time cost.
-- Multi-user and remote access are out of scope for v1.
+- Multi-user and remote access are out of scope for v1. v2 host/worker installs and a tailnet UI are [ADR 0006](0006-v2-host-worker-tailnet-ui.md). This decision remains the v1 topology.

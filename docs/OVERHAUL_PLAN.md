@@ -1,6 +1,6 @@
 # BioSmart Overhaul Plan
 
-Status: **consensus reached 16 Sep 2026** after a five-round design review (Q1–Q47). Companion documents: `docs/biosmart-architecture-review.html` (evidence and diagrams), `CONTEXT.md` (glossary; terms below are used as defined there), `docs/adr/0001–0005` (architectural decisions).
+Status: **consensus reached 16 Sep 2026**, amended 25 Sep 2026. The schedule was removed. v2 tailnet host/worker installs are [ADR 0006](adr/0006-v2-host-worker-tailnet-ui.md). Companion documents: `docs/biosmart-architecture-review.html` (evidence and diagrams), `CONTEXT.md` (glossary; terms below are used as defined there), `docs/adr/0001–0006` (architectural decisions).
 
 Goal: a scientist on their own Linux GPU workstation goes from "nothing installed" to "first Run exported" without a terminal, YAML, or filesystem paths.
 
@@ -12,8 +12,8 @@ BioSmart is a research pipeline (`cgflow`) with a developer console (`cgflow-gui
 
 | Topic | Decision |
 |-------|----------|
-| Topology | Solo Linux GPU workstation, always. Server binds `127.0.0.1` only; no token, no LAN mode. A shared-server topology is deferred and can be added without architectural change. |
-| Distribution | One container image built from one `pixi.lock`; `pixi` host-native install from the same lockfile as fallback. `install.sh` checks for Docker + NVIDIA Container Toolkit and, with `--with-docker`, installs them on Ubuntu via sudo. |
+| Topology | v1: one Linux GPU workstation. Server binds `127.0.0.1` only; no token, no LAN mode. v2 ([ADR 0006](adr/0006-v2-host-worker-tailnet-ui.md)): install as host or worker. The host serves the UI on localhost and on its Tailscale address. A worker has no UI. A scientist opens the host from their own computer. Tailnet membership is the trust boundary. |
+| Distribution | One image built from one `pixi.lock`. On the lab 3090s, develop and validate with pixi on the host. The container is the scientist’s install. `install.sh` checks for Docker + NVIDIA Container Toolkit and, with `--with-docker`, installs them on Ubuntu via sudo. v2 chooses host or worker at install time ([ADR 0006](adr/0006-v2-host-worker-tailnet-ui.md)). |
 | Hardware floor | Single GPU, 24 GB VRAM (RTX 3090 class). One Run executes at a time; others queue FIFO and can be cancelled. |
 | Scorers | Two user-selectable Scorers: Boltz-2 and FlashBind. FABind+ is internal to FlashBind as its pose provider (pluggable seam; CGFlow-pose as alternative is lowest priority). UniDock/Vina code is retained for parity with upstream `tsa87/cgflow` but is not a product Scorer. Boltzina is deleted. |
 | Building-block library | Built in-app from Enamine Catalog, Enamine Stock (different extraction scripts, user toggles which) or a plain `.smi`. Drug-like filter off by default, switchable. Several libraries coexist; newest is default; a Run records its library. Staleness reminder after a configurable 30 days, reminder only. No demo library ships; the Doctor's engine self-test is a `--dry-run`. |
@@ -35,7 +35,7 @@ BioSmart is a research pipeline (`cgflow`) with a developer console (`cgflow-gui
 | Frontend | Keep React 18 + Vite + Tailwind/shadcn; port Mol*, ECharts, parallel coordinates, Candidates table into `features/*`; TS types generated from OpenAPI; hand-written wizard; small custom JSON-Schema renderer for Advanced; TanStack Query + small Zustand store; Node needed only at build time. |
 | Day-to-day | Container starts at boot (`restart: unless-stopped`); installer drops a desktop launcher opening `http://127.0.0.1:8000`; `biosmart serve` also available. |
 | Testing | `FakeScorer` (deterministic, CPU) so CI runs a whole Run through server → supervisor → engine → events → Index; recorded `events.jsonl` fixtures for ingest; UI tests against a mocked API; GPU integration as a manual pre-release checklist. |
-| Repository | Submodule dissolved into the monorepo (no upstream sync). `experiments/`, `experimental/`, pretraining and multi-pocket scripts, Boltzina: tagged `research-archive` then removed from `main`. `wandb` removed from the product path. |
+| Repository | Submodule dissolved into the monorepo (no upstream sync). Research code stays unmodified, including `experiments/`, `experimental/`, pretraining, multi-pocket scripts, and `wandb`. Boltzina is the only removal. |
 | Naming | `biosmart` for package, CLI, image and UI. CGFlow remains the method name; `cgflow`, `rxnflow`, `synthflow`, `gflownet` remain research-core package names. |
 | Build | Solo developer. Phases ordered so each leaves the system usable; engine CLI and server are built together on the same spec/supervisor/event reader. UI last, generated from the schema. |
 
@@ -110,13 +110,15 @@ biosmart/
 
 ## Roadmap
 
-| Phase | Scope | Effort | Definition of done |
-|-------|-------|--------|--------------------|
-| 0 Hygiene | Dissolve submodule; tag `research-archive`; remove Boltzina, experiments, experimental, scratch blobs, wandb; declare `medchem`; pin git deps; fix `rxnflow` packaging; strip absolute paths; ruff/pytest/tsc/eslint CI; `pixi.toml` with four envs and a lockfile; replace `conda run` with interpreter paths | ~1 wk | Fresh clone → `pixi install` → NS5 Boltz-2 config runs headless |
-| 1 Engine + server core | pydantic `RunSpec` + Presets; `biosmart` CLI; JSONL events; Run folder + Run database; SIGTERM checkpoint/resume for both Scorers; Scorer/PoseProvider interface with persistent workers (fabind, flashaffinity, resident batched Boltz-2); global Scorer cache; provenance; `FakeScorer`; Doctor; assets registry + sync (pose ckpt mirrored to HF); Library build job; FastAPI server in `server` env with registry, FIFO queue, in-process supervisor with reattach, Index ingest with descriptors/fingerprints, SSE, static SPA | ~4–5 wk | `biosmart doctor` green on the lab box; a Run started from the API streams events, survives server restart, resumes after Stop; CPU end-to-end test with `FakeScorer` passes in CI |
-| 2 Image + installer | Dockerfile from lockfile; compose (runs as user, restart policy, mounts); `install.sh [--with-docker]`; desktop launcher; GHCR publish | ~1–2 wk | Clean Ubuntu 22.04 + GPU: `install.sh` → Doctor green → Quick Run completes with no editor |
-| 3 UI | Doctor screen; Library screen (build, list, staleness); New Run wizard (Target → Pocket → Preset/Scorer → Start; Advanced from schema); Runs (queue, live progress, ETA, paginated Candidates, parallel coordinates, Mol* complex, search, export, archive); bundle RDKit locally; TanStack Query + small store; vitest + Playwright smoke; delete `cgflow-gui/electron/` | ~3–4 wk | A scientist with no terminal experience completes a Quick Run upload → exported SDF |
-| 4 Low priority | Legacy Boltz-2 folder importer; Scorer working-file dedup verification; CGFlow-pose provider for FlashBind; scaffold grouping; relational route analytics | ongoing | — |
+Phases are a dependency order. Each phase leaves the system usable. There is no schedule. v2 ([ADR 0006](adr/0006-v2-host-worker-tailnet-ui.md)) comes after this sequence. It is not a row in the table.
+
+| Phase | Scope | Definition of done |
+|-------|-------|--------------------|
+| 0 Hygiene | Dissolve submodule. Leave experiments, experimental, pretraining, multi-pocket scripts, and wandb unmodified. Remove Boltzina only. Declare `medchem`; pin git deps; fix `rxnflow` packaging; strip absolute paths; ruff/pytest/tsc/eslint CI; `pixi.toml` with four envs and a lockfile; replace `conda run` with interpreter paths | Fresh clone → `pixi install` → NS5 Boltz-2 config runs headless |
+| 1 Engine + server core | pydantic `RunSpec` + Presets; `biosmart` CLI; JSONL events; Run folder + Run database; SIGTERM checkpoint/resume for both Scorers; Scorer/PoseProvider interface with persistent workers (fabind, flashaffinity, resident batched Boltz-2); global Scorer cache; provenance; `FakeScorer`; Doctor; assets registry + sync (pose ckpt mirrored to HF); Library build job; FastAPI server in `server` env with registry, FIFO queue, in-process supervisor with reattach, Index ingest with descriptors/fingerprints, SSE, static SPA | `biosmart doctor` green on the lab box; a Run started from the API streams events, survives server restart, resumes after Stop; CPU end-to-end test with `FakeScorer` passes in CI |
+| 2 Image + installer | Dockerfile from lockfile; compose (runs as user, restart policy, mounts); `install.sh [--with-docker]`; desktop launcher; GHCR publish | Clean Ubuntu 22.04 + GPU: `install.sh` → Doctor green → Quick Run completes with no editor |
+| 3 UI | Doctor screen; Library screen (build, list, staleness); New Run wizard (Target → Pocket → Preset/Scorer → Start; Advanced from schema); Runs (queue, live progress, ETA, paginated Candidates, parallel coordinates, Mol* complex, search, export, archive); bundle RDKit locally; TanStack Query + small store; vitest + Playwright smoke; delete `cgflow-gui/electron/` | A scientist with no terminal experience completes a Quick Run upload → exported SDF |
+| 4 Low priority | Legacy Boltz-2 folder importer; Scorer working-file dedup verification; CGFlow-pose provider for FlashBind; scaffold grouping; relational route analytics | When you choose to pick them up |
 
 ## Key evidence (paths in the current tree)
 
