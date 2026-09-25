@@ -24,6 +24,7 @@ from biosmart.storage import (
     spec_sha256,
     write_json,
 )
+from biosmart.worker import WorkerScorer
 
 
 _STOP_REQUESTED = False
@@ -48,6 +49,19 @@ def _stop_signals() -> Iterator[None]:
         yield
     finally:
         signal.signal(signal.SIGTERM, previous)
+
+
+def _open_scorer(spec: RunSpec, runs_root: Path, *, ordinal: int = 0) -> FakeScorer | WorkerScorer:
+    """Local FakeScorer, or a worker when the host was given its tailnet address."""
+    address = os.environ.get("BIOSMART_WORKER", "").strip()
+    if address:
+        return WorkerScorer(
+            address,
+            spec.seed,
+            cache_path=_scorer_cache_path(runs_root),
+            ordinal=ordinal,
+        )
+    return FakeScorer(spec.seed, cache_path=_scorer_cache_path(runs_root), ordinal=ordinal)
 
 
 def _scorer_cache_path(runs_root: Path) -> Path:
@@ -96,7 +110,7 @@ def execute_run(spec_path: Path, runs_root: Path, registry: Path) -> Path:
     init_run_database(database_path)
     _write_manifest(folder, run_id=run_id, status="running", scorer=spec.scorer, seed=spec.seed)
 
-    scorer = FakeScorer(spec.seed, cache_path=_scorer_cache_path(runs_root))
+    scorer = _open_scorer(spec, runs_root)
     with _stop_signals():
         try:
             _drive(
@@ -157,7 +171,7 @@ def resume_run(folder: Path, runs_root: Path, registry: Path) -> Path:
     events_path = folder / "events.jsonl"
     database_path = folder / "run.sqlite"
     _write_manifest(folder, run_id=run_id, status="running", scorer=spec.scorer, seed=spec.seed)
-    scorer = FakeScorer(spec.seed, cache_path=_scorer_cache_path(runs_root), ordinal=scored)
+    scorer = _open_scorer(spec, runs_root, ordinal=scored)
     with _stop_signals():
         try:
             _drive(

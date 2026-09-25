@@ -107,6 +107,10 @@ class FakeScorer:
             )
         return results
 
+    def staged_entries(self) -> list[tuple[str, float]]:
+        """Cache rows waiting for flush. The list is a copy."""
+        return list(self._pending)
+
     def flush(self) -> int:
         if self._cache_path is None or self._context_hash is None:
             written = len(self._pending)
