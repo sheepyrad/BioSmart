@@ -8,6 +8,8 @@ platforms = ["linux-64"]
 # torch 2.9.x+cu126 require glibc 2.32+ and fail to import torch_scatter.
 [dependencies]
 python = "3.11.*"
+# NS5 Boltz-2 filters candidates with the Lilly medchem binaries before scoring.
+lilly-medchem-rules = ">=1.0.1,<2"
 
 [pypi-options]
 extra-index-urls = ["https://download.pytorch.org/whl/cu124"]

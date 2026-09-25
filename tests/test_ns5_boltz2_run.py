@@ -7,6 +7,7 @@ database. It does not read logs.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import subprocess
@@ -80,3 +81,13 @@ def test_ns5_boltz2_run_records_scored_candidates(tmp_path: Path) -> None:
     smiles, affinity = rows[0]
     assert isinstance(smiles, str) and smiles.strip(), "scored candidate is missing a SMILES string"
     assert isinstance(affinity, float), "scored candidate is missing an affinity"
+
+    # A Lilly skip writes a zero row and never starts Boltz. The prediction file
+    # is the Run-folder evidence that Boltz-2 scored a candidate.
+    affinity_files = sorted(result_dir.rglob("affinity_*.json"))
+    assert affinity_files, (
+        "Run folder has no Boltz affinity prediction. "
+        "A score row of zeros is written when the Lilly filter skips Boltz."
+    )
+    prediction = json.loads(affinity_files[0].read_text())
+    assert isinstance(prediction.get("affinity_pred_value"), (int, float))

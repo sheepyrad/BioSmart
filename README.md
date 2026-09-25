@@ -8,7 +8,7 @@ CGFlow is part of this repo. One `pixi.lock` defines four environments that are 
 
 | Environment | Role | Torch wheel index |
 |-------------|------|-------------------|
-| `default` | CGFlow + Boltz-2 | `cu124`, torch `2.6.0+cu124` |
+| `default` | CGFlow + Boltz-2, including the Lilly medchem filter binaries | `cu124`, torch `2.6.0+cu124` |
 | `server` | torch-free API runtime | none |
 | `fabind` | FABind+ | `cu113`, torch `1.12.0+cu113` |
 | `flashaffinity` | FlashBind | `cu126`, torch `2.7.1+cu126` |
