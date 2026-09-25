@@ -73,16 +73,33 @@ def _scorer_cache_path(runs_root: Path) -> Path:
 
 
 def _hold_for_stop(round_no: int) -> bool:
-    """Wait at a Scoring round when a test asks, then report whether Stop arrived."""
+    """Wait at a Scoring round when a test asks, then report whether Stop arrived.
+
+    ``BIOSMART_FAKE_SCORER_RELEASE``, when set, is a file path. Once that file
+    exists the hold ends and the Run continues, so a queued Run can start after
+    this one finishes.
+    """
     raw = os.environ.get("BIOSMART_FAKE_SCORER_BLOCK_ROUND", "").strip()
     if raw:
         blocked = int(raw)
         if blocked < 1:
             raise ValueError("BIOSMART_FAKE_SCORER_BLOCK_ROUND must be >= 1")
         if blocked == round_no:
+            release = os.environ.get("BIOSMART_FAKE_SCORER_RELEASE", "").strip()
             while not stop_requested():
+                if release and Path(release).is_file():
+                    return False
                 time.sleep(0.05)
     return stop_requested()
+
+
+def _allocated_run_id() -> str:
+    raw = os.environ.get("BIOSMART_RUN_ID", "").strip()
+    if not raw:
+        return uuid.uuid4().hex
+    if len(raw) != 32 or any(character not in "0123456789abcdef" for character in raw):
+        raise ValueError("BIOSMART_RUN_ID must be 32 hex characters")
+    return raw
 
 
 def load_spec(spec_path: Path) -> RunSpec:
@@ -102,7 +119,7 @@ def execute_run(spec_path: Path, runs_root: Path, registry: Path) -> Path:
 
     spec = load_spec(spec_path)
     runs_root.mkdir(parents=True, exist_ok=True)
-    run_id = uuid.uuid4().hex
+    run_id = _allocated_run_id()
     folder = runs_root / run_id
     folder.mkdir()
     (folder / "spec.json").write_bytes(spec_path.read_bytes())

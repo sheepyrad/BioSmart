@@ -34,6 +34,8 @@ def main(argv: list[str] | None = None) -> int:
         metavar="RUN_FOLDER",
         help="Continue a Paused Run from its Run folder",
     )
+    serve_parser = subcommands.add_parser("serve", help="Serve the runs API on localhost")
+    serve_parser.add_argument("--port", type=int, default=8000)
     worker_parser = subcommands.add_parser(
         "worker",
         help="Accept prepare, score, and flush from a host on the tailnet",
@@ -56,6 +58,8 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     try:
+        if args.command == "serve":
+            return _serve(args.port)
         if args.command == "run":
             if args.resume is not None and args.spec is not None:
                 print("Resume continues a Paused Run and does not take a spec", file=sys.stderr)
@@ -107,6 +111,22 @@ def _run(spec_path: Path) -> int:
         print(str(exc), file=sys.stderr)
         return 1
     print(folder)
+    return 0
+
+
+def _serve(port: int) -> int:
+    if port < 0 or port > 65535:
+        print("port must be between 0 and 65535", file=sys.stderr)
+        return 2
+    if _workspace() is None:
+        return 2
+    from biosmart.server import serve
+
+    try:
+        serve(port)
+    except (OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     return 0
 
 
