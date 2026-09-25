@@ -1,4 +1,4 @@
-"""``biosmart run`` command."""
+"""``biosmart`` command line."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from biosmart.engine import execute_run, resume_run
 from biosmart.scoring import ScorerFailed
+from biosmart.worker import serve
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -24,6 +25,12 @@ def main(argv: list[str] | None = None) -> int:
         metavar="RUN_FOLDER",
         help="Continue a Paused Run from its Run folder",
     )
+    worker_parser = subcommands.add_parser(
+        "worker",
+        help="Accept prepare, score, and flush from a host on the tailnet",
+    )
+    worker_parser.add_argument("--listen", required=True)
+    worker_parser.add_argument("--ready-file", type=Path)
     args = parser.parse_args(argv)
     if args.command == "run":
         if args.resume is not None and args.spec is not None:
@@ -35,6 +42,8 @@ def main(argv: list[str] | None = None) -> int:
             print("A Run spec is required", file=sys.stderr)
             return 2
         return _run(args.spec)
+    if args.command == "worker":
+        return _worker(args.listen, args.ready_file)
     return 2
 
 
@@ -86,6 +95,15 @@ def _resume(folder: Path) -> int:
         print(str(exc), file=sys.stderr)
         return 1
     print(resumed)
+    return 0
+
+
+def _worker(listen: str, ready_file: Path | None) -> int:
+    try:
+        serve(listen, ready_file)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     return 0
 
 

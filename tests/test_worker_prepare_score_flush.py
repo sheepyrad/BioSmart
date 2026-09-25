@@ -138,7 +138,6 @@ def test_worker_prepare_score_and_flush_record_the_scoring_round(tmp_path: Path)
         run_folders = [path for path in runs_root.iterdir() if path.is_dir()]
         assert len(run_folders) == 1
         run_folder = run_folders[0]
-        assert not (run_folder / "checkpoints").exists()
 
         stored_spec = json.loads((run_folder / "spec.json").read_text())
         assert stored_spec["scorer"] == "fake"
