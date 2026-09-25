@@ -7,6 +7,7 @@ Asset sync is a Doctor fix. A Run does not fetch weights.
 
 from __future__ import annotations
 
+import os
 import shutil
 import urllib.request
 from dataclasses import replace
@@ -16,7 +17,7 @@ import pytest
 
 from biosmart.assets import required_assets
 from biosmart.doctor import GpuSnapshot, Workstation, apply_fix, examine
-from biosmart.start import StartRefused, open_run, start_run
+from biosmart.start import StartRefused, execute_guarded, open_run, start_run
 
 VRAM_FLOOR_MIB = 24 * 1024
 ENV_NAMES = ("server", "default", "fabind", "flashaffinity")
@@ -146,14 +147,21 @@ def test_environment_import_failure_is_blocking(tmp_path: Path) -> None:
 
 def test_missing_weights_are_reported_and_block_start(tmp_path: Path) -> None:
     workstation = _ready(tmp_path)
-    pose = next(spec for spec in required_assets(workstation) if spec.id == "pose-model")
-    pose.dest.unlink()
+    for asset_id in ("pose-model", "fabind-checkpoint", "fabind-confidence", "boltz2-structure"):
+        asset = next(spec for spec in required_assets(workstation) if spec.id == asset_id)
+        asset.dest.unlink()
 
     report = examine(workstation)
 
+    detail = report.check("weights").detail
     assert report.check("weights").ok is False
     assert report.check("weights").blocking is True
-    assert "pose-model" in report.check("weights").detail
+    assert "Pose model" in detail
+    assert "FABind+" in detail
+    assert "Boltz-2" in detail
+    assert "fabind-checkpoint" not in detail
+    assert "fabind-confidence" not in detail
+    assert "boltz2-" not in detail
     assert report.check("weights").fix == "weights"
     with pytest.raises(StartRefused, match="weights"):
         start_run(workstation)
@@ -189,15 +197,64 @@ def test_a_run_does_not_fetch_weights(tmp_path: Path, monkeypatch: pytest.Monkey
         lambda *args, **kwargs: calls.append("url"),
     )
 
-    context = open_run(workstation)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+    open_run(workstation)
 
     assert calls == []
-    assert context.env["HF_HUB_OFFLINE"] == "1"
-    assert context.env["TRANSFORMERS_OFFLINE"] == "1"
-    assert Path(context.env["BOLTZ_CACHE"]) == workstation.boltz_cache
+    assert os.environ["HF_HUB_OFFLINE"] == "1"
+    assert os.environ["TRANSFORMERS_OFFLINE"] == "1"
+    assert os.environ["BOLTZ_CACHE"] == str(workstation.boltz_cache)
 
     pose = next(spec for spec in required_assets(workstation) if spec.id == "pose-model")
     pose.dest.unlink()
     with pytest.raises(StartRefused, match="weights"):
         open_run(workstation)
     assert calls == []
+
+
+def test_failed_blocking_check_does_not_execute_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("BIOSMART_SKIP_DOCTOR", raising=False)
+    calls: list[object] = []
+    monkeypatch.setattr(
+        "biosmart.start.execute_run",
+        lambda *args, **kwargs: calls.append(args),
+    )
+    workstation = _ready(tmp_path)
+    shutil.rmtree(workstation.libraries_dir)
+    workstation.libraries_dir.mkdir()
+
+    with pytest.raises(StartRefused, match="library"):
+        execute_guarded(
+            tmp_path / "spec.json",
+            tmp_path / "runs",
+            tmp_path / "registry.sqlite",
+            workstation,
+        )
+    assert calls == []
+
+
+def test_passing_checks_start_the_run_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("BIOSMART_SKIP_DOCTOR", raising=False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+    seen: dict[str, str | None] = {}
+
+    def spy(spec_path: Path, runs_root: Path, registry: Path) -> Path:
+        seen["hf"] = os.environ.get("HF_HUB_OFFLINE")
+        seen["tf"] = os.environ.get("TRANSFORMERS_OFFLINE")
+        return tmp_path / "ran"
+
+    monkeypatch.setattr("biosmart.start.execute_run", spy)
+    folder = execute_guarded(
+        tmp_path / "spec.json",
+        tmp_path / "runs",
+        tmp_path / "registry.sqlite",
+        _ready(tmp_path),
+    )
+    assert folder == tmp_path / "ran"
+    assert seen == {"hf": "1", "tf": "1"}
