@@ -55,7 +55,12 @@ def _open_scorer(spec: RunSpec, runs_root: Path, *, ordinal: int = 0) -> FakeSco
     """Local FakeScorer, or a worker when the host was given its tailnet address."""
     address = os.environ.get("BIOSMART_WORKER", "").strip()
     if address:
-        return WorkerScorer(address, spec.seed)
+        return WorkerScorer(
+            address,
+            spec.seed,
+            cache_path=_scorer_cache_path(runs_root),
+            ordinal=ordinal,
+        )
     return FakeScorer(spec.seed, cache_path=_scorer_cache_path(runs_root), ordinal=ordinal)
 
 

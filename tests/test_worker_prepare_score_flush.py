@@ -11,6 +11,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import signal
 import socket
 import sqlite3
 import subprocess
@@ -29,6 +30,14 @@ EXPECTED_CANDIDATES = (
     ("CCN", -0.70),
     ("CC(=O)O", -0.71),
 )
+# The same walk through a 2×2 Budget. Resume must continue at ordinal 2.
+CONTINUED_CANDIDATES = (
+    ("CCN", -0.70),
+    ("CC(=O)O", -0.71),
+    ("c1ccccc1", -0.72),
+    ("CCC", -0.73),
+)
+_CONTEXT_HASH = "fake:0:ns5-fixture:A:42"
 
 
 def test_worker_prepare_score_and_flush_record_the_scoring_round(tmp_path: Path) -> None:
@@ -415,6 +424,163 @@ def test_failed_score_records_the_scoring_round_provenance_and_index(tmp_path: P
         if worker.poll() is None:
             worker.kill()
             worker.wait(timeout=10)
+
+
+def test_worker_pause_records_the_cache_and_resume_continues(tmp_path: Path) -> None:
+    """Pause records the flush count in the host cache. Resume continues the ordinal."""
+    runs_root = tmp_path / "runs"
+    registry = tmp_path / "registry.sqlite"
+    runs_root.mkdir()
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "scorer": "fake",
+                "seed": 7,
+                "budget": {"iterations": 2, "candidates_per_iteration": 2},
+                "target": {"name": "ns5-fixture"},
+                "pocket": {"residues": ["A:42"]},
+                "library": {"id": "fixture-library"},
+            }
+        )
+    )
+    ready = tmp_path / "worker-ready"
+    worker = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "biosmart",
+            "worker",
+            "--listen",
+            "127.0.0.1:0",
+            "--ready-file",
+            str(ready),
+        ],
+        cwd=REPO,
+        env=_base_env(),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        address = _wait_ready(ready, worker)
+        host_env = _base_env()
+        host_env["BIOSMART_RUNS_ROOT"] = str(runs_root)
+        host_env["BIOSMART_REGISTRY"] = str(registry)
+        host_env["BIOSMART_WORKER"] = address
+        host_env["BIOSMART_FAKE_SCORER_FAIL"] = "1"
+        host_env["BIOSMART_FAKE_SCORER_BLOCK_ROUND"] = "2"
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "biosmart", "run", str(spec_path)],
+            cwd=REPO,
+            env=host_env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        run_folder = _wait_until_iteration_held(proc, runs_root, iteration=1)
+        proc.send_signal(signal.SIGTERM)
+        stdout, stderr = proc.communicate(timeout=30)
+        assert proc.returncode == 0, stderr
+        assert stdout.strip() == str(run_folder)
+        assert worker.poll() is None
+
+        events = _read_events(run_folder)
+        assert events[0]["type"] == "run.started"
+        assert [event["type"] for event in events[-2:]] == ["checkpoint", "run.paused"]
+        run_id = events[0]["run_id"]
+        checkpoint_event = events[-2]
+        assert isinstance(checkpoint_event["scorer_cache_entries"], int)
+        assert checkpoint_event["scorer_cache_entries"] == 2
+        assert checkpoint_event["scorer_cache_flushed"] is True
+
+        checkpoint = json.loads((run_folder / "checkpoints" / "policy.json").read_text())
+        assert checkpoint["candidates_scored"] == 2
+        assert isinstance(checkpoint["scorer_cache_entries"], int)
+        assert checkpoint["scorer_cache_entries"] == 2
+        _assert_cache(runs_root / "scorer-cache.sqlite", EXPECTED_CANDIDATES)
+
+        resume_env = _base_env()
+        resume_env["BIOSMART_RUNS_ROOT"] = str(runs_root)
+        resume_env["BIOSMART_REGISTRY"] = str(registry)
+        resume_env["BIOSMART_WORKER"] = address
+        resume_env["BIOSMART_FAKE_SCORER_FAIL"] = "1"
+        resumed = subprocess.run(
+            [sys.executable, "-m", "biosmart", "run", "--resume", str(run_folder)],
+            cwd=REPO,
+            env=resume_env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert resumed.returncode == 0, resumed.stderr
+        assert resumed.stdout.strip() == str(run_folder)
+
+        events = _read_events(run_folder)
+        assert events[0]["run_id"] == run_id
+        assert events[-1]["type"] == "run.finished"
+        candidates = [event for event in events if event["type"] == "candidate"]
+        assert [event["canonical_smiles"] for event in candidates] == [
+            smiles for smiles, _reward in CONTINUED_CANDIDATES
+        ]
+        assert [event["reward"] for event in candidates] == pytest.approx(
+            [reward for _smiles, reward in CONTINUED_CANDIDATES]
+        )
+        assert [event["iteration"] for event in candidates] == [1, 1, 2, 2]
+        _assert_cache(runs_root / "scorer-cache.sqlite", CONTINUED_CANDIDATES)
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+            worker.wait(timeout=10)
+
+
+def _read_events(run_folder: Path) -> list[dict[str, object]]:
+    return [
+        json.loads(line)
+        for line in (run_folder / "events.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+
+
+def _wait_until_iteration_held(proc: subprocess.Popen[str], runs_root: Path, iteration: int) -> Path:
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            stderr = proc.stderr.read() if proc.stderr is not None else ""
+            raise AssertionError(f"Run exited {proc.returncode} before Stop; stderr={stderr}")
+        folders = [path for path in runs_root.iterdir() if path.is_dir()]
+        if len(folders) == 1:
+            events_path = folders[0] / "events.jsonl"
+            if events_path.is_file():
+                held = any(
+                    event.get("type") == "iteration" and event.get("iteration") == iteration
+                    for event in _read_events(folders[0])
+                )
+                if held:
+                    return folders[0]
+        time.sleep(0.05)
+    raise AssertionError("Run did not reach the held Iteration")
+
+
+def _assert_cache(path: Path, expected: tuple[tuple[str, float], ...]) -> None:
+    with sqlite3.connect(path) as database:
+        rows = database.execute(
+            """
+            SELECT canonical_smiles, reward
+            FROM scorer_cache
+            WHERE scorer = 'fake'
+              AND scorer_version = '0'
+              AND context_hash = ?
+            """,
+            (_CONTEXT_HASH,),
+        ).fetchall()
+    assert len(rows) == len(expected)
+    by_smiles = {smiles: reward for smiles, reward in rows}
+    assert set(by_smiles) == {smiles for smiles, _reward in expected}
+    for smiles, reward in expected:
+        assert by_smiles[smiles] == pytest.approx(reward)
 
 
 def _exchange(address: str, payload: dict[str, object]) -> dict[str, object]:

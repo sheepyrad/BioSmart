@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 from biosmart.scoring import Candidate, FakeScorer, ScoreResult, ScorerFailed
 from biosmart.spec import PocketSpec, TargetSpec
+from biosmart.storage import flush_scorer_cache
 
 _OPS = frozenset({"prepare", "score", "flush"})
 _TAILNET_V4 = ipaddress.ip_network("100.64.0.0/10")
@@ -106,13 +107,16 @@ class WorkerAcceptor:
         seed = payload.get("seed")
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise ValueError("seed must be an integer")
+        ordinal = payload.get("ordinal", 0)
+        if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
+            raise ValueError("ordinal must be an integer >= 0")
         try:
             target = TargetSpec.model_validate(payload["target"])
             pocket = PocketSpec.model_validate(payload["pocket"])
         except (KeyError, ValidationError) as exc:
             raise ValueError("prepare requires a Target and a Pocket") from exc
         with self._lock:
-            scorer = FakeScorer(seed)
+            scorer = FakeScorer(seed, ordinal=ordinal)
             context_hash = scorer.prepare(target, pocket)
             self._scorer = scorer
         return {"context_hash": context_hash, "scorer": scorer.name, "version": scorer.version}
@@ -137,22 +141,33 @@ class WorkerAcceptor:
             scorer = self._scorer
             if scorer is None:
                 raise ValueError("prepare before flush")
-            scorer.flush()
-        return {}
+            cache = [
+                {"canonical_smiles": smiles, "reward": reward}
+                for smiles, reward in scorer.staged_entries()
+            ]
+            written = scorer.flush()
+        return {"entries": written, "cache": cache}
 
 
 class WorkerScorer:
     """Host-side Scorer. Calls prepare, score, and flush on a worker. No token."""
 
-    def __init__(self, address: str, seed: int) -> None:
+    def __init__(self, address: str, seed: int, *, cache_path: Path, ordinal: int = 0) -> None:
         if not isinstance(address, str) or not address.strip():
             raise ValueError("worker address is required")
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise ValueError("seed must be an integer")
+        if not isinstance(cache_path, Path):
+            raise TypeError("cache_path must be a Path")
+        if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
+            raise ValueError("ordinal must be an integer >= 0")
         host, port = parse_listen(address.strip())
         self._host = host
         self._port = port
         self.seed = seed
+        self._cache_path = cache_path
+        self._ordinal = ordinal
+        self._context_hash: str | None = None
         self.name = "fake"
         self.version = "0"
         self._sock: socket.socket | None = None
@@ -167,6 +182,7 @@ class WorkerScorer:
             {
                 "op": "prepare",
                 "seed": self.seed,
+                "ordinal": self._ordinal,
                 "target": target.model_dump(),
                 "pocket": pocket.model_dump(),
             }
@@ -180,6 +196,7 @@ class WorkerScorer:
             raise ValueError("worker prepare did not return the Scorer")
         self.name = scorer_name
         self.version = version
+        self._context_hash = context_hash
         return context_hash
 
     def score(self, round_no: int, candidates: list[Candidate]) -> list[ScoreResult]:
@@ -199,8 +216,25 @@ class WorkerScorer:
             raise ValueError("worker score did not return results")
         return [_score_result(item) for item in raw_results]
 
-    def flush(self) -> None:
-        self._call({"op": "flush"})
+    def flush(self) -> int:
+        if self._context_hash is None:
+            raise ValueError("prepare before flush")
+        payload = self._call({"op": "flush"})
+        written = payload.get("entries")
+        raw_cache = payload.get("cache")
+        if isinstance(written, bool) or not isinstance(written, int) or written < 0:
+            raise ValueError("worker flush did not return an entry count")
+        if not isinstance(raw_cache, list) or len(raw_cache) != written:
+            raise ValueError("worker flush did not return the cache entries")
+        entries = [_cache_entry(item) for item in raw_cache]
+        recorded = flush_scorer_cache(
+            self._cache_path,
+            scorer=self.name,
+            scorer_version=self.version,
+            context_hash=self._context_hash,
+            entries=entries,
+        )
+        return recorded
 
     def _call(self, payload: dict[str, Any]) -> dict[str, Any]:
         op = payload.get("op")
@@ -387,6 +421,18 @@ def _score_payload(result: ScoreResult) -> dict[str, Any]:
         "reward": result.reward,
         "failure_reason": result.failure_reason,
     }
+
+
+def _cache_entry(item: Any) -> tuple[str, float]:
+    if not isinstance(item, dict):
+        raise ValueError("worker flush cache entry is invalid")
+    smiles = item.get("canonical_smiles")
+    reward = item.get("reward")
+    if not isinstance(smiles, str) or not smiles:
+        raise ValueError("worker flush cache entry is invalid")
+    if isinstance(reward, bool) or not isinstance(reward, (int, float)):
+        raise ValueError("worker flush cache entry is invalid")
+    return smiles, float(reward)
 
 
 def _score_result(item: Any) -> ScoreResult:
