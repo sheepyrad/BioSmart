@@ -7,18 +7,18 @@ date: 2026-09-25
 
 v1 stays ADR 0001: one GPU workstation, the UI bound to `127.0.0.1` only, one Run at a time. v2 adds a tailnet swarm without putting a UI on every machine.
 
-The same image (or the same `pixi.lock` on the host) is installed as one of two roles:
+Lab 3090s develop and validate with pixi. The container is the scientist install. The medium follows who is installing, and the machine is still one of two roles:
 
 - **Host.** Serves the UI, owns the Run, keeps the policy, and dispatches Scoring rounds. It may include itself in the scoring set. It listens on `127.0.0.1` and on its Tailscale address. It does not listen on the public LAN.
 - **Worker.** Runs BioSmart with the Scorer environments and the Doctor CLI. It does not install or serve the UI, and it does not run the policy. It accepts `prepare`, `score`, and `flush` from a host on the same tailnet.
 
 A scientist starts a Run from their own computer by opening the host's tailnet URL in a browser. That computer does not need BioSmart installed. The policy stays on the GPU host.
 
-The scientist chooses which discovered workers, and how many, score the Run. The host dispatches inside that set. The set is fixed at Start. A worker is offered when BioSmart is running there and the Doctor blocking checks pass. A worker already scoring stays visible and is not selectable. Tailnet membership is the trust boundary. There is no second token.
+The scientist chooses which discovered workers, and how many, score the Run. The host dispatches inside that set. The set is fixed at Start. A worker is offered when BioSmart is running there and the Doctor blocking checks pass. A busy worker stays visible and is not selectable until the Run releases it. Busy covers prepare, score, and flush. Tailnet membership is the trust boundary. There is no second token.
 
-One Run lives on the host. Workers return scores and Scorer working files into the host Run folder, then drop their scratch. If a worker dies mid-batch, the host retries that batch once on another selected worker, then marks those Candidates failed and continues the Run. Pause flushes workers back to the host and releases them. Resume prepares the same set.
+One Run lives on the host. Workers return scores and Scorer working files into the host Run folder, then drop their scratch. If a worker dies during a Scoring round, the host retries that Scoring round once on another selected worker, then marks those Candidates failed and continues the Run. Pause flushes workers back to the host and releases them. Resume prepares the same set.
 
-v1 does not grow discovery, a worker picker, or a tailnet client. The seam is the local `prepare` / `score` / `flush` interface from ADR 0005.
+v1 does not grow discovery, a worker picker, or a tailnet client. The seam is local `prepare`, `score`, and `flush`. ADR 0005 is the JSON-lines transport for a persistent Scorer worker.
 
 ## Considered options
 
@@ -31,7 +31,7 @@ v1 does not grow discovery, a worker picker, or a tailnet client. The seam is th
 ## Consequences
 
 - ADR 0001 still governs v1. Its "remote access is out of scope" line does not govern v2.
-- A worker install can omit the static UI. A host install serves it.
+- A worker install does not include the static UI. A host install serves it.
 - Joining the tailnet is what grants access to the UI and to dispatch. A machine that should not start Runs must stay off that tailnet.
 - The host Run folder remains the archive. Worker scratch is not a second copy of record.
 - Discovery transport is whatever can see a BioSmart worker on the tailnet. This ADR does not pick the wire format beyond the Scorer calls.
