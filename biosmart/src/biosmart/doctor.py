@@ -7,7 +7,7 @@ import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from biosmart.assets import Fetcher, missing_assets, sync_assets
+from biosmart.assets import Fetcher, missing_assets, sync_assets, weight_label
 
 VRAM_FLOOR_MIB = 24 * 1024
 ENV_PROBES = {
@@ -106,8 +106,7 @@ def discover() -> Workstation:
         os.environ.get("BIOSMART_LIBRARIES", Path.home() / "BioSmart" / "libraries")
     ).expanduser()
     boltz = Path(os.environ.get("BOLTZ_CACHE", Path.home() / ".boltz")).expanduser()
-    hf_value = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")
-    hf_cache = Path(hf_value).expanduser() if hf_value else Path.home() / ".cache" / "huggingface" / "hub"
+    hf_cache = _hf_cache()
     interpreters = {
         name: repo / ".pixi" / "envs" / name / "bin" / "python" for name in ENV_PROBES
     }
@@ -119,6 +118,17 @@ def discover() -> Workstation:
         interpreters=interpreters,
         gpu=None,
     )
+
+
+def _hf_cache() -> Path:
+    """HF_HUB_CACHE, then HUGGINGFACE_HUB_CACHE, then $HF_HOME/hub, then the default."""
+    hf_value = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")
+    if hf_value:
+        return Path(hf_value).expanduser()
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        return Path(hf_home).expanduser() / "hub"
+    return Path.home() / ".cache" / "huggingface" / "hub"
 
 
 def examine(workstation: Workstation | None = None) -> DoctorReport:
@@ -318,10 +328,10 @@ def _weights_check(workstation: Workstation) -> Check:
             summary="Weights are present",
             detail="Pose model, FABind+, FlashBind, Boltz-2, and ESM3 are on disk.",
         )
-    detail = "\n".join(f"{_weight_label(spec.id)}: {spec.dest}" for spec in missing)
+    detail = "\n".join(f"{weight_label(spec.id)}: {spec.dest}" for spec in missing)
     labels: list[str] = []
     for spec in missing:
-        label = _weight_label(spec.id)
+        label = weight_label(spec.id)
         if label not in labels:
             labels.append(label)
     return Check(
@@ -333,20 +343,6 @@ def _weights_check(workstation: Workstation) -> Check:
         detail=detail,
         fix="weights",
     )
-
-
-def _weight_label(asset_id: str) -> str:
-    if asset_id == "pose-model":
-        return "Pose model"
-    if asset_id.startswith("fabind"):
-        return "FABind+"
-    if asset_id.startswith("flashbind"):
-        return "FlashBind"
-    if asset_id.startswith("boltz2"):
-        return "Boltz-2"
-    if asset_id == "esm3":
-        return "ESM3"
-    return asset_id
 
 
 def _library_check(workstation: Workstation) -> Check:
