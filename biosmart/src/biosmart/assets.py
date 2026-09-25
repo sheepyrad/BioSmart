@@ -216,6 +216,23 @@ def missing_assets(workstation: WeightRoots) -> tuple[AssetSpec, ...]:
     return tuple(spec for spec in required_assets(workstation) if not asset_present(spec))
 
 
+def weight_label(asset_id: str) -> str:
+    """Glossary name for a weight. Asset ids stay internal."""
+    if not isinstance(asset_id, str) or not asset_id:
+        raise ValueError("asset_id must be a non-empty string")
+    if asset_id == "pose-model":
+        return "Pose model"
+    if asset_id.startswith("fabind"):
+        return "FABind+"
+    if asset_id.startswith("flashbind"):
+        return "FlashBind"
+    if asset_id.startswith("boltz2"):
+        return "Boltz-2"
+    if asset_id == "esm3":
+        return "ESM3"
+    return asset_id
+
+
 def sync_assets(workstation: WeightRoots, *, fetch: Fetcher | None = None) -> tuple[str, ...]:
     """Download weights that are not already on disk. Not called by a Run."""
     fetcher = fetch if fetch is not None else default_fetch
@@ -225,7 +242,9 @@ def sync_assets(workstation: WeightRoots, *, fetch: Fetcher | None = None) -> tu
     for spec in missing_assets(workstation):
         fetcher(spec)
         if not asset_present(spec):
-            raise RuntimeError(f"Asset sync did not produce {spec.id} at {spec.dest}")
+            raise RuntimeError(
+                f"Asset sync did not produce {weight_label(spec.id)} at {spec.dest}"
+            )
         synced.append(spec.id)
     return tuple(synced)
 
@@ -244,12 +263,12 @@ def default_fetch(spec: AssetSpec) -> None:
     elif spec.kind == "snapshot":
         _fetch_snapshot(spec)
     else:
-        raise ValueError(f"Unknown asset kind {spec.kind!r} for {spec.id}")
+        raise ValueError(f"Unknown asset kind {spec.kind!r} for {weight_label(spec.id)}")
 
 
 def _fetch_urls(spec: AssetSpec) -> None:
     if not spec.urls:
-        raise ValueError(f"{spec.id} has no download URL")
+        raise ValueError(f"{weight_label(spec.id)} has no download URL")
     spec.dest.parent.mkdir(parents=True, exist_ok=True)
     errors: list[str] = []
     for url in spec.urls:
@@ -260,19 +279,19 @@ def _fetch_urls(spec: AssetSpec) -> None:
             errors.append(f"{url}: {exc}")
             if spec.dest.exists():
                 spec.dest.unlink()
-    raise RuntimeError(f"Failed to download {spec.id}: {'; '.join(errors)}")
+    raise RuntimeError(f"Failed to download {weight_label(spec.id)}: {'; '.join(errors)}")
 
 
 def _fetch_hf(spec: AssetSpec) -> None:
     if not spec.repo_id or not spec.filename:
-        raise ValueError(f"{spec.id} is missing a Hugging Face repo or filename")
+        raise ValueError(f"{weight_label(spec.id)} is missing a Hugging Face repo or filename")
     url = f"https://huggingface.co/{spec.repo_id}/resolve/main/{spec.filename}"
     _fetch_urls(AssetSpec(id=spec.id, dest=spec.dest, min_bytes=spec.min_bytes, kind="url", urls=(url,)))
 
 
 def _fetch_gdown(spec: AssetSpec) -> None:
     if not spec.repo_id:
-        raise ValueError(f"{spec.id} is missing a Google Drive id")
+        raise ValueError(f"{weight_label(spec.id)} is missing a Google Drive id")
     gdown = shutil.which("gdown")
     if gdown is None:
         raise RuntimeError(
@@ -280,24 +299,57 @@ def _fetch_gdown(spec: AssetSpec) -> None:
             f"The Drive file id is {spec.repo_id}."
         )
     spec.dest.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run([gdown, "--id", spec.repo_id, "-O", str(spec.dest)], check=True)
+    try:
+        subprocess.run([gdown, "--id", spec.repo_id, "-O", str(spec.dest)], check=True)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"Failed to download {weight_label(spec.id)} at {spec.dest}"
+        ) from exc
 
 
 def _extract_ccd(spec: AssetSpec) -> None:
     archive = spec.dest.parent / "mols.tar"
+    label = weight_label(spec.id)
     if not archive.is_file():
-        raise RuntimeError(f"CCD archive is missing at {archive}")
-    spec.dest.parent.mkdir(parents=True, exist_ok=True)
+        raise RuntimeError(f"Failed to download {label}: CCD archive is missing at {archive}")
+    destination = spec.dest.parent
+    destination.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive) as handle:
-        try:
-            handle.extractall(spec.dest.parent, filter="data")
-        except TypeError:
-            handle.extractall(spec.dest.parent)
+        if hasattr(tarfile, "data_filter"):
+            try:
+                handle.extractall(destination, filter="data")
+            except (tarfile.TarError, OSError, ValueError) as exc:
+                raise RuntimeError(f"Failed to download {label} at {destination}") from exc
+            return
+        _extract_archive_checked(handle, destination, label)
+
+
+def _extract_archive_checked(handle: tarfile.TarFile, destination: Path, label: str) -> None:
+    """Extract when tarfile has no data filter. Refuse links and paths that leave destination."""
+    root = destination.resolve()
+    for member in handle.getmembers():
+        if member.issym() or member.islnk():
+            raise RuntimeError(f"Failed to download {label}: archive contains a link")
+        if not _member_inside(root, member.name):
+            raise RuntimeError(
+                f"Failed to download {label}: archive member leaves the destination"
+            )
+    handle.extractall(destination)
+
+
+def _member_inside(root: Path, name: str) -> bool:
+    if not name or Path(name).is_absolute():
+        return False
+    try:
+        (root / name).resolve().relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def _fetch_snapshot(spec: AssetSpec) -> None:
     if not spec.repo_id:
-        raise ValueError(f"{spec.id} is missing a Hugging Face repo")
+        raise ValueError(f"{weight_label(spec.id)} is missing a Hugging Face repo")
     try:
         from huggingface_hub import snapshot_download
     except ImportError as exc:
