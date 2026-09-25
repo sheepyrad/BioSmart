@@ -1,4 +1,4 @@
-"""``biosmart`` command line."""
+"""``biosmart run`` and ``biosmart doctor``."""
 
 from __future__ import annotations
 
@@ -10,7 +10,8 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from biosmart.engine import execute_run, resume_run
+from biosmart.doctor import apply_fix, examine, render, report_payload
+from biosmart.engine import resume_run
 from biosmart.libraries import (
     LibraryBuildError,
     build_stock_library,
@@ -19,6 +20,7 @@ from biosmart.libraries import (
     list_libraries,
 )
 from biosmart.scoring import ScorerFailed
+from biosmart.start import StartRefused, execute_guarded
 from biosmart.worker import serve
 
 
@@ -54,6 +56,10 @@ def main(argv: list[str] | None = None) -> int:
     listing = library_sub.add_parser("list", help="List libraries; the newest is the default")
     listing.add_argument("--libraries-root", type=Path, default=None)
 
+    doctor = subcommands.add_parser("doctor", help="Report whether this workstation can Start a Run")
+    doctor.add_argument("--json", action="store_true")
+    doctor.add_argument("rest", nargs="*")
+
     args = parser.parse_args(argv)
     try:
         if args.command == "run":
@@ -72,6 +78,8 @@ def main(argv: list[str] | None = None) -> int:
             return _build(args)
         if args.command == "library" and args.library_command == "list":
             return _list(args)
+        if args.command == "doctor":
+            return _doctor(json_output=args.json, rest=args.rest)
     except LibraryBuildError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -96,7 +104,11 @@ def _run(spec_path: Path) -> int:
         return 2
     runs_root, registry = workspace
     try:
-        folder = execute_run(spec_path, runs_root, registry)
+        folder = execute_guarded(spec_path, runs_root, registry)
+    except StartRefused as exc:
+        print(render(exc.report), file=sys.stderr)
+        print(str(exc), file=sys.stderr)
+        return 1
     except ValidationError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -174,3 +186,29 @@ def _list(args: argparse.Namespace) -> int:
         )
     )
     return 0
+
+
+def _doctor(*, json_output: bool, rest: list[str]) -> int:
+    if rest[:1] == ["fix"]:
+        if len(rest) != 2:
+            print("usage: biosmart doctor fix weights", file=sys.stderr)
+            return 2
+        try:
+            report = apply_fix(rest[1])
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    elif rest:
+        print(f"unknown doctor command: {' '.join(rest)}", file=sys.stderr)
+        return 2
+    else:
+        report = examine()
+    if json_output:
+        print(json.dumps(report_payload(report)))
+    else:
+        print(render(report))
+    return 0 if report.ready else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
