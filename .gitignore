@@ -1,3 +1,6 @@
 .env
 .cursor/
 .cursor/
+.pixi/
+__pycache__/
+*.pyc
