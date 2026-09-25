@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "biosmart"
+version = "0.1.0"
+description = "BioSmart engine: one Run, its event stream, and its Run folder"
+requires-python = ">=3.11"
+dependencies = ["pydantic>=2"]
+
+[project.scripts]
+biosmart = "biosmart.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
