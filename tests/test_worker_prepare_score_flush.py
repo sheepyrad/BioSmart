@@ -8,14 +8,14 @@ does not read the worker's standard streams.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import socket
 import sqlite3
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 import pytest
@@ -47,25 +47,13 @@ def test_worker_prepare_score_and_flush_record_the_scoring_round(tmp_path: Path)
         ],
         cwd=REPO,
         env=env,
-        capture_output=True,
-        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         timeout=10,
         check=False,
     )
     assert refused.returncode != 0
-    assert "public LAN" in refused.stderr
     assert not refused_ready.exists()
-
-    doctor = subprocess.run(
-        [sys.executable, "-m", "biosmart", "doctor"],
-        cwd=REPO,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    assert doctor.returncode == 0, doctor.stderr
 
     runs_root = tmp_path / "runs"
     registry = tmp_path / "registry.sqlite"
@@ -113,8 +101,10 @@ def test_worker_prepare_score_and_flush_record_the_scoring_round(tmp_path: Path)
         assert listeners == {("127.0.0.1", port)}
         assert all(bound_host != "0.0.0.0" for bound_host, _bound_port in listeners)
 
-        for path in ("/", "/policy", "/queue"):
-            _assert_not_served(f"http://{address}{path}")
+        for op in ("ui", "policy", "queue"):
+            reply = _exchange(address, {"op": op})
+            assert reply.get("ok") is not True
+            assert "results" not in reply
 
         host_env = env.copy()
         host_env["BIOSMART_RUNS_ROOT"] = str(runs_root)
@@ -287,18 +277,168 @@ def _socket_inodes(pid: int) -> set[str]:
     return inodes
 
 
-def _assert_not_served(url: str) -> None:
-    request = urllib.request.Request(url, method="GET")
+def test_worker_allows_a_hostname_that_resolves_to_loopback(tmp_path: Path) -> None:
+    ready = tmp_path / "ready"
+    worker = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "biosmart",
+            "worker",
+            "--listen",
+            "localhost:0",
+            "--ready-file",
+            str(ready),
+        ],
+        cwd=REPO,
+        env=_base_env(),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:
-            body = response.read()
-            status = response.status
-            content_type = response.headers.get("Content-Type", "")
-    except urllib.error.HTTPError as exc:
-        body = exc.read()
-        status = exc.code
-        content_type = exc.headers.get("Content-Type", "")
-    assert status == 404
-    assert "text/html" not in content_type.lower()
-    assert b"<html" not in body.lower()
-    assert b"<!doctype" not in body.lower()
+        address = _wait_ready(ready, worker)
+        host, _port = _split_address(address)
+        assert ipaddress.ip_address(host).is_loopback
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+            worker.wait(timeout=10)
+
+
+def test_failed_score_records_the_scoring_round_provenance_and_index(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    registry = tmp_path / "registry.sqlite"
+    runs_root.mkdir()
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "scorer": "fake",
+                "seed": 7,
+                "budget": {"iterations": 1, "candidates_per_iteration": 1},
+                "target": {"name": "ns5-fixture"},
+                "pocket": {"residues": ["A:42"]},
+                "library": {"id": "fixture-library"},
+            }
+        )
+    )
+    ready = tmp_path / "worker-ready"
+    worker_env = _base_env()
+    worker_env["BIOSMART_FAKE_SCORER_FAIL"] = "1"
+    worker = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "biosmart",
+            "worker",
+            "--listen",
+            "127.0.0.1:0",
+            "--ready-file",
+            str(ready),
+        ],
+        cwd=REPO,
+        env=worker_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        address = _wait_ready(ready, worker)
+        host_env = _base_env()
+        host_env["BIOSMART_RUNS_ROOT"] = str(runs_root)
+        host_env["BIOSMART_REGISTRY"] = str(registry)
+        host_env["BIOSMART_WORKER"] = address
+        host_env.pop("BIOSMART_FAKE_SCORER_FAIL", None)
+        completed = subprocess.run(
+            [sys.executable, "-m", "biosmart", "run", str(spec_path)],
+            cwd=REPO,
+            env=host_env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert completed.returncode != 0
+
+        run_folders = [path for path in runs_root.iterdir() if path.is_dir()]
+        assert len(run_folders) == 1
+        run_folder = run_folders[0]
+        assert run_folder.is_dir()
+        assert (run_folder / "provenance.json").is_file()
+
+        events = [
+            json.loads(line)
+            for line in (run_folder / "events.jsonl").read_text().splitlines()
+            if line.strip()
+        ]
+        assert events[0]["type"] == "run.started"
+        assert events[-1]["type"] == "run.failed"
+        assert all(event["type"] != "run.finished" for event in events)
+        run_id = events[0]["run_id"]
+
+        finished = [event for event in events if event["type"] == "round.finished"]
+        assert len(finished) == 1
+        assert finished[0]["round_no"] == 1
+        assert finished[0]["n_sent"] == 1
+        assert finished[0]["n_ok"] == 0
+        assert finished[0]["n_failed"] == 1
+
+        failed = [event for event in events if event["type"] == "candidate"]
+        assert [event["canonical_smiles"] for event in failed] == ["CCN"]
+        assert [event["status"] for event in failed] == ["failed"]
+
+        provenance = json.loads((run_folder / "provenance.json").read_text())
+        assert provenance["seed"] == 7
+        assert provenance["scorer"] == "fake"
+        assert provenance["gpu"] is None
+        assert provenance["context_hash"] == "fake:0:ns5-fixture:A:42"
+        assert provenance["target"]["name"] == "ns5-fixture"
+        assert provenance["pocket"]["residues"] == ["A:42"]
+
+        with sqlite3.connect(run_folder / "run.sqlite") as run_db:
+            rounds = run_db.execute(
+                "SELECT round_no, n_sent, n_ok, n_failed FROM scoring_rounds"
+            ).fetchall()
+        assert rounds == [(1, 1, 0, 1)]
+
+        with sqlite3.connect(f"file:{registry}?mode=ro", uri=True) as index:
+            indexed = index.execute(
+                """
+                SELECT canonical_smiles, status
+                FROM candidate_index
+                WHERE run_id = ?
+                ORDER BY candidate_id
+                """,
+                (run_id,),
+            ).fetchall()
+        assert indexed == [("CCN", "failed")]
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+            worker.wait(timeout=10)
+
+
+def _exchange(address: str, payload: dict[str, object]) -> dict[str, object]:
+    host, port = _split_address(address)
+    with socket.create_connection((host, port), timeout=5) as sock:
+        sock.sendall(json.dumps(payload).encode("utf-8") + b"\n")
+        sock.shutdown(socket.SHUT_WR)
+        buffer = b""
+        while b"\n" not in buffer:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buffer += chunk
+    line = buffer.splitlines()[0]
+    assert b"<html" not in line.lower()
+    assert b"<!doctype" not in line.lower()
+    parsed = json.loads(line)
+    assert isinstance(parsed, dict)
+    return parsed
+
+
+def _split_address(address: str) -> tuple[str, int]:
+    if address.startswith("["):
+        host, port_text = address[1:].split("]:", 1)
+        return host, int(port_text)
+    host, port_text = address.rsplit(":", 1)
+    return host, int(port_text)

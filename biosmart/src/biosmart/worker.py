@@ -1,9 +1,12 @@
 """Worker acceptor.
 
 A worker accepts prepare, score, and flush from a host on its tailnet
-address and calls the Scorer seam. It serves no UI, runs no policy, and
-has no queue. Loopback is the CI stand-in for that tailnet address. It
+address and calls the Scorer seam. Each call is one JSON object per line
+on a TCP socket. It serves no UI, runs no policy, and has no queue. It
 does not listen on a public LAN address and it asks for no token.
+
+Loopback is the CI stand-in for that tailnet address. A hostname is
+allowed when it resolves into loopback, Tailscale IPv4, or Tailscale IPv6.
 """
 
 from __future__ import annotations
@@ -11,48 +14,85 @@ from __future__ import annotations
 import ipaddress
 import json
 import signal
+import socket
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 from pydantic import ValidationError
 
 from biosmart.scoring import Candidate, FakeScorer, ScoreResult, ScorerFailed
 from biosmart.spec import PocketSpec, TargetSpec
 
-_SCORER_PATHS = frozenset({"/prepare", "/score", "/flush"})
-_TAILNET = ipaddress.ip_network("100.64.0.0/10")
+_OPS = frozenset({"prepare", "score", "flush"})
+_TAILNET_V4 = ipaddress.ip_network("100.64.0.0/10")
+_TAILNET_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 
 
 def parse_listen(listen: str) -> tuple[str, int]:
-    if not isinstance(listen, str) or listen.count(":") != 1:
-        raise ValueError("listen address must be host:port")
-    host, port_text = listen.split(":", 1)
-    if not host or not port_text:
-        raise ValueError("listen address must be host:port")
+    host, port_text = _split_host_port(listen)
     try:
         port = int(port_text)
     except ValueError as exc:
         raise ValueError("listen port must be an integer") from exc
     if port < 0 or port > 65535:
         raise ValueError("listen port must be between 0 and 65535")
-    _require_tailnet_host(host)
-    return host, port
+    return _bindable_host(host), port
 
 
-def _require_tailnet_host(host: str) -> None:
+def _split_host_port(listen: str) -> tuple[str, str]:
+    if not isinstance(listen, str) or not listen:
+        raise ValueError("listen address must be host:port")
+    if listen.startswith("["):
+        end = listen.find("]")
+        if end < 0 or not listen[end:].startswith("]:"):
+            raise ValueError("listen address must be host:port")
+        host = listen[1:end]
+        port_text = listen[end + 2 :]
+    else:
+        if listen.count(":") != 1:
+            raise ValueError("listen address must be host:port")
+        host, port_text = listen.rsplit(":", 1)
+    if not host or not port_text:
+        raise ValueError("listen address must be host:port")
+    return host, port_text
+
+
+def _bindable_host(host: str) -> str:
+    literal = _literal_ip(host)
+    if literal is not None:
+        if not _allowed(literal):
+            raise ValueError("worker does not listen on a public LAN address")
+        return str(literal)
     try:
-        address = ipaddress.ip_address(host)
-    except ValueError as exc:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
         raise ValueError("worker does not listen on a public LAN address") from exc
-    if address.is_loopback:
-        return
-    if isinstance(address, ipaddress.IPv4Address) and address in _TAILNET:
-        return
+    for info in infos:
+        resolved = _literal_ip(str(info[4][0]))
+        if resolved is not None and _allowed(resolved):
+            return str(resolved)
     raise ValueError("worker does not listen on a public LAN address")
+
+
+def _literal_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        return None
+
+
+def _allowed(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    mapped = address.ipv4_mapped if isinstance(address, ipaddress.IPv6Address) else None
+    if mapped is not None:
+        return _allowed(mapped)
+    if address.is_loopback:
+        return True
+    if isinstance(address, ipaddress.IPv4Address) and address in _TAILNET_V4:
+        return True
+    if isinstance(address, ipaddress.IPv6Address) and address in _TAILNET_V6:
+        return True
+    return False
 
 
 class WorkerAcceptor:
@@ -110,17 +150,26 @@ class WorkerScorer:
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise ValueError("seed must be an integer")
         host, port = parse_listen(address.strip())
-        self.address = f"{host}:{port}"
+        self._host = host
+        self._port = port
         self.seed = seed
         self.name = "fake"
         self.version = "0"
+        self._sock: socket.socket | None = None
+        self._reader: Any = None
+        self._writer: Any = None
+        self._lock = threading.Lock()
 
     def prepare(self, target: TargetSpec, pocket: PocketSpec) -> str:
         if not isinstance(target, TargetSpec) or not isinstance(pocket, PocketSpec):
             raise TypeError("prepare requires a Target and a Pocket")
-        payload = self._post(
-            "/prepare",
-            {"seed": self.seed, "target": target.model_dump(), "pocket": pocket.model_dump()},
+        payload = self._call(
+            {
+                "op": "prepare",
+                "seed": self.seed,
+                "target": target.model_dump(),
+                "pocket": pocket.model_dump(),
+            }
         )
         context_hash = payload.get("context_hash")
         scorer_name = payload.get("scorer")
@@ -138,12 +187,12 @@ class WorkerScorer:
             raise ValueError("round_no must be an integer")
         if not isinstance(candidates, list):
             raise TypeError("candidates must be a list")
-        payload = self._post(
-            "/score",
+        payload = self._call(
             {
+                "op": "score",
                 "round_no": round_no,
                 "candidates": [_candidate_payload(candidate) for candidate in candidates],
-            },
+            }
         )
         raw_results = payload.get("results")
         if not isinstance(raw_results, list):
@@ -151,32 +200,46 @@ class WorkerScorer:
         return [_score_result(item) for item in raw_results]
 
     def flush(self) -> None:
-        self._post("/flush", {})
+        self._call({"op": "flush"})
 
-    def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        if path not in _SCORER_PATHS:
+    def _call(self, payload: dict[str, Any]) -> dict[str, Any]:
+        op = payload.get("op")
+        if op not in _OPS:
             raise ValueError("worker accepts only prepare, score, and flush")
-        body = json.dumps(payload, allow_nan=False).encode("utf-8")
-        request = Request(
-            url=f"http://{self.address}{path}",
-            data=body,
-            method="POST",
-            headers={"Content-Type": "application/json"},
-        )
+        line = json.dumps(payload, allow_nan=False).encode("utf-8") + b"\n"
+        with self._lock:
+            self._ensure()
+            assert self._writer is not None and self._reader is not None
+            self._writer.write(line)
+            self._writer.flush()
+            raw = self._reader.readline()
+        if not raw:
+            raise ValueError(f"worker is not reachable at {self._host}:{self._port}")
         try:
-            with urlopen(request, timeout=60) as response:
-                raw = response.read()
-        except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            if exc.code >= 500:
-                raise ScorerFailed(detail or "worker failed") from exc
-            raise ValueError(detail or f"worker rejected {path}") from exc
-        except URLError as exc:
-            raise ValueError(f"worker is not reachable at {self.address}") from exc
-        parsed = json.loads(raw) if raw else {}
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("worker response is not a JSON line") from exc
         if not isinstance(parsed, dict):
             raise ValueError("worker response must be an object")
+        if parsed.get("scorer_failed") is True:
+            message = parsed.get("error")
+            raise ScorerFailed(message if isinstance(message, str) and message else "FakeScorer failed")
+        if parsed.get("ok") is False:
+            message = parsed.get("error")
+            raise ValueError(message if isinstance(message, str) and message else "worker rejected the call")
         return parsed
+
+    def _ensure(self) -> None:
+        if self._sock is not None:
+            return
+        try:
+            sock = socket.create_connection((self._host, self._port), timeout=60)
+        except OSError as exc:
+            raise ValueError(f"worker is not reachable at {self._host}:{self._port}") from exc
+        sock.settimeout(60)
+        self._sock = sock
+        self._reader = sock.makefile("rb")
+        self._writer = sock.makefile("wb")
 
 
 def serve(listen: str, ready_file: Path | None = None) -> None:
@@ -184,87 +247,101 @@ def serve(listen: str, ready_file: Path | None = None) -> None:
     if ready_file is not None and not isinstance(ready_file, Path):
         raise TypeError("ready_file must be a Path")
     acceptor = WorkerAcceptor()
-    server = ThreadingHTTPServer((host, port), _handler(acceptor))
-    bound_host, bound_port = server.server_address[:2]
+    server = _bind_socket(host, port)
+    bound = server.getsockname()
     if ready_file is not None:
         ready_file.parent.mkdir(parents=True, exist_ok=True)
-        ready_file.write_text(f"{bound_host}:{bound_port}\n", encoding="utf-8")
+        ready_file.write_text(_format_address(str(bound[0]), int(bound[1])) + "\n", encoding="utf-8")
+
+    stop = threading.Event()
 
     def _shutdown(_signum: int, _frame: object) -> None:
-        threading.Thread(target=server.shutdown, daemon=True).start()
+        stop.set()
+        server.close()
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
+    server.settimeout(0.2)
     try:
-        server.serve_forever(poll_interval=0.1)
+        while not stop.is_set():
+            try:
+                connection, _peer = server.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+            threading.Thread(
+                target=_serve_connection,
+                args=(connection, acceptor),
+                daemon=True,
+            ).start()
     finally:
-        server.server_close()
+        server.close()
 
 
-def _handler(acceptor: WorkerAcceptor) -> type[BaseHTTPRequestHandler]:
-    class Handler(BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.1"
+def _bind_socket(host: str, port: int) -> socket.socket:
+    address = ipaddress.ip_address(host)
+    family = socket.AF_INET6 if isinstance(address, ipaddress.IPv6Address) else socket.AF_INET
+    server = socket.socket(family, socket.SOCK_STREAM)
+    if family == socket.AF_INET6:
+        server.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((host, port))
+    server.listen(16)
+    return server
 
-        def do_GET(self) -> None:  # noqa: N802
-            self._send(404, {"error": "not found"})
 
-        def do_POST(self) -> None:  # noqa: N802
-            if self.path not in _SCORER_PATHS:
-                self._send(404, {"error": "not found"})
-                return
-            payload = self._read_json()
-            if payload is None:
-                return
-            try:
-                if self.path == "/prepare":
-                    result = acceptor.prepare(payload)
-                elif self.path == "/score":
-                    result = acceptor.score(payload)
-                else:
-                    result = acceptor.flush()
-            except ScorerFailed as exc:
-                self._send(500, {"error": str(exc)})
-                return
-            except (TypeError, ValueError) as exc:
-                self._send(400, {"error": str(exc)})
-                return
-            self._send(200, result)
+def _format_address(host: str, port: int) -> str:
+    if ":" in host:
+        return f"[{host}]:{port}"
+    return f"{host}:{port}"
 
-        def log_message(self, format: str, *args: Any) -> None:
-            return
 
-        def _read_json(self) -> dict[str, Any] | None:
-            length_text = self.headers.get("Content-Length", "0")
-            try:
-                length = int(length_text)
-            except ValueError:
-                self._send(400, {"error": "invalid content length"})
-                return None
-            if length < 0:
-                self._send(400, {"error": "invalid content length"})
-                return None
-            raw = self.rfile.read(length) if length else b""
-            if not raw:
-                return {}
+def _serve_connection(connection: socket.socket, acceptor: WorkerAcceptor) -> None:
+    connection.settimeout(60)
+    reader = connection.makefile("rb")
+    writer = connection.makefile("wb")
+    try:
+        for raw in reader:
+            if not raw.strip():
+                continue
             try:
                 payload = json.loads(raw)
             except json.JSONDecodeError:
-                self._send(400, {"error": "invalid json"})
-                return None
+                _write_line(writer, {"ok": False, "error": "invalid json"})
+                continue
             if not isinstance(payload, dict):
-                self._send(400, {"error": "payload must be an object"})
-                return None
-            return payload
+                _write_line(writer, {"ok": False, "error": "payload must be an object"})
+                continue
+            op = payload.get("op")
+            try:
+                if op == "prepare":
+                    result = acceptor.prepare(payload)
+                elif op == "score":
+                    result = acceptor.score(payload)
+                elif op == "flush":
+                    result = acceptor.flush()
+                else:
+                    _write_line(writer, {"ok": False, "error": "not found"})
+                    continue
+            except ScorerFailed as exc:
+                # The line is the score failure. Re-raising here would close
+                # the socket before the host records the Scoring round.
+                _write_line(writer, {"ok": False, "scorer_failed": True, "error": str(exc)})
+                continue
+            except (TypeError, ValueError) as exc:
+                _write_line(writer, {"ok": False, "error": str(exc)})
+                continue
+            _write_line(writer, {"ok": True, **result})
+    finally:
+        reader.close()
+        writer.close()
+        connection.close()
 
-        def _send(self, status: int, payload: dict[str, Any]) -> None:
-            body = json.dumps(payload, allow_nan=False).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
 
-    return Handler
+def _write_line(writer: Any, payload: dict[str, Any]) -> None:
+    writer.write(json.dumps(payload, allow_nan=False).encode("utf-8") + b"\n")
+    writer.flush()
 
 
 def _candidate(item: Any) -> Candidate:
