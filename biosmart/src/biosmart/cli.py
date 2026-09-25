@@ -20,7 +20,7 @@ from biosmart.libraries import (
     list_libraries,
 )
 from biosmart.scoring import ScorerFailed
-from biosmart.start import StartRefused, execute_guarded
+from biosmart.start import StartRefused, execute_guarded, prepare_run_process
 from biosmart.worker import serve
 
 
@@ -127,6 +127,7 @@ def _resume(folder: Path) -> int:
     if workspace is None:
         return 2
     runs_root, registry = workspace
+    prepare_run_process()
     try:
         resumed = resume_run(folder, runs_root, registry)
     except ValidationError as exc:
@@ -198,6 +199,9 @@ def _doctor(*, json_output: bool, rest: list[str]) -> int:
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 2
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
     elif rest:
         print(f"unknown doctor command: {' '.join(rest)}", file=sys.stderr)
         return 2

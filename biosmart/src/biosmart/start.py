@@ -61,6 +61,12 @@ def open_run(workstation: Workstation | None = None) -> RunContext:
     )
 
 
+def prepare_run_process(workstation: Workstation | None = None) -> None:
+    """Mark this process offline. Does not fetch weights and does not gate Start."""
+    _validate_workstation(workstation)
+    _set_offline(discover() if workstation is None else workstation)
+
+
 def execute_guarded(
     spec_path: Path,
     runs_root: Path,
