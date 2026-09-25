@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from biosmart.spec import PocketSpec, TargetSpec
+from biosmart.storage import flush_scorer_cache
 
 CATALOG: tuple[str, ...] = ("CCO", "CCN", "CC(=O)O", "c1ccccc1", "CCC", "CO")
 
@@ -57,8 +59,8 @@ class Scorer(Protocol):
     def score(self, round_no: int, candidates: list[Candidate]) -> list[ScoreResult]:
         """Score one Scoring round. Results stay in candidate order."""
 
-    def flush(self) -> None:
-        """Flush any Scorer cache. FakeScorer keeps none."""
+    def flush(self) -> int:
+        """Flush the Scorer cache. Returns how many entries were written."""
 
 
 class ScorerFailed(Exception):
@@ -69,15 +71,21 @@ class FakeScorer:
     name = "fake"
     version = "0"
 
-    def __init__(self, seed: int) -> None:
+    def __init__(self, seed: int, *, cache_path: Path | None = None, ordinal: int = 0) -> None:
+        if ordinal < 0:
+            raise ValueError("ordinal must be >= 0")
         self.seed = seed
-        self._ordinal = 0
+        self._cache_path = cache_path
+        self._ordinal = ordinal
+        self._context_hash: str | None = None
+        self._pending: list[tuple[str, float]] = []
 
     def prepare(self, target: TargetSpec, pocket: PocketSpec) -> str:
         if not target.name:
             raise ValueError("Target name is required")
         residues = ",".join(pocket.residues)
-        return f"fake:{self.version}:{target.name}:{residues}"
+        self._context_hash = f"fake:{self.version}:{target.name}:{residues}"
+        return self._context_hash
 
     def score(self, round_no: int, candidates: list[Candidate]) -> list[ScoreResult]:
         if round_no < 1:
@@ -88,6 +96,7 @@ class FakeScorer:
         for candidate in candidates:
             reward = fake_reward(self.seed, self._ordinal)
             self._ordinal += 1
+            self._pending.append((candidate.canonical_smiles, reward))
             results.append(
                 ScoreResult(
                     candidate_id=candidate.candidate_id,
@@ -98,5 +107,17 @@ class FakeScorer:
             )
         return results
 
-    def flush(self) -> None:
-        return None
+    def flush(self) -> int:
+        if self._cache_path is None or self._context_hash is None:
+            written = len(self._pending)
+            self._pending.clear()
+            return written
+        written = flush_scorer_cache(
+            self._cache_path,
+            scorer=self.name,
+            scorer_version=self.version,
+            context_hash=self._context_hash,
+            entries=self._pending,
+        )
+        self._pending.clear()
+        return written
