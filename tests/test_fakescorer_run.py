@@ -55,6 +55,7 @@ def test_fakescorer_run_writes_events_run_folder_and_index(tmp_path: Path) -> No
     env["PYTHONPATH"] = str(BIOSMART_SRC)
     env["BIOSMART_RUNS_ROOT"] = str(runs_root)
     env["BIOSMART_REGISTRY"] = str(registry)
+    env["BIOSMART_SKIP_DOCTOR"] = "1"
     env["CUDA_VISIBLE_DEVICES"] = ""
 
     completed = subprocess.run(
@@ -174,6 +175,7 @@ def test_fakescorer_failure_records_provenance_and_failed_index(tmp_path: Path) 
     env["BIOSMART_RUNS_ROOT"] = str(runs_root)
     env["BIOSMART_REGISTRY"] = str(registry)
     env["BIOSMART_FAKE_SCORER_FAIL"] = "1"
+    env["BIOSMART_SKIP_DOCTOR"] = "1"
     env["CUDA_VISIBLE_DEVICES"] = ""
 
     completed = subprocess.run(
@@ -281,6 +283,7 @@ def test_stop_pauses_fakescorer_run_and_resume_continues(tmp_path: Path) -> None
     env["BIOSMART_RUNS_ROOT"] = str(runs_root)
     env["BIOSMART_REGISTRY"] = str(registry)
     env["BIOSMART_FAKE_SCORER_BLOCK_ROUND"] = "2"
+    env["BIOSMART_SKIP_DOCTOR"] = "1"
     env["CUDA_VISIBLE_DEVICES"] = ""
 
     proc = subprocess.Popen(
@@ -381,6 +384,7 @@ def test_stop_pauses_fakescorer_run_and_resume_continues(tmp_path: Path) -> None
     resume_env["PYTHONPATH"] = str(BIOSMART_SRC)
     resume_env["BIOSMART_RUNS_ROOT"] = str(runs_root)
     resume_env["BIOSMART_REGISTRY"] = str(registry)
+    resume_env["BIOSMART_SKIP_DOCTOR"] = "1"
     resume_env["CUDA_VISIBLE_DEVICES"] = ""
     resumed = subprocess.run(
         [sys.executable, "-m", "biosmart", "run", "--resume", str(run_folder)],
