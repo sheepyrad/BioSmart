@@ -183,6 +183,51 @@ def insert_iteration(
         )
 
 
+def flush_scorer_cache(
+    path: Path,
+    *,
+    scorer: str,
+    scorer_version: str,
+    context_hash: str,
+    entries: list[tuple[str, float]],
+) -> int:
+    """Write staged Scorer cache entries and checkpoint the database."""
+    if not isinstance(path, Path):
+        raise TypeError("path must be a Path")
+    if not scorer or not scorer_version or not context_hash:
+        raise ValueError("Scorer cache key is incomplete")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with connect(path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scorer_cache (
+                scorer TEXT NOT NULL,
+                scorer_version TEXT NOT NULL,
+                context_hash TEXT NOT NULL,
+                canonical_smiles TEXT NOT NULL,
+                reward REAL NOT NULL,
+                PRIMARY KEY (scorer, scorer_version, context_hash, canonical_smiles)
+            )
+            """
+        )
+        connection.executemany(
+            """
+            INSERT INTO scorer_cache (
+                scorer, scorer_version, context_hash, canonical_smiles, reward
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (scorer, scorer_version, context_hash, canonical_smiles)
+            DO UPDATE SET reward = excluded.reward
+            """,
+            [
+                (scorer, scorer_version, context_hash, smiles, reward)
+                for smiles, reward in entries
+            ],
+        )
+    with connect(path) as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    return len(entries)
+
+
 def ingest_index(registry: Path, events_path: Path) -> None:
     """Project Candidate events into the Index. Re-running replaces the same rows."""
     registry.parent.mkdir(parents=True, exist_ok=True)
