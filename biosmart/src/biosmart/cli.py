@@ -10,6 +10,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from biosmart.engine import execute_run
+from biosmart.scoring import ScorerFailed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -36,6 +37,9 @@ def _run(spec_path: Path) -> int:
     except ValidationError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    except ScorerFailed as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     except (OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

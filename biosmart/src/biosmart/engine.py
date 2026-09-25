@@ -7,7 +7,7 @@ import time
 import uuid
 from pathlib import Path
 
-from biosmart.scoring import Candidate, FakeScorer, sample_smiles
+from biosmart.scoring import Candidate, FakeScorer, ScorerFailed, candidate_smiles
 from biosmart.spec import RunSpec
 from biosmart.storage import (
     append_event,
@@ -62,12 +62,12 @@ def execute_run(spec_path: Path, runs_root: Path, registry: Path) -> Path:
             },
         )
         total = spec.budget.iterations * spec.budget.candidates_per_iteration
-        smiles = sample_smiles(spec.seed, total)
+        smiles = candidate_smiles(spec.seed, total)
         cursor = 0
         for iteration in range(1, spec.budget.iterations + 1):
             round_no = iteration
             count = spec.budget.candidates_per_iteration
-            batch = smiles[cursor : cursor + count]
+            round_smiles = smiles[cursor : cursor + count]
             candidates = [
                 Candidate(
                     candidate_id=f"{cursor + offset + 1:06d}",
@@ -75,7 +75,7 @@ def execute_run(spec_path: Path, runs_root: Path, registry: Path) -> Path:
                     round_no=round_no,
                     canonical_smiles=canonical_smiles,
                 )
-                for offset, canonical_smiles in enumerate(batch)
+                for offset, canonical_smiles in enumerate(round_smiles)
             ]
             append_event(
                 events_path,
@@ -88,7 +88,32 @@ def execute_run(spec_path: Path, runs_root: Path, registry: Path) -> Path:
                 },
             )
             started = time.perf_counter()
-            results = scorer.score(round_no, candidates)
+            try:
+                results = scorer.score(round_no, candidates)
+            except ScorerFailed as exc:
+                elapsed = time.perf_counter() - started
+                _record_failed_scoring_round(
+                    events_path,
+                    database_path,
+                    run_id=run_id,
+                    iteration=iteration,
+                    round_no=round_no,
+                    candidates=candidates,
+                    scorer_name=scorer.name,
+                    reason=str(exc),
+                    secs=elapsed,
+                )
+                _finish_failed(
+                    folder,
+                    events_path,
+                    registry,
+                    run_id=run_id,
+                    spec=spec,
+                    scorer_name=scorer.name,
+                    scorer_version=scorer.version,
+                    context_hash=context_hash,
+                )
+                raise
             elapsed = time.perf_counter() - started
             for result in results:
                 append_event(
@@ -162,29 +187,138 @@ def execute_run(spec_path: Path, runs_root: Path, registry: Path) -> Path:
             )
             cursor += count
         scorer.flush()
-        write_json(
-            folder / "provenance.json",
-            {
-                "run_id": run_id,
-                "seed": spec.seed,
-                "scorer": scorer.name,
-                "scorer_version": scorer.version,
-                "gpu": None,
-                "context_hash": context_hash,
-                "target": {"name": spec.target.name},
-                "pocket": {"residues": list(spec.pocket.residues)},
-                "library": {"id": spec.library.id},
-                "spec_sha256": spec_sha256(folder / "spec.json"),
-            },
+        _write_provenance(
+            folder,
+            run_id=run_id,
+            spec=spec,
+            scorer_name=scorer.name,
+            scorer_version=scorer.version,
+            context_hash=context_hash,
         )
         ingest_index(registry, events_path)
         _write_manifest(folder, run_id=run_id, status="finished", scorer=spec.scorer, seed=spec.seed)
         append_event(events_path, {"type": "run.finished", "run_id": run_id})
+    except ScorerFailed:
+        raise
     except Exception:
         append_event(events_path, {"type": "run.failed", "run_id": run_id})
         _write_manifest(folder, run_id=run_id, status="failed", scorer=spec.scorer, seed=spec.seed)
         raise
     return folder
+
+
+def _record_failed_scoring_round(
+    events_path: Path,
+    database_path: Path,
+    *,
+    run_id: str,
+    iteration: int,
+    round_no: int,
+    candidates: list[Candidate],
+    scorer_name: str,
+    reason: str,
+    secs: float,
+) -> None:
+    for candidate in candidates:
+        append_event(
+            events_path,
+            {
+                "type": "candidate",
+                "run_id": run_id,
+                "candidate_id": candidate.candidate_id,
+                "iteration": iteration,
+                "round_no": round_no,
+                "canonical_smiles": candidate.canonical_smiles,
+                "status": "failed",
+                "reward": None,
+                "failure_reason": reason,
+            },
+        )
+        insert_candidate(
+            database_path,
+            candidate_id=candidate.candidate_id,
+            iteration=iteration,
+            round_no=round_no,
+            canonical_smiles=candidate.canonical_smiles,
+            status="failed",
+            reward=None,
+            failure_reason=reason,
+            scorer=scorer_name,
+        )
+    n_failed = len(candidates)
+    append_event(
+        events_path,
+        {
+            "type": "round.finished",
+            "run_id": run_id,
+            "round_no": round_no,
+            "iteration": iteration,
+            "scorer": scorer_name,
+            "n_sent": n_failed,
+            "n_ok": 0,
+            "n_failed": n_failed,
+            "secs": secs,
+        },
+    )
+    insert_scoring_round(
+        database_path,
+        round_no=round_no,
+        scorer=scorer_name,
+        n_sent=n_failed,
+        n_ok=0,
+        n_failed=n_failed,
+        secs=secs,
+    )
+
+
+def _finish_failed(
+    folder: Path,
+    events_path: Path,
+    registry: Path,
+    *,
+    run_id: str,
+    spec: RunSpec,
+    scorer_name: str,
+    scorer_version: str,
+    context_hash: str,
+) -> None:
+    _write_provenance(
+        folder,
+        run_id=run_id,
+        spec=spec,
+        scorer_name=scorer_name,
+        scorer_version=scorer_version,
+        context_hash=context_hash,
+    )
+    ingest_index(registry, events_path)
+    _write_manifest(folder, run_id=run_id, status="failed", scorer=spec.scorer, seed=spec.seed)
+    append_event(events_path, {"type": "run.failed", "run_id": run_id})
+
+
+def _write_provenance(
+    folder: Path,
+    *,
+    run_id: str,
+    spec: RunSpec,
+    scorer_name: str,
+    scorer_version: str,
+    context_hash: str,
+) -> None:
+    write_json(
+        folder / "provenance.json",
+        {
+            "run_id": run_id,
+            "seed": spec.seed,
+            "scorer": scorer_name,
+            "scorer_version": scorer_version,
+            "gpu": None,
+            "context_hash": context_hash,
+            "target": {"name": spec.target.name},
+            "pocket": {"residues": list(spec.pocket.residues)},
+            "library": {"id": spec.library.id},
+            "spec_sha256": spec_sha256(folder / "spec.json"),
+        },
+    )
 
 
 def _write_manifest(folder: Path, *, run_id: str, status: str, scorer: str, seed: int) -> None:

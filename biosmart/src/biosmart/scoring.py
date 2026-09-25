@@ -8,6 +8,7 @@ never touches a GPU. Candidates are drawn from a fixed catalog starting at
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -16,7 +17,7 @@ from biosmart.spec import PocketSpec, TargetSpec
 CATALOG: tuple[str, ...] = ("CCO", "CCN", "CC(=O)O", "c1ccccc1", "CCC", "CO")
 
 
-def sample_smiles(seed: int, count: int) -> list[str]:
+def candidate_smiles(seed: int, count: int) -> list[str]:
     if count < 1:
         raise ValueError("count must be at least 1")
     start = seed % len(CATALOG)
@@ -60,6 +61,10 @@ class Scorer(Protocol):
         """Flush any Scorer cache. FakeScorer keeps none."""
 
 
+class ScorerFailed(Exception):
+    """The Scorer could not score this Scoring round."""
+
+
 class FakeScorer:
     name = "fake"
     version = "0"
@@ -77,6 +82,8 @@ class FakeScorer:
     def score(self, round_no: int, candidates: list[Candidate]) -> list[ScoreResult]:
         if round_no < 1:
             raise ValueError("round_no must be >= 1")
+        if os.environ.get("BIOSMART_FAKE_SCORER_FAIL") == "1":
+            raise ScorerFailed("FakeScorer failed")
         results: list[ScoreResult] = []
         for candidate in candidates:
             reward = fake_reward(self.seed, self._ordinal)

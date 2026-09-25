@@ -35,7 +35,7 @@ class LibrarySpec(BaseModel):
 
 
 class RunSpec(BaseModel):
-    """One optimisation job: one Target, one Scorer, one Library, one Budget."""
+    """One Run against one Target with one Scorer, one Building-block library, and one Budget."""
 
     model_config = ConfigDict(extra="forbid")
 
