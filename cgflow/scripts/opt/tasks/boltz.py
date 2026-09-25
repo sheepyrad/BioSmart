@@ -885,6 +885,9 @@ class BoltzMOOTask(BoltzTask):
         # Replace "vina" with "boltz" in objectives if present
         if "vina" in self.objectives:
             self.objectives = ["boltz" if obj == "vina" else obj for obj in self.objectives]
+        # An Iteration whose Candidates are all invalid still builds a reward
+        # tensor of this width. BaseTask.compute_obj_properties reads it.
+        self.num_objectives = len(self.objectives)
 
     def compute_rewards(self, mols: list[Chem.Mol]) -> torch.Tensor:
         self.save_pose(mols)

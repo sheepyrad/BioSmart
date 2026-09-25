@@ -46,14 +46,14 @@ FABind+ runs in the `fabind` pixi environment. FlashBind scoring runs in `flasha
 
 ### Boltz optimization (NS5 example)
 
-The checked-in config is a 2000×32 budget. A headless check of the same entry point uses one Iteration and one Candidate, and points `--env_dir` at a Building-block library (not shipped in the repo):
+The checked-in config is a 2000×32 budget. A headless check of the same entry point uses one Iteration and four Candidates, and points `--env_dir` at a Building-block library (not shipped in the repo):
 
 ```bash
 pixi run -e default -- python cgflow/scripts/opt/opt_boltz.py \
   --config cgflow/configs/opt/NS5_crop_boltz_32_2000.yaml \
   --env_dir /path/to/library \
   --num_steps 1 \
-  --num_sampling_per_step 1 \
+  --num_sampling_per_step 4 \
   --result_dir /path/to/run
 ```
 

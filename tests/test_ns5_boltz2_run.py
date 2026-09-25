@@ -23,9 +23,10 @@ LIBRARY = Path(
         "/media/data/conrad_hku/cache/cgflow_env/envs/enamine_stock",
     )
 )
-# One Iteration and one Candidate. The checked-in config is 2000×32.
+# One Iteration and a handful of Candidates. The checked-in config is 2000×32.
+# A single Candidate can be chemically invalid and then leaves no score row.
 NUM_STEPS = "1"
-NUM_SAMPLING_PER_STEP = "1"
+NUM_SAMPLING_PER_STEP = "4"
 RUN_TIMEOUT_S = 90 * 60
 
 
