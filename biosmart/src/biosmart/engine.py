@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from biosmart.libraries import default_libraries_root, recorded_library
 from biosmart.scoring import Candidate, FakeScorer, Scorer, ScorerFailed, candidate_smiles
 from biosmart.spec import RunSpec
 from biosmart.storage import (
@@ -110,6 +111,7 @@ def execute_run(spec_path: Path, runs_root: Path, registry: Path) -> Path:
     init_run_database(database_path)
     _write_manifest(folder, run_id=run_id, status="running", scorer=spec.scorer, seed=spec.seed)
 
+    _record_used_library(folder, spec, events_path, run_id)
     scorer = _open_scorer(spec, runs_root)
     with _stop_signals():
         try:
@@ -541,6 +543,14 @@ def _finish_failed(
     ingest_index(registry, events_path)
     _write_manifest(folder, run_id=run_id, status="failed", scorer=spec.scorer, seed=spec.seed)
     append_event(events_path, {"type": "run.failed", "run_id": run_id})
+
+
+def _record_used_library(folder: Path, spec: RunSpec, events_path: Path, run_id: str) -> None:
+    """Copy the library this Run used into the Run folder. An old one reminds."""
+    recorded, reminder = recorded_library(spec.library.id, default_libraries_root())
+    write_json(folder / "library.json", recorded)
+    if reminder:
+        append_event(events_path, {"type": "warning", "run_id": run_id, "message": reminder})
 
 
 def _write_provenance(
