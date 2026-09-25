@@ -10,11 +10,11 @@
 
 - `cgflow/` is files in the tree, not a git submodule.
 - Install with pixi from the repo root. One `pixi.lock` defines four environments: `server` (torch-free), `default` (CGFlow + Boltz-2), `fabind`, and `flashaffinity`.
-- Start the desktop GUI from `cgflow-gui/` with `bun run electron:dev`; start web mode with `bun run dev:web` (expects `../cgflow`).
-- Scripts that still call `synthflow.utils.conda_env.run_in_conda_env` use the `fabind` conda env for those subprocesses. FlashBind optimization invokes FABind_plus that way.
+- Start the desktop GUI from `cgflow-gui/` with `bun run electron:dev`; start web mode with `bun run dev:web` (expects `../cgflow` and the `cgflow` conda env).
+- FABind+ entry points use the conda env `fabind`. UniDock passes `unidock-env` to `run_in_conda_env`. FlashBind scoring defaults `flashbind_conda_env` to `flashaffinity`.
 - FABind+ and FlashBind `.ckpt`/`.bin` weights are not in git; run `./scripts/setup-cgflow-assets.sh` (or `cgflow/scripts/setup/download_flashbind_assets.sh`).
 - The FlashBind task supports `hf_hub_cache` so representation subprocesses (e.g. ESM3 downloads) can set `HF_HUB_CACHE` to a large-disk path.
-- On Ubuntu 20.04 (glibc 2.31), the CGFlow stack uses `torch==2.6.0+cu124` and PyG wheels from `torch-2.6.0+cu124.html`. The `flashaffinity` env pins torch `2.7.1+cu126`; its `torch_scatter` wheel does not import on glibc 2.31.
+- On Ubuntu 20.04 (glibc 2.31), the CGFlow stack uses `torch==2.6.0+cu124` and PyG wheels from `torch-2.6.0+cu124.html`. Torch `2.9.x+cu126` PyG wheels require glibc 2.32+. The `flashaffinity` env pins torch `2.7.1+cu126`; its `torch_scatter` wheel does not import on glibc 2.31.
 - Install cgflow editable from `cgflow/` (`pip install -e .` inside that directory, or the pixi `default` env) so `src/` packages such as `rxnflow` resolve in scripts.
 - When installing `boltz[cuda]`, pin torch with a constraints file (see root `README.md`) so pip does not upgrade the PyTorch stack.
 - On this machine, miniforge/conda envs and large artifacts live under `/media/data/conrad_hku/` (`miniforge3`, `cgflow_env`, `cgflow_web/result`, `hf_cache`).
