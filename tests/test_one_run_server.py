@@ -69,8 +69,9 @@ class Server:
 class EventStream:
     """Client side of ``GET /api/v1/events``."""
 
-    def __init__(self, port: int) -> None:
+    def __init__(self, port: int, host: str = "127.0.0.1") -> None:
         self.port = port
+        self.host = host
         self.error: str | None = None
         self._events: list[Event] = []
         self._lock = threading.Lock()
@@ -104,7 +105,7 @@ class EventStream:
         try:
             deadline = time.monotonic() + 10
             while True:
-                conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=60)
+                conn = http.client.HTTPConnection(self.host, self.port, timeout=60)
                 try:
                     conn.request("GET", "/api/v1/events", headers={"Accept": "text/event-stream"})
                     break
@@ -147,13 +148,21 @@ class EventStream:
                 conn.close()
 
 
-def _request(port: int, method: str, path: str, payload: Mapping[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
+def _request(
+    port: int,
+    method: str,
+    path: str,
+    payload: Mapping[str, Any] | None = None,
+    *,
+    host: str = "127.0.0.1",
+) -> tuple[int, dict[str, Any]]:
     body = None if payload is None else json.dumps(payload).encode()
+    headers = {"Content-Type": "application/json"} if body is not None else {}
     req = urlrequest.Request(
-        f"http://127.0.0.1:{port}{path}",
+        f"http://{host}:{port}{path}",
         data=body,
         method=method,
-        headers={"Content-Type": "application/json"} if body is not None else {},
+        headers=headers,
     )
     deadline = time.monotonic() + 10
     while True:

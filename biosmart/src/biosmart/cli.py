@@ -36,7 +36,10 @@ def main(argv: list[str] | None = None) -> int:
         metavar="RUN_FOLDER",
         help="Continue a Paused Run from its Run folder",
     )
-    serve_parser = subcommands.add_parser("serve", help="Serve the runs API on localhost")
+    serve_parser = subcommands.add_parser(
+        "serve",
+        help="Serve the host UI on localhost and its Tailscale address",
+    )
     serve_parser.add_argument("--port", type=int, default=8000)
     worker_parser = subcommands.add_parser(
         "worker",

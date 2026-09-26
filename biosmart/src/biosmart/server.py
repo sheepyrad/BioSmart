@@ -1,17 +1,20 @@
-"""Localhost runs API.
+"""Host runs API.
 
 One Run executes at a time. Further Runs wait in the Registry until the running
-Run finishes or is Paused. Events are the engine's JSONL stream. The listener
-is 127.0.0.1 only.
+Run finishes or is Paused. Events are the engine's JSONL stream. The host
+listens on 127.0.0.1 and on its Tailscale address. It does not listen on a
+public LAN address and it does not bind 0.0.0.0. The UI asks for no token.
 """
 
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
 import re
 import signal
+import socket
 import sqlite3
 import sys
 import tempfile
@@ -46,6 +49,7 @@ from biosmart.libraries import (
 from biosmart.residues import ResidueError, read_structure
 from biosmart.spec import RunSpec
 from biosmart.storage import connect
+from biosmart.tailnet import is_tailnet, tailnet_addresses
 from biosmart.transfer import ExportError, export_top, import_run_archive, write_run_archive
 from biosmart.uploads import MultipartError, parse_multipart
 from biosmart.wizard import (
@@ -1026,19 +1030,21 @@ async def _command(
     return result
 
 
-class _LocalhostServer:
-    """Uvicorn server that publishes the bound localhost address after listen."""
+class _HostServer:
+    """Uvicorn server on localhost and the host Tailscale address."""
 
-    def __init__(self, port: int) -> None:
+    def __init__(self, sockets: list[socket.socket]) -> None:
         import uvicorn
 
+        bound_port = int(sockets[0].getsockname()[1])
         config = uvicorn.Config(
             create_app(),
             host=LOCALHOST,
-            port=port,
+            port=bound_port,
             log_level="warning",
             access_log=False,
         )
+        self._sockets = sockets
         self._server = uvicorn.Server(config)
 
     def run(self) -> None:
@@ -1050,10 +1056,56 @@ class _LocalhostServer:
             for listener in server.servers:
                 for sock in listener.sockets or []:
                     host, bound_port = sock.getsockname()[:2]
-                    print(f"http://{host}:{bound_port}", flush=True)
+                    print(_published_url(str(host), int(bound_port)), flush=True)
 
         server.startup = startup_and_publish  # type: ignore[method-assign]
-        server.run()
+        server.run(sockets=self._sockets)
+
+
+def _listen_hosts() -> list[str]:
+    hosts = [LOCALHOST]
+    for host in tailnet_addresses():
+        if host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
+def _bind_host_sockets(port: int, hosts: list[str]) -> list[socket.socket]:
+    if not hosts or hosts[0] != LOCALHOST:
+        raise ValueError("host listens on 127.0.0.1")
+    bound: list[socket.socket] = []
+    assigned = port
+    try:
+        for index, host in enumerate(hosts):
+            sock = _open_listener(host, assigned if index else port)
+            bound.append(sock)
+            if index == 0:
+                assigned = int(sock.getsockname()[1])
+    except Exception:
+        for sock in bound:
+            sock.close()
+        raise
+    return bound
+
+
+def _open_listener(host: str, port: int) -> socket.socket:
+    address = ipaddress.ip_address(host)
+    if address.is_unspecified or not (str(address) == LOCALHOST or is_tailnet(address)):
+        raise ValueError("host does not listen on a public LAN address")
+    family = socket.AF_INET6 if isinstance(address, ipaddress.IPv6Address) else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    if family == socket.AF_INET6:
+        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+    sock.set_inheritable(True)
+    return sock
+
+
+def _published_url(host: str, port: int) -> str:
+    if ":" in host:
+        return f"http://[{host}]:{port}"
+    return f"http://{host}:{port}"
 
 
 def serve(port: int) -> None:
@@ -1061,7 +1113,15 @@ def serve(port: int) -> None:
         raise ValueError("port must be between 0 and 65535")
     if not os.environ.get("BIOSMART_RUNS_ROOT"):
         raise ValueError("BIOSMART_RUNS_ROOT is required")
-    _LocalhostServer(port).run()
+    sockets = _bind_host_sockets(port, _listen_hosts())
+    try:
+        _HostServer(sockets).run()
+    finally:
+        for sock in sockets:
+            try:
+                sock.close()
+            except OSError:
+                pass
 
 
 __all__ = ["LOCALHOST", "create_app", "doctor_refuses_start", "serve"]
