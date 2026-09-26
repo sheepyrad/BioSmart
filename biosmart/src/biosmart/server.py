@@ -20,10 +20,18 @@ from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
+from biosmart.index import (
+    IndexNotFound,
+    IndexQueryError,
+    RunFolderError,
+    import_run_folder,
+    page_candidates,
+    search_candidates,
+)
 from biosmart.spec import RunSpec
 from biosmart.storage import connect
 
@@ -193,6 +201,34 @@ class Supervisor:
         if status != "paused":
             raise RunConflict("Stop did not pause the Run")
         return {"run_id": run_id, "status": status}
+
+    async def note_imported(self, run_id: str, folder: Path, status: str) -> None:
+        if status not in {"paused", "finished", "failed"}:
+            raise RunConflict("Import rebuilds a finished, failed, or Paused Run")
+        async with self._lock:
+            row = self._get(run_id)
+            if row is not None and row["status"] == "running":
+                raise RunConflict("Import does not replace a running Run")
+            stamp = _stamp()
+            if row is None:
+                self._execute(
+                    """
+                    INSERT INTO runs (
+                        run_id, status, spec_json, folder, engine_pid,
+                        enqueued_at, queue_at, resume
+                    ) VALUES (?, ?, NULL, ?, NULL, ?, ?, 0)
+                    """,
+                    (run_id, status, str(folder), stamp, stamp),
+                )
+            else:
+                self._execute(
+                    """
+                    UPDATE runs
+                    SET status = ?, folder = ?, engine_pid = NULL
+                    WHERE run_id = ?
+                    """,
+                    (status, str(folder), run_id),
+                )
 
     async def resume(self, run_id: str) -> dict[str, Any]:
         async with self._lock:
@@ -420,6 +456,90 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/runs/{run_id}/resume")
     async def resume_run(run_id: str) -> dict[str, Any]:
         return await _command(supervisor.resume, run_id)
+
+    @app.get("/api/v1/runs/{run_id}/candidates")
+    async def list_candidates(
+        run_id: str,
+        limit: int = 50,
+        cursor: str | None = None,
+        sort: str = "candidate_id",
+        status_filter: str | None = Query(default=None, alias="filter"),
+        min_score: float | None = None,
+        max_score: float | None = None,
+        min_mw: float | None = None,
+        max_mw: float | None = None,
+        min_logp: float | None = None,
+        max_logp: float | None = None,
+    ) -> dict[str, Any]:
+        if not _valid_run_id(run_id):
+            raise HTTPException(status_code=404, detail="Run not found")
+        try:
+            return page_candidates(
+                supervisor.registry,
+                run_id,
+                limit=limit,
+                cursor=cursor,
+                sort=sort,
+                status=status_filter,
+                min_score=min_score,
+                max_score=max_score,
+                min_mw=min_mw,
+                max_mw=max_mw,
+                min_logp=min_logp,
+                max_logp=max_logp,
+            )
+        except IndexNotFound as exc:
+            raise HTTPException(status_code=404, detail="Run not found") from exc
+        except IndexQueryError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/v1/runs/import")
+    async def import_run(request: Request) -> dict[str, Any]:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=422, detail="Import must be JSON") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="Import must be an object")
+        folder = payload.get("folder")
+        if not isinstance(folder, str) or not folder:
+            raise HTTPException(status_code=422, detail="folder is required")
+        try:
+            imported = import_run_folder(supervisor.runs_root, supervisor.registry, Path(folder))
+            await supervisor.note_imported(
+                str(imported["run_id"]),
+                Path(str(imported["folder"])),
+                str(imported["status"]),
+            )
+        except RunFolderError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RunConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "run_id": imported["run_id"],
+            "status": imported["status"],
+            "candidates": imported["candidates"],
+        }
+
+    @app.get("/api/v1/search")
+    async def search(
+        smarts: str | None = None,
+        similar_to: str | None = None,
+        threshold: float | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return search_candidates(
+                supervisor.registry,
+                smarts=smarts,
+                similar_to=similar_to,
+                threshold=threshold,
+                limit=limit,
+                cursor=cursor,
+            )
+        except IndexQueryError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.get("/api/v1/events")
     async def events(request: Request) -> StreamingResponse:

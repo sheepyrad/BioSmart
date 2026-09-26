@@ -15,9 +15,9 @@ from typing import Any
 from biosmart.libraries import default_libraries_root, recorded_library
 from biosmart.scoring import Candidate, FakeScorer, Scorer, ScorerFailed, candidate_smiles
 from biosmart.spec import RunSpec
+from biosmart.index import rebuild_index
 from biosmart.storage import (
     append_event,
-    ingest_index,
     init_run_database,
     insert_candidate,
     insert_iteration,
@@ -406,7 +406,7 @@ def _drive(
         scorer_version=scorer.version,
         context_hash=context_hash,
     )
-    ingest_index(registry, events_path)
+    rebuild_index(registry, folder)
     _write_manifest(folder, run_id=run_id, status="finished", scorer=spec.scorer, seed=spec.seed)
     append_event(events_path, {"type": "run.finished", "run_id": run_id})
 
@@ -460,7 +460,7 @@ def _pause(
         scorer_version=scorer.version,
         context_hash=context_hash,
     )
-    ingest_index(registry, events_path)
+    rebuild_index(registry, folder)
     _write_manifest(folder, run_id=run_id, status="paused", scorer=spec.scorer, seed=spec.seed)
     append_event(events_path, {"type": "run.paused", "run_id": run_id})
 
@@ -557,7 +557,7 @@ def _finish_failed(
         scorer_version=scorer_version,
         context_hash=context_hash,
     )
-    ingest_index(registry, events_path)
+    rebuild_index(registry, folder)
     _write_manifest(folder, run_id=run_id, status="failed", scorer=spec.scorer, seed=spec.seed)
     append_event(events_path, {"type": "run.failed", "run_id": run_id})
 
