@@ -111,6 +111,7 @@ def insert_candidate(
     failure_reason: str | None,
     scorer: str,
     route_json: str | None,
+    raw: Mapping[str, Any] | None = None,
 ) -> None:
     with connect(path) as connection:
         connection.execute(
@@ -141,7 +142,12 @@ def insert_candidate(
                 scorer,
                 reward,
                 json.dumps(
-                    {"status": status, "reward": reward, "failure_reason": failure_reason},
+                    {
+                        "status": status,
+                        "reward": reward,
+                        "failure_reason": failure_reason,
+                        **({"raw": raw} if raw else {}),
+                    },
                     allow_nan=False,
                 ),
             ),
@@ -231,3 +237,28 @@ def flush_scorer_cache(
     return len(entries)
 
 
+def read_scorer_cache(
+    path: Path,
+    *,
+    scorer: str,
+    scorer_version: str,
+    context_hash: str,
+) -> dict[str, float]:
+    """Scores already stored for this Scorer, version, and scoring context."""
+    if not path.is_file():
+        return {}
+    with connect(path) as connection:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'scorer_cache'"
+        ).fetchone()
+        if table is None:
+            return {}
+        rows = connection.execute(
+            """
+            SELECT canonical_smiles, reward
+            FROM scorer_cache
+            WHERE scorer = ? AND scorer_version = ? AND context_hash = ?
+            """,
+            (scorer, scorer_version, context_hash),
+        ).fetchall()
+    return {smiles: float(reward) for smiles, reward in rows}
