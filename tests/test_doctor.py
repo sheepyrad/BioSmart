@@ -422,6 +422,25 @@ def test_boltz_extract_uses_data_filter(tmp_path: Path, monkeypatch: pytest.Monk
     assert (tmp_path / "mols" / "a.pkl").is_file()
 
 
+@pytest.mark.filterwarnings("ignore:Python 3.14 will:DeprecationWarning")
+def test_boltz_extract_without_data_filter_extracts_members(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "mols.tar"
+    member = tarfile.TarInfo("mols/a.pkl")
+    archive.write_bytes(_tar_bytes([member], {"mols/a.pkl": b"mol"}))
+    spec = AssetSpec(id="boltz2-ccd", dest=tmp_path / "mols", min_bytes=1, directory=True, kind="extract")
+    monkeypatch.delattr(tarfile, "data_filter", raising=False)
+
+    def refuse_extractall(self, *args, **kwargs):
+        raise AssertionError("extractall")
+
+    monkeypatch.setattr(tarfile.TarFile, "extractall", refuse_extractall)
+    _extract_ccd(spec)
+
+    assert (tmp_path / "mols" / "a.pkl").read_bytes() == b"mol"
+
+
 def test_boltz_extract_rejects_links_and_escaping_members(tmp_path: Path) -> None:
     destination = tmp_path / "cache"
     destination.mkdir()

@@ -237,6 +237,7 @@ def test_worker_prepare_score_and_flush_record_the_scoring_round(tmp_path: Path)
 def _base_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(BIOSMART_SRC)
+    env["BIOSMART_SKIP_DOCTOR"] = "1"
     env["CUDA_VISIBLE_DEVICES"] = ""
     env.pop("BIOSMART_TOKEN", None)
     env.pop("BIOSMART_FAKE_SCORER_FAIL", None)

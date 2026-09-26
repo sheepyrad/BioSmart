@@ -325,16 +325,18 @@ def _extract_ccd(spec: AssetSpec) -> None:
 
 
 def _extract_archive_checked(handle: tarfile.TarFile, destination: Path, label: str) -> None:
-    """Extract when tarfile has no data filter. Refuse links and paths that leave destination."""
+    """Refuse links and paths that leave destination, then extract each member."""
     root = destination.resolve()
-    for member in handle.getmembers():
+    members = handle.getmembers()
+    for member in members:
         if member.issym() or member.islnk():
             raise RuntimeError(f"Failed to download {label}: archive contains a link")
         if not _member_inside(root, member.name):
             raise RuntimeError(
                 f"Failed to download {label}: archive member leaves the destination"
             )
-    handle.extractall(destination)
+    for member in members:
+        handle.extract(member, destination)
 
 
 def _member_inside(root: Path, name: str) -> bool:
