@@ -92,7 +92,8 @@ def worker_environment() -> dict[str, str]:
             env["LIBRARY_PATH"] = prefix + (os.pathsep + current if current else "")
     tmp = Path(env["TMPDIR"])
     tmp.mkdir(parents=True, exist_ok=True)
-    env.setdefault("TRITON_CACHE_DIR", str(tmp.parent / "triton_cache"))
+    # TMPDIR is the writable volume. A sibling path is not mounted.
+    env.setdefault("TRITON_CACHE_DIR", str(tmp / "triton_cache"))
     Path(env["TRITON_CACHE_DIR"]).mkdir(parents=True, exist_ok=True)
     return env
 
@@ -157,12 +158,15 @@ class Boltz2WorkerScorer:
     def score(self, round_no: int, candidates: list[Candidate]) -> list[ScoreResult]:
         if self._context_hash is None:
             raise RuntimeError("Boltz-2 prepare must run before score")
+        # Scores already stored for this scoring context, including earlier
+        # Scoring rounds of this Run. A hit is not sent to Boltz-2 again.
         cached = read_scorer_cache(
             self._cache_path,
             scorer=self.name,
             scorer_version=self.version,
             context_hash=self._context_hash,
         )
+        cached.update({smiles: reward for smiles, reward in self._pending})
         misses = [candidate for candidate in candidates if candidate.canonical_smiles not in cached]
         fresh: dict[str, ScoreResult] = {}
         if misses:

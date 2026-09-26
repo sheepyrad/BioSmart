@@ -106,13 +106,27 @@ def test_worker_env_links_libcuda_and_keeps_caches_off_home(
 
     env = worker_environment()
     assert env["HF_HUB_CACHE"] == str(tmp_path / "hf")
-    assert env["TRITON_CACHE_DIR"] == str(tmp_path / "triton_cache")
+    assert env["TRITON_CACHE_DIR"] == str(tmp_path / "tmp" / "triton_cache")
     assert "CUDA_VISIBLE_DEVICES" not in env
     assert not Path(env["HF_HUB_CACHE"]).is_relative_to(Path.home())
     link = cuda_link_dir()
     if link is not None:
         assert str(link) in env["LIBRARY_PATH"].split(os.pathsep)
         assert (link / "libcuda.so").is_file()
+
+
+def test_triton_cache_stays_inside_the_writable_volume(monkeypatch, tmp_path: Path) -> None:
+    volume = tmp_path / "tmp"
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hf"))
+    monkeypatch.setenv("BOLTZ_CACHE", str(tmp_path / "boltz"))
+    monkeypatch.setenv("TMPDIR", str(volume))
+    monkeypatch.delenv("TRITON_CACHE_DIR", raising=False)
+    from biosmart.boltz2_client import worker_environment
+
+    env = worker_environment()
+    cache = Path(env["TRITON_CACHE_DIR"])
+    assert cache.is_relative_to(volume)
+    assert cache.is_dir()
 
 
 def _call(worker: subprocess.Popen[str], payload: dict[str, object]) -> dict[str, object]:

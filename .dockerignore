@@ -1,0 +1,6 @@
+.git
+.pixi
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+cgflow-gui/node_modules

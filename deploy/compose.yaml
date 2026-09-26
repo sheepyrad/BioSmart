@@ -1,0 +1,33 @@
+# The container runs as the invoking user and starts again at boot.
+services:
+  biosmart:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: biosmart:lock
+    container_name: biosmart
+    network_mode: host
+    user: "${BIOSMART_UID:?}:${BIOSMART_GID:?}"
+    restart: unless-stopped
+    gpus: all
+    working_dir: /opt/biosmart
+    environment:
+      BIOSMART_RUNS_ROOT: /biosmart/runs
+      BIOSMART_REGISTRY: /biosmart/runs/registry.sqlite
+      BIOSMART_LIBRARIES_ROOT: /biosmart/libraries
+      BIOSMART_PORT: "8000"
+      HF_HUB_CACHE: /biosmart/hf
+      HF_HOME: /biosmart/hf
+      HUGGINGFACE_HUB_CACHE: /biosmart/hf
+      BOLTZ_CACHE: /biosmart/boltz
+      TMPDIR: /biosmart/tmp
+      HOME: /biosmart/home
+      PYTHONPYCACHEPREFIX: /biosmart/tmp/pyc
+    volumes:
+      - ${BIOSMART_RUNS_ROOT:?}:/biosmart/runs
+      - ${BIOSMART_LIBRARIES_ROOT:?}:/biosmart/libraries
+      - ${BIOSMART_HF_CACHE:?}:/biosmart/hf
+      - ${BIOSMART_BOLTZ_CACHE:?}:/biosmart/boltz
+      - ${BIOSMART_INPUTS:?}:/biosmart/inputs:ro
+      - ${BIOSMART_HOME_MOUNT:?}:/biosmart/home
+      - ${BIOSMART_TMP:?}:/biosmart/tmp
