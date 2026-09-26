@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from biosmart.flashbind import FlashBindScorer
 from biosmart.libraries import default_libraries_root, recorded_library
 from biosmart.scoring import Candidate, FakeScorer, Scorer, ScorerFailed, candidate_smiles
 from biosmart.spec import RunSpec
@@ -52,8 +53,20 @@ def _stop_signals() -> Iterator[None]:
         signal.signal(signal.SIGTERM, previous)
 
 
-def _open_scorer(spec: RunSpec, runs_root: Path, *, ordinal: int = 0) -> FakeScorer | WorkerScorer:
-    """Local FakeScorer, or a worker when the host was given its tailnet address."""
+def _open_scorer(
+    spec: RunSpec,
+    runs_root: Path,
+    run_folder: Path,
+    *,
+    ordinal: int = 0,
+) -> FakeScorer | WorkerScorer | FlashBindScorer:
+    """Local Scorer, or a worker when the host was given its tailnet address.
+
+    FlashBind scores on this host. Its Pose provider is FABind+. The worker
+    path stays the FakeScorer used to test the host.
+    """
+    if spec.scorer == "flashbind":
+        return FlashBindScorer(cache_path=_scorer_cache_path(runs_root), work_dir=run_folder)
     address = os.environ.get("BIOSMART_WORKER", "").strip()
     if address:
         return WorkerScorer(
@@ -129,7 +142,7 @@ def execute_run(spec_path: Path, runs_root: Path, registry: Path) -> Path:
     _write_manifest(folder, run_id=run_id, status="running", scorer=spec.scorer, seed=spec.seed)
 
     _record_used_library(folder, spec, events_path, run_id)
-    scorer = _open_scorer(spec, runs_root)
+    scorer = _open_scorer(spec, runs_root, folder)
     with _stop_signals():
         try:
             _drive(
@@ -190,7 +203,7 @@ def resume_run(folder: Path, runs_root: Path, registry: Path) -> Path:
     events_path = folder / "events.jsonl"
     database_path = folder / "run.sqlite"
     _write_manifest(folder, run_id=run_id, status="running", scorer=spec.scorer, seed=spec.seed)
-    scorer = _open_scorer(spec, runs_root, ordinal=scored)
+    scorer = _open_scorer(spec, runs_root, folder, ordinal=scored)
     with _stop_signals():
         try:
             _drive(
@@ -402,10 +415,11 @@ def _drive(
         folder,
         run_id=run_id,
         spec=spec,
-        scorer_name=scorer.name,
-        scorer_version=scorer.version,
-        context_hash=context_hash,
-    )
+            scorer_name=scorer.name,
+            scorer_version=scorer.version,
+            context_hash=context_hash,
+            pose_provider=_pose_provider_name(scorer),
+        )
     rebuild_index(registry, folder)
     _write_manifest(folder, run_id=run_id, status="finished", scorer=spec.scorer, seed=spec.seed)
     append_event(events_path, {"type": "run.finished", "run_id": run_id})
@@ -459,6 +473,7 @@ def _pause(
         scorer_name=scorer.name,
         scorer_version=scorer.version,
         context_hash=context_hash,
+        pose_provider=_pose_provider_name(scorer),
     )
     rebuild_index(registry, folder)
     _write_manifest(folder, run_id=run_id, status="paused", scorer=spec.scorer, seed=spec.seed)
@@ -556,6 +571,7 @@ def _finish_failed(
         scorer_name=scorer_name,
         scorer_version=scorer_version,
         context_hash=context_hash,
+        pose_provider="fabind+" if spec.scorer == "flashbind" else None,
     )
     rebuild_index(registry, folder)
     _write_manifest(folder, run_id=run_id, status="failed", scorer=spec.scorer, seed=spec.seed)
@@ -570,6 +586,11 @@ def _record_used_library(folder: Path, spec: RunSpec, events_path: Path, run_id:
         append_event(events_path, {"type": "warning", "run_id": run_id, "message": reminder})
 
 
+def _pose_provider_name(scorer: Scorer) -> str | None:
+    name = getattr(scorer, "pose_provider_name", None)
+    return name if isinstance(name, str) and name else None
+
+
 def _write_provenance(
     folder: Path,
     *,
@@ -578,22 +599,26 @@ def _write_provenance(
     scorer_name: str,
     scorer_version: str,
     context_hash: str,
+    pose_provider: str | None = None,
 ) -> None:
-    write_json(
-        folder / "provenance.json",
-        {
-            "run_id": run_id,
-            "seed": spec.seed,
-            "scorer": scorer_name,
-            "scorer_version": scorer_version,
-            "gpu": None,
-            "context_hash": context_hash,
-            "target": {"name": spec.target.name},
-            "pocket": {"residues": list(spec.pocket.residues)},
-            "library": {"id": spec.library.id},
-            "spec_sha256": spec_sha256(folder / "spec.json"),
+    payload: dict[str, Any] = {
+        "run_id": run_id,
+        "seed": spec.seed,
+        "scorer": scorer_name,
+        "scorer_version": scorer_version,
+        "gpu": None,
+        "context_hash": context_hash,
+        "target": {"name": spec.target.name, "structure": spec.target.structure},
+        "pocket": {
+            "residues": list(spec.pocket.residues),
+            "reference_ligand": spec.pocket.reference_ligand,
         },
-    )
+        "library": {"id": spec.library.id},
+        "spec_sha256": spec_sha256(folder / "spec.json"),
+    }
+    if pose_provider:
+        payload["pose_provider"] = pose_provider
+    write_json(folder / "provenance.json", payload)
 
 
 def _write_manifest(folder: Path, *, run_id: str, status: str, scorer: str, seed: int) -> None:
