@@ -23,7 +23,7 @@ IMPORT_TIMEOUT_S = 180
 class GpuSnapshot:
     name: str
     memory_mib: int
-    utilization_pct: int
+    utilization_pct: int | None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
@@ -32,6 +32,8 @@ class GpuSnapshot:
             raise TypeError("memory_mib must be an int")
         if self.memory_mib < 0:
             raise ValueError("memory_mib must be >= 0")
+        if self.utilization_pct is None:
+            return
         if not isinstance(self.utilization_pct, int) or isinstance(self.utilization_pct, bool):
             raise TypeError("utilization_pct must be an int")
         if self.utilization_pct < 0 or self.utilization_pct > 100:
@@ -210,13 +212,35 @@ def query_gpus() -> tuple[GpuSnapshot, ...]:
     gpus: list[GpuSnapshot] = []
     for line in proc.stdout.splitlines():
         parts = [part.strip() for part in line.split(",")]
-        if len(parts) < 3:
+        if len(parts) < 2 or not parts[0]:
             continue
         try:
-            gpus.append(GpuSnapshot(parts[0], int(parts[1]), int(parts[2])))
+            memory_mib = int(parts[1])
+        except ValueError:
+            continue
+        utilization = _utilization(parts[2] if len(parts) > 2 else "")
+        try:
+            gpus.append(GpuSnapshot(parts[0], memory_mib, utilization))
         except (TypeError, ValueError):
             continue
     return tuple(gpus)
+
+
+def _utilization(text: str) -> int | None:
+    """nvidia-smi prints N/A when the device has no utilization sample."""
+    try:
+        value = int(text)
+    except ValueError:
+        return None
+    if value < 0 or value > 100:
+        return None
+    return value
+
+
+def _gpu_detail(gpu: GpuSnapshot) -> str:
+    if gpu.utilization_pct is None:
+        return f"{gpu.name}: {gpu.memory_mib} MiB"
+    return f"{gpu.name}: {gpu.memory_mib} MiB, utilization {gpu.utilization_pct}%"
 
 
 def _gpu_check(gpus: tuple[GpuSnapshot, ...]) -> Check:
@@ -230,10 +254,7 @@ def _gpu_check(gpus: tuple[GpuSnapshot, ...]) -> Check:
             detail="nvidia-smi did not report a GPU.",
         )
     names = ", ".join(gpu.name for gpu in gpus)
-    detail = "\n".join(
-        f"{gpu.name}: {gpu.memory_mib} MiB, utilization {gpu.utilization_pct}%"
-        for gpu in gpus
-    )
+    detail = "\n".join(_gpu_detail(gpu) for gpu in gpus)
     return Check(
         id="gpu",
         name="GPU",

@@ -21,11 +21,13 @@ from biosmart.assets import (
     AssetSpec,
     _extract_archive_checked,
     _extract_ccd,
+    _fetch_urls,
+    asset_present,
     required_assets,
     sync_assets,
 )
 from biosmart.cli import main
-from biosmart.doctor import GpuSnapshot, Workstation, apply_fix, discover, examine
+from biosmart.doctor import GpuSnapshot, Workstation, apply_fix, discover, examine, query_gpus
 from biosmart.start import StartRefused, execute_guarded, open_run, start_run
 
 VRAM_FLOOR_MIB = 24 * 1024
@@ -474,3 +476,91 @@ def test_boltz_extract_rejects_links_and_escaping_members(tmp_path: Path) -> Non
     assert "leaves the destination" in str(escaped.value)
     assert "boltz2-" not in str(escaped.value)
     assert not (tmp_path / "outside.pkl").exists()
+
+
+def test_fetch_urls_skips_a_non_weight_and_tries_the_next_mirror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dest = tmp_path / "boltz2_conf.ckpt"
+    spec = AssetSpec(
+        id="boltz2-structure",
+        dest=dest,
+        min_bytes=8,
+        kind="url",
+        urls=("https://mirror.example/first", "https://mirror.example/second"),
+    )
+    calls: list[str] = []
+
+    def fake(url: str, filename: Path) -> None:
+        calls.append(url)
+        payload = b"no" if url.endswith("first") else b"weight!!"
+        Path(filename).write_bytes(payload)
+
+    monkeypatch.setattr(urllib.request, "urlretrieve", fake)
+    _fetch_urls(spec)
+
+    assert calls == ["https://mirror.example/first", "https://mirror.example/second"]
+    assert dest.read_bytes() == b"weight!!"
+
+
+def test_fetch_urls_removes_a_non_weight_when_every_mirror_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dest = tmp_path / "boltz2_aff.ckpt"
+    spec = AssetSpec(
+        id="boltz2-affinity",
+        dest=dest,
+        min_bytes=8,
+        kind="url",
+        urls=("https://mirror.example/only",),
+    )
+    monkeypatch.setattr(
+        urllib.request,
+        "urlretrieve",
+        lambda _url, filename: Path(filename).write_bytes(b"html"),
+    )
+
+    with pytest.raises(RuntimeError) as raised:
+        _fetch_urls(spec)
+
+    assert str(raised.value).startswith("Failed to download Boltz-2")
+    assert "boltz2-" not in str(raised.value)
+    assert not dest.exists()
+
+
+def test_partial_ccd_extract_is_not_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive = tmp_path / "mols.tar"
+    first = tarfile.TarInfo("mols/a.pkl")
+    second = tarfile.TarInfo("mols/b.pkl")
+    archive.write_bytes(
+        _tar_bytes([first, second], {"mols/a.pkl": b"alpha", "mols/b.pkl": b"beta"})
+    )
+    (tmp_path / "mols").mkdir()
+    (tmp_path / "mols" / "a.pkl").write_bytes(b"alpha")
+    spec = AssetSpec(
+        id="boltz2-ccd",
+        dest=tmp_path / "mols",
+        min_bytes=1,
+        directory=True,
+        kind="extract",
+    )
+    monkeypatch.setattr("biosmart.assets.BOLTZ2_CCD_ARCHIVE_MIN_BYTES", 1)
+
+    assert asset_present(spec) is False
+
+    (tmp_path / "mols" / "b.pkl").write_bytes(b"beta")
+    assert asset_present(spec) is True
+
+
+def test_query_gpus_keeps_vram_when_utilization_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Completed:
+        returncode = 0
+        stdout = "NVIDIA A10, 24576, N/A\n"
+
+    monkeypatch.setattr("biosmart.doctor.subprocess.run", lambda *_args, **_kwargs: Completed())
+    gpus = query_gpus()
+
+    assert len(gpus) == 1
+    assert gpus[0].name == "NVIDIA A10"
+    assert gpus[0].memory_mib == 24576
+    assert gpus[0].utilization_pct is None

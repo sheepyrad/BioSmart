@@ -24,6 +24,7 @@ BOLTZ2_AFFINITY_URLS = (
     "https://huggingface.co/boltz-community/boltz-2/resolve/main/boltz2_aff.ckpt",
 )
 BOLTZ2_CCD_URL = "https://huggingface.co/boltz-community/boltz-2/resolve/main/mols.tar"
+BOLTZ2_CCD_ARCHIVE_MIN_BYTES = 500_000_000
 
 POSE_GDRIVE_ID = "1xGC193o4DtSPzWFjmRIlPjmn7bLfMaCd"
 FABIND_REPO = "KyGao/FABind_plus_model"
@@ -145,7 +146,7 @@ def required_assets(workstation: WeightRoots) -> tuple[AssetSpec, ...]:
         AssetSpec(
             id="boltz2-ccd-archive",
             dest=boltz / "mols.tar",
-            min_bytes=500_000_000,
+            min_bytes=BOLTZ2_CCD_ARCHIVE_MIN_BYTES,
             kind="url",
             urls=(BOLTZ2_CCD_URL,),
         ),
@@ -206,9 +207,9 @@ def asset_present(spec: AssetSpec) -> bool:
             return _esm3_present(spec.dest, spec.min_bytes)
         if spec.members:
             return all(_file_ok(spec.dest / member, spec.min_bytes) for member in spec.members)
-        if not spec.dest.is_dir():
-            return False
-        return any(path.is_file() and path.stat().st_size >= spec.min_bytes for path in spec.dest.glob("*.pkl"))
+        if spec.kind == "extract":
+            return _ccd_extract_present(spec)
+        return False
     return _file_ok(spec.dest, spec.min_bytes)
 
 
@@ -274,12 +275,20 @@ def _fetch_urls(spec: AssetSpec) -> None:
     for url in spec.urls:
         try:
             urllib.request.urlretrieve(url, spec.dest)  # noqa: S310
-            return
         except (OSError, urllib.error.URLError, TimeoutError) as exc:
             errors.append(f"{url}: {exc}")
-            if spec.dest.exists():
-                spec.dest.unlink()
+            _discard_download(spec.dest)
+            continue
+        if _file_ok(spec.dest, spec.min_bytes):
+            return
+        errors.append(f"{url}: downloaded file is not a weight")
+        _discard_download(spec.dest)
     raise RuntimeError(f"Failed to download {weight_label(spec.id)}: {'; '.join(errors)}")
+
+
+def _discard_download(path: Path) -> None:
+    if path.is_file() or path.is_symlink():
+        path.unlink()
 
 
 def _fetch_hf(spec: AssetSpec) -> None:
@@ -337,6 +346,49 @@ def _extract_archive_checked(handle: tarfile.TarFile, destination: Path, label: 
             )
     for member in members:
         handle.extract(member, destination)
+
+
+def _ccd_extract_present(spec: AssetSpec) -> bool:
+    """True for the expected CCD extract.
+
+    A leftover pickle is not enough when ``mols.tar`` is a real weight. The
+    archive's file members have to be on disk. Without a readable archive, a
+    directory of pickles is still the cache.
+    """
+    archive = spec.dest.parent / "mols.tar"
+    members = (
+        _tar_file_members(archive)
+        if _file_ok(archive, BOLTZ2_CCD_ARCHIVE_MIN_BYTES)
+        else None
+    )
+    if members:
+        root = spec.dest.parent.resolve()
+        return all(_extracted_member(root, member) for member in members)
+    if not spec.dest.is_dir():
+        return False
+    return any(
+        path.is_file() and path.stat().st_size >= spec.min_bytes
+        for path in spec.dest.glob("*.pkl")
+    )
+
+
+def _tar_file_members(archive: Path) -> list[tarfile.TarInfo] | None:
+    try:
+        with tarfile.open(archive) as handle:
+            return [
+                member
+                for member in handle.getmembers()
+                if member.isfile() and not member.issym() and not member.islnk()
+            ]
+    except (tarfile.TarError, OSError):
+        return None
+
+
+def _extracted_member(root: Path, member: tarfile.TarInfo) -> bool:
+    if member.size < 1 or not _member_inside(root, member.name):
+        return False
+    path = root / member.name
+    return path.is_file() and path.stat().st_size == member.size
 
 
 def _member_inside(root: Path, name: str) -> bool:
