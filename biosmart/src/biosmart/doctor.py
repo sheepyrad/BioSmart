@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from biosmart.assets import Fetcher, missing_assets, sync_assets, weight_label
+from biosmart.libraries import default_libraries_root
 
 VRAM_FLOOR_MIB = 24 * 1024
 ENV_PROBES = {
@@ -104,9 +105,7 @@ def repo_root() -> Path:
 
 def discover() -> Workstation:
     repo = repo_root()
-    libraries = Path(
-        os.environ.get("BIOSMART_LIBRARIES", Path.home() / "BioSmart" / "libraries")
-    ).expanduser()
+    libraries = default_libraries_root()
     boltz = Path(os.environ.get("BOLTZ_CACHE", Path.home() / ".boltz")).expanduser()
     hf_cache = _hf_cache()
     interpreters = {
@@ -146,6 +145,15 @@ def examine(workstation: Workstation | None = None) -> DoctorReport:
         _library_check(ws),
     )
     return DoctorReport(checks)
+
+
+def allows_start(workstation: Workstation | None = None) -> bool:
+    """True when every blocking check passes.
+
+    ``POST /api/v1/runs`` calls this with no arguments. A false result is the
+    refusal. This does not fetch weights.
+    """
+    return examine(workstation).ready
 
 
 def apply_fix(

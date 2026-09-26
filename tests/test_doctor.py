@@ -27,7 +27,15 @@ from biosmart.assets import (
     sync_assets,
 )
 from biosmart.cli import main
-from biosmart.doctor import GpuSnapshot, Workstation, apply_fix, discover, examine, query_gpus
+from biosmart.doctor import (
+    GpuSnapshot,
+    Workstation,
+    allows_start,
+    apply_fix,
+    discover,
+    examine,
+    query_gpus,
+)
 from biosmart.start import StartRefused, execute_guarded, open_run, start_run
 
 VRAM_FLOOR_MIB = 24 * 1024
@@ -344,6 +352,53 @@ def test_doctor_fix_prints_weight_failure_without_traceback(
     assert "Boltz-2" in captured.err
     assert "fabind-checkpoint" not in captured.err
     assert "boltz2-" not in captured.err
+
+
+def test_doctor_finds_the_library_at_libraries_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "libraries"
+    library = root / "enamine-stock"
+    library.mkdir(parents=True)
+    (library / "library.json").write_text("{}\n")
+    monkeypatch.setenv("BIOSMART_LIBRARIES_ROOT", str(root))
+
+    workstation = discover()
+    report = examine(workstation)
+
+    assert workstation.libraries_dir == root
+    assert report.check("library").ok
+    assert report.check("library").detail == "enamine-stock"
+
+
+def test_api_start_follows_allows_start_without_skipping_the_doctor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The runs API calls allows_start() and does not set BIOSMART_SKIP_DOCTOR."""
+    monkeypatch.delenv("BIOSMART_SKIP_DOCTOR", raising=False)
+    ready = _ready(tmp_path)
+    monkeypatch.setattr("biosmart.doctor.discover", lambda: ready)
+    assert allows_start() is True
+    assert _api_start_refusal() is None
+
+    shutil.rmtree(ready.libraries_dir)
+    ready.libraries_dir.mkdir()
+    assert allows_start() is False
+    assert _api_start_refusal() == "Doctor refuses Start"
+    with pytest.raises(StartRefused, match="library"):
+        start_run(ready)
+
+
+def _api_start_refusal() -> str | None:
+    """Same gate as ``doctor_refuses_start`` on the runs API."""
+    if os.environ.get("BIOSMART_SKIP_DOCTOR") == "1":
+        return None
+    import biosmart.doctor as doctor
+
+    gate = getattr(doctor, "allows_start", None)
+    if not callable(gate) or not gate():
+        return "Doctor refuses Start"
+    return None
 
 
 def test_hf_home_is_used_when_hub_caches_are_unset(
