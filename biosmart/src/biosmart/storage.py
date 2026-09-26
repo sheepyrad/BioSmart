@@ -80,7 +80,8 @@ def init_run_database(path: Path) -> None:
                 n_sent INTEGER NOT NULL,
                 n_ok INTEGER NOT NULL,
                 n_failed INTEGER NOT NULL,
-                secs REAL NOT NULL
+                secs REAL NOT NULL,
+                machine TEXT
             )
             """
         )
@@ -165,15 +166,27 @@ def insert_scoring_round(
     n_ok: int,
     n_failed: int,
     secs: float,
+    machine: str | None = None,
 ) -> None:
+    if machine is not None and not isinstance(machine, str):
+        raise TypeError("machine must be a string")
     with connect(path) as connection:
+        _ensure_scoring_round_machine(connection)
         connection.execute(
             """
-            INSERT INTO scoring_rounds (round_no, scorer, n_sent, n_ok, n_failed, secs)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO scoring_rounds (
+                round_no, scorer, n_sent, n_ok, n_failed, secs, machine
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (round_no, scorer, n_sent, n_ok, n_failed, secs),
+            (round_no, scorer, n_sent, n_ok, n_failed, secs, machine),
         )
+
+
+def _ensure_scoring_round_machine(connection: sqlite3.Connection) -> None:
+    """Older Run databases record the scoring machine once the column exists."""
+    names = {row[1] for row in connection.execute("PRAGMA table_info(scoring_rounds)")}
+    if "machine" not in names:
+        connection.execute("ALTER TABLE scoring_rounds ADD COLUMN machine TEXT")
 
 
 def insert_iteration(
