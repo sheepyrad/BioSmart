@@ -394,8 +394,8 @@ def test_setgid_directory_round_trips(tmp_path: Path) -> None:
     run_folder = parent / run_id
     nested = run_folder / "scorer" / "round_1"
     nested.mkdir(parents=True)
-    assert stat.S_ISGID(run_folder.stat().st_mode)
-    assert stat.S_ISGID(nested.stat().st_mode)
+    assert run_folder.stat().st_mode & stat.S_ISGID
+    assert nested.stat().st_mode & stat.S_ISGID
     (run_folder / "run.json").write_text(json.dumps({"run_id": run_id}) + "\n", encoding="utf-8")
     sqlite3.connect(run_folder / "run.sqlite").close()
     (nested / "round.json").write_text("{}\n", encoding="utf-8")
