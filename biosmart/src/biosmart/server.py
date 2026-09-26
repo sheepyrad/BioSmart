@@ -42,10 +42,23 @@ from biosmart.libraries import (
     default_libraries_root,
     describe_libraries,
 )
+from biosmart.residues import ResidueError, read_structure
 from biosmart.spec import RunSpec
 from biosmart.storage import connect
 from biosmart.transfer import ExportError, export_top, import_run_archive, write_run_archive
 from biosmart.uploads import MultipartError, parse_multipart
+from biosmart.wizard import (
+    StartRejected,
+    advanced_fields,
+    alignments_dir,
+    describe_presets,
+    ligands_dir,
+    prepare_start_payload,
+    progress_from_events,
+    selectable_scorers,
+    store_alignment,
+    store_reference_ligand,
+)
 
 LOCALHOST = "127.0.0.1"
 _RUN_ID = "0123456789abcdef"
@@ -186,7 +199,12 @@ class Supervisor:
         row = self._get(run_id)
         if row is None:
             raise RunNotFound(run_id)
-        return {"run_id": run_id, "status": row["status"]}
+        return self._public(row)
+
+    def list_runs(self) -> list[dict[str, Any]]:
+        with self._db() as connection:
+            rows = connection.execute("SELECT * FROM runs ORDER BY queue_at, enqueued_at").fetchall()
+        return [self._public(dict(row)) for row in rows]
 
     async def cancel(self, run_id: str) -> dict[str, Any]:
         async with self._lock:
@@ -374,6 +392,30 @@ class Supervisor:
             return None
         return dict(row)
 
+    def _public(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        spec: dict[str, Any] = {}
+        raw = row.get("spec_json")
+        if isinstance(raw, str) and raw:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                spec = parsed
+        target = spec.get("target") if isinstance(spec.get("target"), dict) else {}
+        name = target.get("name") if isinstance(target, dict) else None
+        run_id = str(row["run_id"])
+        events_path = self.runs_root / run_id / "events.jsonl"
+        payload: dict[str, Any] = {
+            "run_id": run_id,
+            "status": row["status"],
+            "scorer": spec.get("scorer") if isinstance(spec.get("scorer"), str) else None,
+            "preset": spec.get("preset") if isinstance(spec.get("preset"), str) else None,
+            "target": name if isinstance(name, str) else None,
+        }
+        payload.update(progress_from_events(_read_event_objects(events_path)))
+        return payload
+
     def _set_status(self, run_id: str, status: str) -> None:
         self._execute(
             "UPDATE runs SET status = ?, engine_pid = NULL WHERE run_id = ?",
@@ -399,6 +441,24 @@ def _stamp() -> str:
     return str(time.time_ns())
 
 
+def _read_event_objects(path: Path) -> list[dict[str, Any]]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    events: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            events.append(payload)
+    return events
+
+
 def _new_events(path: Path, offset: int) -> tuple[int, list[str]]:
     try:
         data = path.read_bytes()
@@ -417,6 +477,18 @@ def _new_events(path: Path, offset: int) -> tuple[int, list[str]]:
         if line.strip()
     ]
     return offset + len(complete), lines
+
+
+def _without_host_paths(detail: str) -> str:
+    """Keep a validation error from repeating a stored file location."""
+    redacted = detail
+    for root in (inputs_dir(), ligands_dir(), alignments_dir()):
+        redacted = redacted.replace(str(root), "")
+        try:
+            redacted = redacted.replace(str(root.resolve()), "")
+        except OSError:
+            continue
+    return redacted
 
 
 def _host_font(name: str) -> Response:
@@ -605,6 +677,64 @@ def create_app() -> FastAPI:
         app.state.chosen_target_id = target["id"]
         return {"target": target, "chosen_id": target["id"]}
 
+    @app.get("/api/v1/inputs/{target_id}/residues")
+    async def read_residues(target_id: str) -> dict[str, Any]:
+        try:
+            target = resolve_target(inputs_dir(), target_id)
+        except TargetRejected as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except TargetNotFound as exc:
+            raise HTTPException(status_code=404, detail="Target not found") from exc
+        structure = inputs_dir() / str(target["id"])
+        try:
+            parsed = await asyncio.to_thread(read_structure, structure)
+        except ResidueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return parsed
+
+    @app.post("/api/v1/reference-ligands", status_code=201)
+    async def upload_reference_ligand(request: Request) -> dict[str, Any]:
+        body = await _read_limited(request, _TARGET_UPLOAD_LIMIT)
+        _fields, file_part = _form(request.headers.get("content-type", ""), body)
+        if file_part is None:
+            raise HTTPException(status_code=422, detail="Upload a Reference ligand")
+        filename, payload = file_part
+        try:
+            stored = store_reference_ligand(ligands_dir(), filename, payload)
+        except StartRejected as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"ligand": stored}
+
+    @app.post("/api/v1/alignments", status_code=201)
+    async def upload_alignment(request: Request) -> dict[str, Any]:
+        body = await _read_limited(request, _TARGET_UPLOAD_LIMIT)
+        _fields, file_part = _form(request.headers.get("content-type", ""), body)
+        if file_part is None:
+            raise HTTPException(status_code=422, detail="Upload an alignment file")
+        filename, payload = file_part
+        try:
+            stored = store_alignment(alignments_dir(), filename, payload)
+        except StartRejected as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"alignment": stored}
+
+    @app.get("/api/v1/scorers")
+    async def read_scorers() -> dict[str, Any]:
+        return {"scorers": selectable_scorers()}
+
+    @app.get("/api/v1/presets")
+    async def read_presets() -> dict[str, Any]:
+        return await asyncio.to_thread(describe_presets, supervisor.runs_root)
+
+    @app.get("/api/v1/schema")
+    async def read_schema() -> dict[str, Any]:
+        schema = RunSpec.model_json_schema()
+        return {"schema": schema, "advanced": advanced_fields(schema)}
+
+    @app.get("/api/v1/runs")
+    async def list_runs() -> dict[str, Any]:
+        return {"runs": supervisor.list_runs()}
+
     @app.post("/api/v1/runs", status_code=201)
     async def start_run(request: Request) -> JSONResponse:
         try:
@@ -614,11 +744,19 @@ def create_app() -> FastAPI:
         if not isinstance(payload, dict):
             raise HTTPException(status_code=422, detail="Run spec must be an object")
         try:
+            payload = prepare_start_payload(
+                payload,
+                inputs_root=inputs_dir(),
+                ligands_root=ligands_dir(),
+                alignments_root=alignments_dir(),
+            )
             run_id, status = await supervisor.enqueue(payload)
+        except StartRejected as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except DoctorRefused as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail=_without_host_paths(str(exc))) from exc
         return JSONResponse({"run_id": run_id, "status": status}, status_code=201)
 
     @app.get("/api/v1/runs/{run_id}")

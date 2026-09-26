@@ -250,6 +250,92 @@ button.fix:hover, button.choose:hover { background: var(--ink); color: var(--she
   font-family: "Fraunces", Palatino, serif;
   font-size: 1.35rem;
 }
+.steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 1.2rem;
+  margin: 0.2rem 0 1.2rem;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+}
+.steps li {
+  counter-increment: step;
+  font-family: "Fraunces", Palatino, serif;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+}
+.steps li::before {
+  content: counter(step, decimal-leading-zero);
+  margin-right: 0.4rem;
+  color: var(--brass);
+}
+.steps li[aria-current="step"] { box-shadow: inset 0 -3px 0 var(--oxide); }
+.pocket-kinds, .choice-list, .wizard-nav { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.8rem; }
+.residue-list { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.8rem; }
+button.residue, button.preset, button.scorer-choice {
+  background: var(--stamp);
+  color: var(--ink);
+}
+button.preset, button.scorer-choice {
+  display: grid;
+  justify-items: start;
+  gap: 0.15rem;
+  min-width: min(100%, 16rem);
+  text-align: left;
+}
+button.residue[aria-pressed="true"] {
+  background: var(--oxide);
+  color: var(--sheet);
+  transform: rotate(-1deg);
+}
+button.preset[aria-pressed="true"], button.scorer-choice[aria-pressed="true"],
+button.choose[aria-pressed="true"], #pocket-residues[aria-pressed="true"], #pocket-ligand[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--sheet);
+}
+.prompt { margin: 0.2rem 0; font-weight: 600; }
+.preset-name { font-size: 1.25rem; }
+details { margin-top: 1rem; }
+summary { cursor: pointer; font-family: "Fraunces", Palatino, serif; font-weight: 700; }
+#advanced-fields { display: grid; gap: 0.8rem; margin-top: 0.8rem; }
+textarea, input[type="number"] {
+  font: inherit;
+  color: var(--ink);
+  background: var(--sheet);
+  border: 1px solid var(--ink);
+  padding: 0.4rem 0.55rem;
+  width: min(100%, 36rem);
+}
+.run-list { display: grid; gap: 0.75rem; }
+.run {
+  padding: 0.75rem 0.2rem 0.85rem;
+  border-bottom: 1px solid var(--rule);
+}
+.run h3 { margin: 0; font-family: "Fraunces", Palatino, serif; font-size: 1.35rem; }
+.meter {
+  height: 0.45rem;
+  margin: 0.4rem 0 0.7rem;
+  background: var(--rule);
+  overflow: hidden;
+}
+.meter span {
+  display: block;
+  height: 100%;
+  width: 100%;
+  background: var(--verd);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.45s ease;
+}
+.progress {
+  margin: 0.2rem 0;
+  font-family: "Fraunces", Palatino, serif;
+  font-size: clamp(1.5rem, 3vw, 2.1rem);
+  letter-spacing: -0.03em;
+}
+.eta { margin: 0 0 1rem; color: var(--brass); font-weight: 600; }
 @media (max-width: 800px) {
   .rail { position: static; width: auto; height: auto; border-right: 0; border-bottom: 1px solid var(--rule); }
   .rail span { writing-mode: horizontal-tb; transform: none; padding: 0.7rem 1rem; letter-spacing: 0.28em; }
@@ -262,6 +348,8 @@ button.fix:hover, button.choose:hover { background: var(--ink); color: var(--she
 @media (prefers-reduced-motion: reduce) {
   section { animation: none; }
   html { scroll-behavior: auto; }
+  .meter span { transition: none; }
+  button.residue[aria-pressed="true"] { transform: none; }
 }
 </style>
 </head>
@@ -319,9 +407,93 @@ button.fix:hover, button.choose:hover { background: var(--ink); color: var(--she
       <p id="chosen-target" class="chosen">No Target chosen.</p>
       <p id="target-status" class="action-status" role="status"></p>
     </section>
+    <section id="wizard" aria-labelledby="wizard-title">
+      <p class="index">04</p>
+      <h2 id="wizard-title">New Run</h2>
+      <p class="intro">Target, Pocket, Preset, Scorer, then Start. One Run executes at a time.</p>
+      <ol id="wizard-order" class="steps">
+        <li data-step="target" aria-current="step">Target</li>
+        <li data-step="pocket">Pocket</li>
+        <li data-step="preset">Preset</li>
+        <li data-step="scorer">Scorer</li>
+        <li data-step="start">Start</li>
+      </ol>
+      <div data-wizard-step="target">
+        <p class="intro">Choose a Target from ~/BioSmart/inputs, or upload one above.</p>
+        <div id="wizard-targets" class="target-list"></div>
+      </div>
+      <div data-wizard-step="pocket" hidden>
+        <p class="intro">The Pocket is selected residues or a Reference ligand.</p>
+        <div id="pocket-prompts"></div>
+        <div class="pocket-kinds">
+          <button type="button" id="pocket-residues" aria-pressed="true">Selected residues</button>
+          <button type="button" id="pocket-ligand" aria-pressed="false">Reference ligand</button>
+        </div>
+        <div id="residue-list" class="residue-list"></div>
+        <form id="ligand-form">
+          <label>Reference ligand
+            <input id="ligand-file" name="file" type="file" accept=".sdf,.mol,.mol2,.pdb">
+          </label>
+          <button id="ligand-upload" type="submit">Upload Reference ligand</button>
+        </form>
+        <p id="ligand-chosen" class="chosen"></p>
+      </div>
+      <div data-wizard-step="preset" hidden>
+        <p class="intro">A Preset is a named Budget. Its estimate comes from recorded Scoring-round durations.</p>
+        <div id="preset-list" class="choice-list"></div>
+      </div>
+      <div data-wizard-step="scorer" hidden>
+        <p class="intro">Choose a Scorer. The Pose provider is not a Scorer.</p>
+        <div id="scorer-list" class="choice-list"></div>
+      </div>
+      <div data-wizard-step="start" hidden>
+        <p id="start-summary" class="chosen"></p>
+        <div id="wizard-libraries" class="choice-list"></div>
+        <p id="start-reminder" class="reminder"></p>
+        <details id="advanced">
+          <summary>Advanced</summary>
+          <div id="advanced-fields"></div>
+        </details>
+      </div>
+      <div class="wizard-nav">
+        <button type="button" id="wizard-back" hidden>Back</button>
+        <button type="button" id="wizard-continue">Continue</button>
+        <button type="button" id="wizard-start" hidden>Start</button>
+      </div>
+      <p id="wizard-status" class="action-status" role="status"></p>
+    </section>
+    <section id="runs" aria-labelledby="runs-title">
+      <p class="index">05</p>
+      <h2 id="runs-title">Runs</h2>
+      <p class="intro">Queue a Run when one is already executing. Cancel drops a queued Run. Stop pauses the running Run. Resume continues a Paused Run.</p>
+      <div class="meter" id="run-meter" hidden><span id="run-meter-bar"></span></div>
+      <p id="run-progress" class="progress" role="status"></p>
+      <p id="run-eta" class="eta" role="status"></p>
+      <div id="run-list" class="run-list"></div>
+    </section>
   </div>
 </main>
 <script>
+const wizard = {
+  step: "target",
+  unlocked: 0,
+  pocketKind: "residues",
+  residues: new Set(),
+  ligandId: "",
+  ligandName: "",
+  preset: "quick",
+  scorer: "",
+  libraryId: "",
+  libraries: [],
+  scorers: [],
+  presets: [],
+  chains: [],
+  advanced: {},
+  targetId: "",
+  targetName: "",
+  steps: ["target", "pocket", "preset", "scorer", "start"],
+};
+
 async function readJson(response) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -435,7 +607,11 @@ function renderLibraries(payload) {
 }
 
 async function loadLibraries() {
-  renderLibraries(await readJson(await fetch("/api/v1/libraries")));
+  const payload = await readJson(await fetch("/api/v1/libraries"));
+  wizard.libraries = Array.isArray(payload.libraries) ? payload.libraries : [];
+  if (!wizard.libraryId) wizard.libraryId = payload.default_id || "";
+  renderLibraries(payload);
+  renderLibraryChoices();
 }
 
 function renderTargets(payload) {
@@ -468,6 +644,10 @@ function renderTargets(payload) {
   }
   const chosenLine = document.getElementById("chosen-target");
   chosenLine.textContent = chosen ? "Chosen Target: " + chosen : "No Target chosen.";
+  wizard.targetId = chosen;
+  const chosenTarget = targets.find((item) => item.id === chosen);
+  wizard.targetName = chosenTarget ? (chosenTarget.name || chosenTarget.id || "") : "";
+  renderWizardTargets(targets, chosen);
 }
 
 async function loadTargets() {
@@ -540,7 +720,558 @@ document.getElementById("target-form").addEventListener("submit", async (event) 
   }
 });
 
-Promise.all([loadDoctor(), loadLibraries(), loadTargets()]).catch((error) => {
+function renderWizardTargets(targets, chosen) {
+  const root = document.getElementById("wizard-targets");
+  root.replaceChildren();
+  if (!targets.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "No Target in ~/BioSmart/inputs yet.";
+    root.append(empty);
+    return;
+  }
+  for (const target of targets) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "choose";
+    button.dataset.targetId = target.id || "";
+    button.setAttribute("aria-pressed", target.id === chosen ? "true" : "false");
+    button.textContent = target.id === chosen ? "Chosen · " + (target.name || target.id) : "Choose · " + (target.name || target.id);
+    button.addEventListener("click", () => chooseTarget(target.id));
+    root.append(button);
+  }
+}
+
+function showWizardError(error) {
+  document.getElementById("wizard-status").textContent = error instanceof Error ? error.message : "The host refused the request.";
+}
+
+function showStep(step) {
+  const index = wizard.steps.indexOf(step);
+  if (index < 0 || index > wizard.unlocked) return;
+  wizard.step = step;
+  for (const name of wizard.steps) {
+    const panel = document.querySelector('[data-wizard-step="' + name + '"]');
+    if (panel) panel.hidden = name !== step;
+    const tab = document.querySelector("#wizard-order [data-step='" + name + "']");
+    if (!tab) continue;
+    if (name === step) tab.setAttribute("aria-current", "step");
+    else tab.removeAttribute("aria-current");
+  }
+  document.getElementById("wizard-back").hidden = index === 0;
+  const onStart = step === "start";
+  document.getElementById("wizard-continue").hidden = onStart;
+  document.getElementById("wizard-start").hidden = !onStart;
+  if (onStart) renderStartSummary();
+}
+
+function stepProblem(step) {
+  if (step === "target" && !wizard.targetId) return "Choose a Target.";
+  if (step === "pocket") {
+    if (wizard.pocketKind === "reference_ligand" && !wizard.ligandId) return "Upload a Reference ligand.";
+    if (wizard.pocketKind !== "reference_ligand" && wizard.residues.size === 0) return "Select residues for the Pocket.";
+  }
+  if (step === "preset" && !wizard.preset) return "Choose a Preset.";
+  if (step === "scorer") {
+    if (!wizard.scorer) return "Choose a Scorer.";
+    const chosen = wizard.scorers.find((item) => item.id === wizard.scorer);
+    if (chosen && chosen.pocket === "reference_ligand" && !wizard.ligandId) return chosen.prompt || "Upload a Reference ligand.";
+    if (chosen && chosen.pocket === "residues" && wizard.residues.size === 0) return chosen.prompt || "Select residues for the Pocket.";
+  }
+  if (step === "start" && !wizard.libraryId) return "Build a Building-block library before Start.";
+  return "";
+}
+
+function choosePocket(kind) {
+  wizard.pocketKind = kind;
+  document.getElementById("pocket-residues").setAttribute("aria-pressed", kind === "residues" ? "true" : "false");
+  document.getElementById("pocket-ligand").setAttribute("aria-pressed", kind === "reference_ligand" ? "true" : "false");
+}
+
+function selectedResidues() {
+  const ordered = [];
+  for (const chain of wizard.chains) {
+    for (const residue of chain.residues || []) {
+      if (wizard.residues.has(residue.id)) ordered.push(residue.id);
+    }
+  }
+  for (const residue of wizard.residues) {
+    if (!ordered.includes(residue)) ordered.push(residue);
+  }
+  return ordered;
+}
+
+function sequenceForSelection() {
+  const selected = selectedResidues();
+  const chainId = selected.length ? selected[0].split(":")[0] : "";
+  const match = wizard.chains.find((chain) => chain.chain === chainId) || wizard.chains[0];
+  return match && match.sequence ? match.sequence : "";
+}
+
+function renderResidues(residues) {
+  const root = document.getElementById("residue-list");
+  root.replaceChildren();
+  if (!residues.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "This Target has no residues to select.";
+    root.append(empty);
+    return;
+  }
+  for (const residue of residues) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "residue";
+    button.dataset.residue = residue.id || "";
+    button.setAttribute("aria-pressed", wizard.residues.has(residue.id) ? "true" : "false");
+    button.textContent = (residue.id || "") + (residue.name ? " " + residue.name : "");
+    button.addEventListener("click", () => {
+      if (wizard.residues.has(residue.id)) wizard.residues.delete(residue.id);
+      else wizard.residues.add(residue.id);
+      button.setAttribute("aria-pressed", wizard.residues.has(residue.id) ? "true" : "false");
+      const area = document.querySelector('[data-advanced="target.sequence"]');
+      if (area && area.dataset.touched !== "yes") area.value = sequenceForSelection();
+    });
+    root.append(button);
+  }
+}
+
+async function loadResidues() {
+  if (!wizard.targetId) return;
+  const parsed = await readJson(await fetch("/api/v1/inputs/" + encodeURIComponent(wizard.targetId) + "/residues"));
+  wizard.chains = Array.isArray(parsed.chains) ? parsed.chains : [];
+  renderResidues(Array.isArray(parsed.residues) ? parsed.residues : []);
+  const area = document.querySelector('[data-advanced="target.sequence"]');
+  if (area && area.dataset.touched !== "yes") area.value = sequenceForSelection();
+}
+
+function renderPocketPrompts() {
+  const root = document.getElementById("pocket-prompts");
+  root.replaceChildren();
+  for (const scorer of wizard.scorers) {
+    if (!scorer.prompt) continue;
+    const line = document.createElement("p");
+    line.className = "prompt";
+    line.dataset.pocket = scorer.pocket || "";
+    line.textContent = scorer.prompt;
+    root.append(line);
+  }
+}
+
+function etaText(seconds) {
+  if (seconds == null) return "Estimate unknown until a Scoring round is recorded.";
+  const total = Math.max(0, Math.round(Number(seconds)));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours) return "ETA " + hours + " h " + minutes + " min.";
+  if (minutes) return "ETA " + minutes + " min " + secs + " s.";
+  return "ETA " + secs + " s.";
+}
+
+function renderPresets() {
+  const root = document.getElementById("preset-list");
+  root.replaceChildren();
+  for (const preset of wizard.presets) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "preset";
+    button.dataset.preset = preset.id || "";
+    button.setAttribute("aria-pressed", preset.id === wizard.preset ? "true" : "false");
+    const title = document.createElement("span");
+    title.className = "preset-name";
+    title.textContent = preset.name || preset.id || "Preset";
+    const budget = document.createElement("span");
+    budget.textContent = preset.iterations + " Iterations × " + preset.candidates_per_iteration + " Candidates";
+    const eta = document.createElement("span");
+    eta.className = "quiet";
+    eta.textContent = etaText(preset.eta_seconds);
+    button.append(title, budget, eta);
+    button.addEventListener("click", () => {
+      wizard.preset = preset.id;
+      renderPresets();
+    });
+    root.append(button);
+  }
+}
+
+function renderScorers() {
+  const root = document.getElementById("scorer-list");
+  root.replaceChildren();
+  for (const scorer of wizard.scorers) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "scorer-choice";
+    button.dataset.scorerId = scorer.id || "";
+    button.setAttribute("aria-pressed", scorer.id === wizard.scorer ? "true" : "false");
+    const title = document.createElement("span");
+    title.className = "preset-name";
+    title.textContent = scorer.name || "Scorer";
+    const summary = document.createElement("span");
+    summary.className = "quiet";
+    summary.textContent = scorer.summary || "";
+    button.append(title, summary);
+    if (scorer.pose_provider) {
+      const pose = document.createElement("span");
+      pose.className = "quiet";
+      pose.textContent = "Pose provider " + scorer.pose_provider + ".";
+      button.append(pose);
+    }
+    button.addEventListener("click", () => {
+      wizard.scorer = scorer.id;
+      if (scorer.pocket === "residues" || scorer.pocket === "reference_ligand") choosePocket(scorer.pocket);
+      renderScorers();
+    });
+    root.append(button);
+  }
+}
+
+function renderLibraryChoices() {
+  const root = document.getElementById("wizard-libraries");
+  if (!root) return;
+  root.replaceChildren();
+  for (const library of wizard.libraries) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "choose";
+    button.dataset.libraryId = library.id || "";
+    button.setAttribute("aria-pressed", library.id === wizard.libraryId ? "true" : "false");
+    button.textContent = (library.id || "Library") + (library.default ? " · Default" : "");
+    button.addEventListener("click", () => {
+      wizard.libraryId = library.id || "";
+      renderLibraryChoices();
+      renderStartSummary();
+    });
+    root.append(button);
+  }
+}
+
+function renderStartSummary() {
+  const library = wizard.libraries.find((item) => item.id === wizard.libraryId);
+  const reminder = document.getElementById("start-reminder");
+  reminder.textContent = library && library.reminder ? library.reminder + " Start remains available." : "";
+  const scorer = wizard.scorers.find((item) => item.id === wizard.scorer);
+  const preset = wizard.presets.find((item) => item.id === wizard.preset);
+  const parts = [wizard.targetName || wizard.targetId, preset ? preset.name : "", scorer ? scorer.name : ""].filter(Boolean);
+  document.getElementById("start-summary").textContent = parts.join(" · ");
+}
+
+function renderAdvanced(fields) {
+  const root = document.getElementById("advanced-fields");
+  root.replaceChildren();
+  for (const field of fields) {
+    const label = document.createElement("label");
+    label.textContent = field.title || field.path;
+    let control;
+    if (field.widget === "text") {
+      control = document.createElement("textarea");
+      control.rows = 3;
+    } else {
+      control = document.createElement("input");
+      control.type = field.widget === "file" ? "file" : "number";
+      if (field.widget === "file" && field.accept) control.accept = field.accept;
+      if (field.widget === "number") {
+        control.value = "1";
+        wizard.advanced[field.path] = 1;
+      }
+    }
+    control.dataset.advanced = field.path;
+    if (field.widget === "file") {
+      control.addEventListener("change", () => uploadAdvancedFile(field.path, control));
+    } else if (field.widget === "number") {
+      control.addEventListener("input", () => {
+        wizard.advanced[field.path] = control.value === "" ? "" : Number(control.value);
+      });
+    } else {
+      control.addEventListener("input", () => {
+        control.dataset.touched = "yes";
+        wizard.advanced[field.path] = control.value;
+      });
+    }
+    label.append(control);
+    root.append(label);
+  }
+}
+
+async function uploadAdvancedFile(path, control) {
+  const status = document.getElementById("wizard-status");
+  const file = control.files && control.files[0];
+  if (!file) return;
+  const body = new FormData();
+  body.append("file", file, file.name);
+  status.textContent = "Uploading the alignment…";
+  try {
+    const stored = await readJson(await fetch("/api/v1/alignments", { method: "POST", body }));
+    wizard.advanced[path] = stored.alignment && stored.alignment.id ? stored.alignment.id : "";
+    status.textContent = file.name;
+  } catch (error) {
+    showWizardError(error);
+  }
+}
+
+function applyAdvanced(spec) {
+  for (const [path, value] of Object.entries(wizard.advanced)) {
+    if (value == null || value === "") continue;
+    const parts = path.split(".");
+    let cursor = spec;
+    for (let index = 0; index < parts.length - 1; index += 1) {
+      const part = parts[index];
+      if (!cursor[part] || typeof cursor[part] !== "object") cursor[part] = {};
+      cursor = cursor[part];
+    }
+    cursor[parts[parts.length - 1]] = value;
+  }
+}
+
+async function loadScorers() {
+  const payload = await readJson(await fetch("/api/v1/scorers"));
+  wizard.scorers = Array.isArray(payload.scorers) ? payload.scorers : [];
+  renderPocketPrompts();
+  renderScorers();
+}
+
+async function loadPresets() {
+  const payload = await readJson(await fetch("/api/v1/presets"));
+  wizard.presets = Array.isArray(payload.presets) ? payload.presets : [];
+  if (!wizard.presets.some((preset) => preset.id === wizard.preset) && wizard.presets[0]) {
+    wizard.preset = wizard.presets[0].id;
+  }
+  renderPresets();
+}
+
+async function loadSchema() {
+  const payload = await readJson(await fetch("/api/v1/schema"));
+  const fields = Array.isArray(payload.advanced) ? payload.advanced : [];
+  renderAdvanced(fields);
+}
+
+function progressText(run) {
+  const iterations = run.iterations || 0;
+  if (!iterations) return "Waiting for the first Scoring round.";
+  return "Iteration " + (run.iteration || 0) + " of " + iterations + ". Scoring round " + (run.round_no || 0) + ".";
+}
+
+function statusLabel(status) {
+  if (status === "queued") return "Queued";
+  if (status === "running") return "Running";
+  if (status === "paused") return "Paused";
+  if (status === "finished") return "Finished";
+  if (status === "failed") return "Failed";
+  if (status === "cancelled") return "Cancelled";
+  return status || "";
+}
+
+function renderRuns(payload) {
+  const runs = Array.isArray(payload.runs) ? payload.runs : [];
+  const root = document.getElementById("run-list");
+  root.replaceChildren();
+  if (!runs.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "No Run yet.";
+    root.append(empty);
+  }
+  let featured = null;
+  for (const run of runs) {
+    if (run.status === "running") featured = run;
+    const article = document.createElement("article");
+    article.className = "run";
+    article.dataset.runId = run.run_id || "";
+    article.dataset.status = run.status || "";
+    const scorer = wizard.scorers.find((item) => item.id === run.scorer);
+    const preset = wizard.presets.find((item) => item.id === run.preset);
+    const title = document.createElement("h3");
+    title.textContent = [run.target, preset ? preset.name : "", scorer ? scorer.name : ""].filter(Boolean).join(" · ") || "Run";
+    const status = document.createElement("p");
+    status.className = "summary";
+    status.textContent = statusLabel(run.status);
+    article.append(title, status);
+    if (run.status === "running") {
+      const progress = document.createElement("p");
+      progress.className = "progress";
+      progress.textContent = progressText(run);
+      const eta = document.createElement("p");
+      eta.className = "eta";
+      eta.textContent = etaText(run.eta_seconds);
+      article.append(progress, eta);
+    }
+    const action = runAction(run);
+    if (action) article.append(action);
+    root.append(article);
+  }
+  const progress = document.getElementById("run-progress");
+  const eta = document.getElementById("run-eta");
+  const meter = document.getElementById("run-meter");
+  const bar = document.getElementById("run-meter-bar");
+  if (featured) {
+    progress.textContent = progressText(featured);
+    eta.textContent = etaText(featured.eta_seconds);
+    const iterations = featured.iterations || 0;
+    meter.hidden = !iterations;
+    bar.style.transform = "scaleX(" + (iterations ? Math.min(1, (featured.iteration || 0) / iterations) : 0) + ")";
+  } else if (runs.some((run) => run.status === "paused")) {
+    progress.textContent = "Paused.";
+    eta.textContent = "";
+    meter.hidden = true;
+  } else {
+    progress.textContent = "";
+    eta.textContent = "";
+    meter.hidden = true;
+  }
+}
+
+function runAction(run) {
+  let label = "";
+  let action = "";
+  if (run.status === "queued") {
+    label = "Cancel";
+    action = "cancel";
+  } else if (run.status === "running") {
+    label = "Stop";
+    action = "stop";
+  } else if (run.status === "paused") {
+    label = "Resume";
+    action = "resume";
+  } else {
+    return null;
+  }
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "choose";
+  button.dataset.action = action;
+  button.dataset.runId = run.run_id || "";
+  button.textContent = label;
+  button.addEventListener("click", () => commandRun(run.run_id, action, button));
+  return button;
+}
+
+async function commandRun(runId, action, button) {
+  button.disabled = true;
+  const status = document.getElementById("wizard-status");
+  if (action === "stop") status.textContent = "Pausing the Run…";
+  try {
+    await readJson(await fetch("/api/v1/runs/" + encodeURIComponent(runId) + "/" + action, { method: "POST" }));
+    if (action === "stop") status.textContent = "Paused.";
+    else status.textContent = "";
+    await refreshRuns();
+  } catch (error) {
+    showWizardError(error);
+    button.disabled = false;
+  }
+}
+
+let runsInflight = false;
+async function refreshRuns() {
+  if (runsInflight) return;
+  runsInflight = true;
+  try {
+    renderRuns(await readJson(await fetch("/api/v1/runs")));
+  } finally {
+    runsInflight = false;
+  }
+}
+
+async function startRun() {
+  const status = document.getElementById("wizard-status");
+  const problem = stepProblem("target") || stepProblem("pocket") || stepProblem("preset") || stepProblem("scorer") || stepProblem("start");
+  if (problem) {
+    status.textContent = problem;
+    return;
+  }
+  const spec = {
+    scorer: wizard.scorer,
+    preset: wizard.preset,
+    seed: 1,
+    target: { name: wizard.targetName || wizard.targetId, structure: wizard.targetId },
+    pocket: {},
+    library: { id: wizard.libraryId },
+  };
+  if (wizard.pocketKind === "reference_ligand") spec.pocket.reference_ligand = wizard.ligandId;
+  else spec.pocket.residues = selectedResidues();
+  applyAdvanced(spec);
+  const button = document.getElementById("wizard-start");
+  button.disabled = true;
+  status.textContent = "Starting the Run…";
+  try {
+    const created = await readJson(await fetch("/api/v1/runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(spec),
+    }));
+    status.textContent = created.status === "queued" ? "Queued." : "Running.";
+    await refreshRuns();
+  } catch (error) {
+    showWizardError(error);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+document.getElementById("wizard-order").addEventListener("click", (event) => {
+  const tab = event.target.closest("[data-step]");
+  if (tab) showStep(tab.dataset.step);
+});
+document.getElementById("wizard-back").addEventListener("click", () => {
+  const index = wizard.steps.indexOf(wizard.step);
+  if (index > 0) showStep(wizard.steps[index - 1]);
+});
+document.getElementById("wizard-continue").addEventListener("click", () => {
+  const status = document.getElementById("wizard-status");
+  const problem = stepProblem(wizard.step);
+  if (problem) {
+    status.textContent = problem;
+    return;
+  }
+  status.textContent = "";
+  const index = wizard.steps.indexOf(wizard.step);
+  const next = wizard.steps[index + 1];
+  if (!next) return;
+  wizard.unlocked = Math.max(wizard.unlocked, index + 1);
+  if (next === "pocket") loadResidues().catch(showWizardError);
+  showStep(next);
+});
+document.getElementById("wizard-start").addEventListener("click", () => {
+  startRun().catch(showWizardError);
+});
+document.getElementById("pocket-residues").addEventListener("click", () => choosePocket("residues"));
+document.getElementById("pocket-ligand").addEventListener("click", () => choosePocket("reference_ligand"));
+document.getElementById("ligand-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const status = document.getElementById("wizard-status");
+  const fileInput = document.getElementById("ligand-file");
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) {
+    status.textContent = "Upload a Reference ligand.";
+    return;
+  }
+  const body = new FormData();
+  body.append("file", file, file.name);
+  document.getElementById("ligand-upload").disabled = true;
+  status.textContent = "Uploading the Reference ligand…";
+  try {
+    const stored = await readJson(await fetch("/api/v1/reference-ligands", { method: "POST", body }));
+    wizard.ligandId = stored.ligand && stored.ligand.id ? stored.ligand.id : "";
+    wizard.ligandName = stored.ligand && stored.ligand.name ? stored.ligand.name : file.name;
+    document.getElementById("ligand-chosen").textContent = "Reference ligand: " + wizard.ligandName;
+    choosePocket("reference_ligand");
+    status.textContent = "";
+    fileInput.value = "";
+  } catch (error) {
+    showWizardError(error);
+  } finally {
+    document.getElementById("ligand-upload").disabled = false;
+  }
+});
+
+const runEvents = new EventSource("/api/v1/events");
+runEvents.onmessage = () => {
+  refreshRuns().catch(() => {});
+};
+setInterval(() => {
+  refreshRuns().catch(() => {});
+}, 500);
+
+Promise.all([loadDoctor(), loadLibraries(), loadTargets(), loadScorers(), loadPresets(), loadSchema(), refreshRuns()]).catch((error) => {
   const status = document.getElementById("doctor-status");
   if (!status.textContent) {
     status.textContent = error instanceof Error ? error.message : "The host did not answer.";

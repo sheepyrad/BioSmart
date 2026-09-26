@@ -44,8 +44,16 @@ class TargetSpec(BaseModel):
 
     name: str = Field(min_length=1)
     structure: str | None = None
-    sequence: str | None = None
-    msa: str | None = None
+    sequence: str | None = Field(
+        default=None,
+        title="Sequence",
+        json_schema_extra={"advanced": True, "widget": "text"},
+    )
+    msa: str | None = Field(
+        default=None,
+        title="Alignment",
+        json_schema_extra={"advanced": True, "widget": "file", "accept": ".a3m,.fasta,.fa,.aln"},
+    )
 
 
 class PocketSpec(BaseModel):
@@ -69,7 +77,7 @@ class RunSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     scorer: ScorerName
-    seed: int
+    seed: int = Field(title="Seed", json_schema_extra={"advanced": True, "widget": "number"})
     budget: Budget | None = None
     preset: PresetName | None = None
     target: TargetSpec
