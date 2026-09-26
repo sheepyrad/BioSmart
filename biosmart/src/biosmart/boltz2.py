@@ -14,6 +14,7 @@ from typing import Any
 
 import yaml
 
+from biosmart.pose_atoms import ligand_pose_from_prediction, pose_from_payload
 from biosmart.scoring import Candidate, ScoreResult, ScorerFailed
 from biosmart.spec import PocketSpec, TargetSpec
 
@@ -206,16 +207,17 @@ class Boltz2Resident:
                     }
                 )
             else:
-                results.append(
-                    {
-                        "candidate_id": candidate["candidate_id"],
-                        "canonical_smiles": smiles,
-                        "status": found["status"],
-                        "reward": found["reward"],
-                        "failure_reason": found["failure_reason"],
-                        "raw": found["raw"],
-                    }
-                )
+                item = {
+                    "candidate_id": candidate["candidate_id"],
+                    "canonical_smiles": smiles,
+                    "status": found["status"],
+                    "reward": found["reward"],
+                    "failure_reason": found["failure_reason"],
+                    "raw": found["raw"],
+                }
+                if found.get("pose"):
+                    item["pose"] = found["pose"]
+                results.append(item)
         return {"results": results, "model_loads": self.model_loads, "prediction_calls": self.prediction_calls}
 
     def flush(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -369,12 +371,18 @@ class Boltz2Resident:
                     "raw": None,
                 }
                 continue
-            found[smiles] = {
+            scored = {
                 "status": "scored",
                 "reward": _shaped_reward(summary),
                 "failure_reason": None,
                 "raw": summary,
             }
+            pose = ligand_pose_from_prediction(out_dir, stem)
+            if pose:
+                scored["pose"] = [
+                    {"element": atom.element, "x": atom.x, "y": atom.y, "z": atom.z} for atom in pose
+                ]
+            found[smiles] = scored
         return found
 
     def _run_predict(self, inputs: Path, out_parent: Path) -> Path:
@@ -569,6 +577,7 @@ class Boltz2Scorer:
                 reward=None if reward is None else float(reward),
                 failure_reason=None if item.get("failure_reason") is None else str(item["failure_reason"]),
                 raw=raw if isinstance(raw, dict) else None,
+                pose=pose_from_payload(item.get("pose")),
             )
             results.append(result)
             if (

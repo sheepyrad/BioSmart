@@ -1,6 +1,8 @@
-"""A Candidate's pose in the Pocket.
+"""A Candidate's stored pose in the Pocket.
 
 The Run database is the source of truth. This module does not read the Index.
+A pose is drawn only when the Run recorded one. Otherwise the Candidate has
+no stored pose.
 """
 
 from __future__ import annotations
@@ -29,10 +31,9 @@ def candidate_pose(
     *,
     inputs_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Coordinates for one Candidate, placed against the Pocket.
+    """The stored pose for one Candidate, beside the Pocket.
 
-    A stored pose file inside the Run folder is used when the Run database
-    records one. Otherwise the pose is built from the Candidate's SMILES.
+    ``pose`` is null when the Run database has no pose file for this Candidate.
     """
     if not isinstance(run_folder, Path):
         raise TypeError("run_folder must be a Path")
@@ -50,13 +51,10 @@ def candidate_pose(
 
     residues, reference_ligand = _pocket(run_folder)
     stored = _stored_pose(run_folder, row["pose_ref"])
-    generated = stored is None
-    pose_atoms = _atoms_from_file(stored) if stored is not None else _atoms_from_smiles(smiles)
-    if not pose_atoms:
-        raise PoseError("Candidate cannot be drawn")
+    pose_atoms = _atoms_from_file(stored) if stored is not None else None
+    if stored is not None and not pose_atoms:
+        raise PoseError("Stored pose cannot be drawn")
     pocket_atoms = _pocket_atoms(_target_text(run_folder, inputs_root), set(residues))
-    if generated and pocket_atoms:
-        _place_in_pocket(pose_atoms, pocket_atoms)
 
     pocket: dict[str, Any] = {"residues": residues}
     if reference_ligand is not None:
@@ -68,7 +66,8 @@ def candidate_pose(
         "score": None if row["reward"] is None else float(row["reward"]),
         "failure_reason": row["failure_reason"],
         "pocket": pocket,
-        "pose": [_round_atom(atom) for atom in pose_atoms],
+        "stored": pose_atoms is not None,
+        "pose": None if pose_atoms is None else [_round_atom(atom) for atom in pose_atoms],
         "pocket_atoms": [_round_atom(atom) for atom in pocket_atoms],
     }
 
@@ -188,27 +187,6 @@ def _atoms_from_file(path: Path) -> list[dict[str, Any]]:
     return _heavy_atoms(parsed)
 
 
-def _atoms_from_smiles(smiles: str) -> list[dict[str, Any]]:
-    from rdkit import Chem
-    from rdkit.Chem import AllChem
-
-    parsed = Chem.MolFromSmiles(smiles)
-    if parsed is None:
-        raise PoseError("Candidate cannot be drawn")
-    hydrated = Chem.AddHs(parsed)
-    params = AllChem.ETKDGv3()
-    params.randomSeed = 0xB105
-    embedded = AllChem.EmbedMolecule(hydrated, params)
-    if embedded != 0:
-        AllChem.Compute2DCoords(hydrated)
-    else:
-        try:
-            AllChem.UFFOptimizeMolecule(hydrated, maxIters=40)
-        except ValueError:
-            pass
-    return _heavy_atoms(hydrated)
-
-
 def _heavy_atoms(parsed: Any) -> list[dict[str, Any]]:
     if parsed.GetNumConformers() < 1:
         return []
@@ -300,27 +278,6 @@ def _mmcif_atoms(text: str, residues: set[str]) -> list[dict[str, Any]]:
         name = fields.get("auth_atom_id") or fields.get("label_atom_id") or element
         atoms.append({"residue": residue_id, "name": name, "element": element, "x": x, "y": y, "z": z})
     return atoms
-
-
-def _place_in_pocket(pose: list[dict[str, Any]], pocket_atoms: list[dict[str, Any]]) -> None:
-    pose_center = _centroid(pose)
-    pocket_center = _centroid(pocket_atoms)
-    dx = pocket_center[0] - pose_center[0]
-    dy = pocket_center[1] - pose_center[1]
-    dz = pocket_center[2] - pose_center[2]
-    for atom in pose:
-        atom["x"] = float(atom["x"]) + dx
-        atom["y"] = float(atom["y"]) + dy
-        atom["z"] = float(atom["z"]) + dz
-
-
-def _centroid(atoms: list[dict[str, Any]]) -> tuple[float, float, float]:
-    count = len(atoms)
-    return (
-        sum(float(atom["x"]) for atom in atoms) / count,
-        sum(float(atom["y"]) for atom in atoms) / count,
-        sum(float(atom["z"]) for atom in atoms) / count,
-    )
 
 
 def _round_atom(atom: dict[str, Any]) -> dict[str, Any]:

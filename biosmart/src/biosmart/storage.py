@@ -112,6 +112,7 @@ def insert_candidate(
     scorer: str,
     route_json: str | None,
     raw: Mapping[str, Any] | None = None,
+    pose_ref: str | None = None,
 ) -> None:
     with connect(path) as connection:
         connection.execute(
@@ -119,7 +120,7 @@ def insert_candidate(
             INSERT INTO candidates (
                 id, iteration, round_no, canonical_smiles, status,
                 failure_reason, reward, route_json, pose_ref, temperature
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
             """,
             (
                 candidate_id,
@@ -130,6 +131,7 @@ def insert_candidate(
                 failure_reason,
                 reward,
                 route_json,
+                pose_ref,
             ),
         )
         connection.execute(

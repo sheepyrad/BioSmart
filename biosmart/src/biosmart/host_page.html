@@ -1727,7 +1727,11 @@ function drawPose(payload) {
   const caption = document.getElementById("pose-caption");
   const pocketText = residues.length ? residues.join(", ") : "Pocket";
   const reason = payload.failure_reason ? " Filter reason: " + payload.failure_reason + "." : "";
-  caption.textContent = "Pose of Candidate " + payload.candidate_id + " in the Pocket " + pocketText + "." + reason;
+  if (!pose.length) {
+    caption.textContent = "Candidate " + payload.candidate_id + " has no stored pose. Pocket " + pocketText + "." + reason;
+  } else {
+    caption.textContent = "Pose of Candidate " + payload.candidate_id + " in the Pocket " + pocketText + "." + reason;
+  }
   for (const row of document.querySelectorAll("#candidate-rows tr")) {
     row.setAttribute("aria-selected", row.dataset.candidateId === payload.candidate_id ? "true" : "false");
   }

@@ -77,6 +77,7 @@ def test_browser_pages_filters_searches_and_offers_export(tmp_path: Path) -> Non
     env["BIOSMART_LIBRARIES_ROOT"] = str(tmp_path / "libraries")
     env["BIOSMART_SKIP_DOCTOR"] = "1"
     env["CUDA_VISIBLE_DEVICES"] = ""
+    env.pop("BIOSMART_FAKE_SCORER_POSE", None)
     proc = subprocess.Popen(
         [sys.executable, "-m", "biosmart", "serve", "--port", "0"],
         cwd=REPO,
@@ -136,6 +137,7 @@ def test_browser_pages_filters_searches_and_offers_export(tmp_path: Path) -> Non
             expect(inspect).to_be_visible(timeout=30000)
             inspect.click()
             expect(page.locator("#pose-caption")).to_contain_text("Candidate 000001", timeout=20000)
+            expect(page.locator("#pose-caption")).to_contain_text("has no stored pose")
             expect(page.locator("#pose-caption")).to_contain_text("Pocket")
             expect(page.locator("#pose-caption")).to_contain_text("A:10")
             expect(page.locator("#candidate-rows")).to_contain_text("000001")
@@ -194,6 +196,7 @@ def test_browser_pages_filters_searches_and_offers_export(tmp_path: Path) -> Non
             _shot(page, "05-search.png")
             page.get_by_role("button", name="000004").click()
             expect(page.locator("#pose-caption")).to_contain_text("000004")
+            expect(page.locator("#pose-caption")).to_contain_text("has no stored pose")
             expect(page.locator("#pose-caption")).to_contain_text("A:10")
             _shot(page, "06-pose.png")
             expect(page.locator("#export-sdf")).to_be_enabled()

@@ -14,8 +14,10 @@ import os
 import shutil
 import subprocess
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
+from biosmart.pose_atoms import atoms_from_pose_record
 from biosmart.poses import (
     FABindPlus,
     PoseProvider,
@@ -122,7 +124,7 @@ class FlashBindScorer:
                 raise ScorerFailed("FlashBind scores are not in Candidate order")
             if result.reward is not None and result.status == "scored":
                 self._pending.append((result.canonical_smiles, result.reward))
-        return results
+        return _with_predicted_poses(results, posed)
 
     def flush(self) -> int:
         if self._cache_path is None or self._context_hash is None:
@@ -254,6 +256,22 @@ def score_posed_round(
             )
         )
     return results
+
+
+def _with_predicted_poses(results: list[ScoreResult], posed: PoseRound) -> list[ScoreResult]:
+    """Keep a pose FABind+ already wrote on the score. Do not build one."""
+    by_id = {pose.candidate_id: pose for pose in posed.poses}
+    attached: list[ScoreResult] = []
+    for result in results:
+        if result.pose:
+            attached.append(result)
+            continue
+        record = by_id.get(result.candidate_id)
+        atoms = None
+        if record is not None:
+            atoms = atoms_from_pose_record(record.pose_path, f"{posed.protein_id}_{record.ligand_id}")
+        attached.append(result if not atoms else replace(result, pose=atoms))
+    return attached
 
 
 def _reward(affinity: float, probability: float) -> float:

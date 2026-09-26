@@ -17,6 +17,7 @@ from biosmart.eta import estimate_eta_seconds
 from biosmart.flashbind import FlashBindScorer
 from biosmart.index import rebuild_index
 from biosmart.libraries import default_libraries_root, recorded_library
+from biosmart.pose_atoms import PoseAtom, write_pose_pdb
 from biosmart.scoring import Candidate, FakeScorer, Scorer, ScorerFailed, candidate_smiles
 from biosmart.spec import RunSpec
 from biosmart.storage import (
@@ -112,6 +113,20 @@ def _route_json(canonical_smiles: str, library_id: str) -> str:
         separators=(",", ":"),
         allow_nan=False,
     )
+
+
+_POSE_ID = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-"
+
+
+def _store_pose(run_folder: Path, candidate_id: str, pose: tuple[PoseAtom, ...] | None) -> str | None:
+    """Write a Scorer's pose inside the Run folder. None when the Scorer returned none."""
+    if not pose:
+        return None
+    if not candidate_id or any(character not in _POSE_ID for character in candidate_id):
+        raise ValueError("candidate id cannot name a pose file")
+    relative = Path("poses") / f"{candidate_id}.pdb"
+    write_pose_pdb(run_folder / relative, pose)
+    return relative.as_posix()
 
 
 def _write_scorer_working_files(
@@ -415,6 +430,7 @@ def _drive(
                 scorer=scorer.name,
                 route_json=_route_json(result.canonical_smiles, spec.library.id),
                 raw=result.raw,
+                pose_ref=_store_pose(folder, result.candidate_id, result.pose),
             )
         n_ok = sum(result.status == "scored" for result in results)
         n_failed = sum(result.status == "failed" for result in results)

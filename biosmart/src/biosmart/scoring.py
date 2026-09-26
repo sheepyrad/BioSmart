@@ -8,11 +8,13 @@ never touches a GPU. Candidates are drawn from a fixed catalog starting at
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from biosmart.pose_atoms import PoseAtom, pose_from_payload
 from biosmart.spec import PocketSpec, TargetSpec
 from biosmart.storage import flush_scorer_cache
 
@@ -48,6 +50,7 @@ class ScoreResult:
     reward: float | None
     failure_reason: str | None = None
     raw: dict[str, object] | None = None
+    pose: tuple[PoseAtom, ...] | None = None
 
 
 class Scorer(Protocol):
@@ -93,6 +96,7 @@ class FakeScorer:
             raise ValueError("round_no must be >= 1")
         if os.environ.get("BIOSMART_FAKE_SCORER_FAIL") == "1":
             raise ScorerFailed("FakeScorer failed")
+        poses = _fake_poses()
         results: list[ScoreResult] = []
         for candidate in candidates:
             reward = fake_reward(self.seed, self._ordinal)
@@ -104,6 +108,7 @@ class FakeScorer:
                     canonical_smiles=candidate.canonical_smiles,
                     status="scored",
                     reward=reward,
+                    pose=poses.get(candidate.candidate_id),
                 )
             )
         return results
@@ -126,3 +131,31 @@ class FakeScorer:
         )
         self._pending.clear()
         return written
+
+
+def _fake_poses() -> dict[str, tuple[PoseAtom, ...]]:
+    """Poses FakeScorer was given. Unset means this Scorer returned none."""
+    raw_path = os.environ.get("BIOSMART_FAKE_SCORER_POSE", "").strip()
+    if not raw_path:
+        return {}
+    path = Path(raw_path)
+    if not path.is_file():
+        raise ScorerFailed("FakeScorer pose file is missing")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ScorerFailed("FakeScorer pose file is invalid") from exc
+    if not isinstance(payload, dict):
+        raise ScorerFailed("FakeScorer pose file is invalid")
+    poses: dict[str, tuple[PoseAtom, ...]] = {}
+    for candidate_id, atoms in payload.items():
+        if not isinstance(candidate_id, str) or not candidate_id:
+            raise ScorerFailed("FakeScorer pose file is invalid")
+        try:
+            parsed = pose_from_payload(atoms)
+        except ValueError as exc:
+            raise ScorerFailed("FakeScorer pose file is invalid") from exc
+        if not parsed:
+            raise ScorerFailed("FakeScorer pose file is invalid")
+        poses[candidate_id] = parsed
+    return poses
