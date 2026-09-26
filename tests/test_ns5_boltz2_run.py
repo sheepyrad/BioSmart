@@ -1,4 +1,4 @@
-"""One Boltz-2 Iteration at the NS5 sampling width.
+"""One Boltz-2 Iteration of 32 Candidates.
 
 The Run is the seam. One Iteration scores 32 Candidates through a persistent
 Boltz-2 Scorer worker. The test reads the event stream and the Run folder.
@@ -20,7 +20,7 @@ DEFAULT_PYTHON = REPO / ".pixi" / "envs" / "default" / "bin" / "python"
 MSA = REPO / "cgflow" / "data" / "examples" / "NS5_crop.a3m"
 # Pocket from configs/opt/NS5_crop_boltz_32_2000.yaml. Selected residues, not a ligand.
 POCKET = ["A:16", "A:67", "A:138", "A:153", "A:184", "A:185"]
-# One Iteration at the config sampling width. The checked-in Budget is 2000×32.
+# One Iteration of 32 Candidates. The checked-in Budget is 2000×32.
 ITERATIONS = 1
 CANDIDATES = 32
 RUNS_ROOT = Path(
