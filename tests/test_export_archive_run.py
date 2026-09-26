@@ -211,8 +211,8 @@ def test_export_archive_and_import_rebuild_the_index(tmp_path: Path) -> None:
         )
         assert sdf_status == 200
         assert csv_status == 200
-        assert sdf_disposition.endswith(f"{run_id}-top-2.sdf")
-        assert csv_disposition.endswith(f"{run_id}-top-2.csv")
+        assert f'filename="{run_id}-top-2.sdf"' in sdf_disposition
+        assert f'filename="{run_id}-top-2.csv"' in csv_disposition
 
         sdf_records = _sdf_properties(sdf_bytes.decode())
         assert [record["canonical_smiles"] for record in sdf_records] == ["CCN", "CC(=O)O"]
