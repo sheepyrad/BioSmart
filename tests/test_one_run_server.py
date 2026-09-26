@@ -480,9 +480,9 @@ def test_second_run_waits_until_the_first_is_paused_and_cancel_drops_the_queue(
             read_status, read_back = _request(server.port, "GET", f"/api/v1/runs/{third_id}")
             assert read_status == 200
             assert read_back["status"] == "cancelled"
-            stopped_status, stopped = _request(server.port, "POST", f"/api/v1/runs/{first_id}/stop")
-            assert stopped_status == 200
-            assert stopped["status"] == "paused"
+            paused_status, paused = _request(server.port, "POST", f"/api/v1/runs/{first_id}/stop")
+            assert paused_status == 200
+            assert paused["status"] == "paused"
             streamed = stream.wait_until(
                 lambda events: any(
                     event.get("type") == "iteration" and event.get("iteration") == 1 and event.get("run_id") == second_id
@@ -525,9 +525,9 @@ def test_resume_continues_a_paused_run(tmp_path: Path) -> None:
                     for event in events
                 )
             )
-            stopped_status, stopped = _request(server.port, "POST", f"/api/v1/runs/{run_id}/stop")
-            assert stopped_status == 200
-            assert stopped["status"] == "paused"
+            paused_status, paused = _request(server.port, "POST", f"/api/v1/runs/{run_id}/stop")
+            assert paused_status == 200
+            assert paused["status"] == "paused"
             release.write_text("continue\n")
             resumed_status, resumed = _request(server.port, "POST", f"/api/v1/runs/{run_id}/resume")
             assert resumed_status == 200
@@ -588,9 +588,9 @@ def test_restart_reattaches_to_the_run_in_progress(tmp_path: Path) -> None:
                     )
                 )
                 assert any(event.get("type") == "run.started" and event.get("run_id") == run_id for event in replayed)
-                stopped_status, stopped = _request(restarted.port, "POST", f"/api/v1/runs/{run_id}/stop")
-                assert stopped_status == 200
-                assert stopped["status"] == "paused"
+                paused_status, paused = _request(restarted.port, "POST", f"/api/v1/runs/{run_id}/stop")
+                assert paused_status == 200
+                assert paused["status"] == "paused"
                 stream.wait_until(
                     lambda events: any(
                         event.get("type") == "run.paused" and event.get("run_id") == run_id for event in events
