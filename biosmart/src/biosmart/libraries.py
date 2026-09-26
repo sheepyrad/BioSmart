@@ -163,6 +163,50 @@ def default_library(libraries_root: Path) -> Library | None:
     return libraries[-1]
 
 
+def describe_libraries(
+    libraries_root: Path,
+    *,
+    now: datetime | None = None,
+    stale_after_days: int = STALE_AFTER_DAYS,
+) -> dict[str, object]:
+    """Libraries for the host page: newest first, default marked, staleness as a reminder.
+
+    The reminder does not refuse Start. A missing root is an empty list.
+    """
+    if not isinstance(libraries_root, Path):
+        raise TypeError("libraries_root must be a path")
+    if isinstance(stale_after_days, bool) or not isinstance(stale_after_days, int):
+        raise TypeError("stale_after_days must be an int")
+    if stale_after_days < 1:
+        raise ValueError("stale_after_days must be positive")
+    libraries = list_libraries(libraries_root)
+    chosen = libraries[-1] if libraries else None
+    items: list[dict[str, object]] = []
+    for library in reversed(libraries):
+        _recorded, reminder = recorded_library(
+            library.id,
+            libraries_root,
+            now=now,
+            stale_after_days=stale_after_days,
+        )
+        items.append(
+            {
+                "id": library.id,
+                "source": library.source,
+                "created_at": library.created_at.isoformat(),
+                "druglike": library.druglike,
+                "supplier_file": library.supplier_file,
+                "default": chosen is not None and library.id == chosen.id,
+                "reminder": reminder,
+            }
+        )
+    return {
+        "default_id": None if chosen is None else chosen.id,
+        "stale_after_days": stale_after_days,
+        "libraries": items,
+    }
+
+
 def recorded_library(
     library_id: str,
     libraries_root: Path | None,
