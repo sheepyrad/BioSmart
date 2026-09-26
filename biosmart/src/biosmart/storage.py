@@ -110,6 +110,7 @@ def insert_candidate(
     reward: float | None,
     failure_reason: str | None,
     scorer: str,
+    route_json: str | None,
 ) -> None:
     with connect(path) as connection:
         connection.execute(
@@ -117,7 +118,7 @@ def insert_candidate(
             INSERT INTO candidates (
                 id, iteration, round_no, canonical_smiles, status,
                 failure_reason, reward, route_json, pose_ref, temperature
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
             """,
             (
                 candidate_id,
@@ -127,6 +128,7 @@ def insert_candidate(
                 status,
                 failure_reason,
                 reward,
+                route_json,
             ),
         )
         connection.execute(

@@ -7,7 +7,7 @@ name = "biosmart"
 version = "0.1.0"
 description = "BioSmart engine: one Run, its event stream, and its Run folder"
 requires-python = ">=3.11"
-dependencies = ["pydantic>=2", "fastapi>=0.115", "uvicorn>=0.32"]
+dependencies = ["pydantic>=2", "fastapi>=0.115", "uvicorn>=0.32", "zstandard>=0.23"]
 
 [project.scripts]
 biosmart = "biosmart.cli:main"

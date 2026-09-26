@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 
 from biosmart.index import (
@@ -34,6 +34,7 @@ from biosmart.index import (
 )
 from biosmart.spec import RunSpec
 from biosmart.storage import connect
+from biosmart.transfer import ExportError, export_top, import_run_archive, write_run_archive
 
 LOCALHOST = "127.0.0.1"
 _RUN_ID = "0123456789abcdef"
@@ -493,19 +494,64 @@ def create_app() -> FastAPI:
         except IndexQueryError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    @app.get("/api/v1/runs/{run_id}/export")
+    async def export_run(
+        run_id: str,
+        export_format: str = Query(alias="format"),
+        top: int = Query(),
+    ) -> Response:
+        folder = _require_run_folder(supervisor, run_id)
+        try:
+            body, media_type, filename = export_top(folder, export_format=export_format, top=top)
+        except ExportError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RunFolderError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return Response(
+            content=body,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.post("/api/v1/runs/{run_id}/archive")
+    async def archive_run(run_id: str, request: Request) -> dict[str, Any]:
+        folder = _require_run_folder(supervisor, run_id)
+        payload = await _json_object(request, "Archive must be JSON")
+        destination = payload.get("destination")
+        if destination is None:
+            archive_path = supervisor.runs_root / "archives" / f"{run_id}.tar.zst"
+        elif isinstance(destination, str) and destination:
+            archive_path = Path(destination)
+        else:
+            raise HTTPException(status_code=422, detail="destination must be a path")
+        try:
+            written = write_run_archive(folder, archive_path)
+        except RunFolderError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"run_id": run_id, "archive": str(written)}
+
     @app.post("/api/v1/runs/import")
     async def import_run(request: Request) -> dict[str, Any]:
-        try:
-            payload = await request.json()
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=422, detail="Import must be JSON") from exc
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=422, detail="Import must be an object")
+        payload = await _json_object(request, "Import must be JSON")
         folder = payload.get("folder")
-        if not isinstance(folder, str) or not folder:
-            raise HTTPException(status_code=422, detail="folder is required")
+        archive = payload.get("archive")
+        has_folder = isinstance(folder, str) and bool(folder)
+        has_archive = isinstance(archive, str) and bool(archive)
+        if has_folder == has_archive:
+            raise HTTPException(status_code=422, detail="Import takes a Run folder or an archive")
         try:
-            imported = import_run_folder(supervisor.runs_root, supervisor.registry, Path(folder))
+            if has_archive:
+                imported = import_run_archive(
+                    supervisor.runs_root,
+                    supervisor.registry,
+                    Path(str(archive)),
+                )
+            else:
+                imported = import_run_folder(
+                    supervisor.runs_root,
+                    supervisor.registry,
+                    Path(str(folder)),
+                )
             await supervisor.note_imported(
                 str(imported["run_id"]),
                 Path(str(imported["folder"])),
@@ -560,6 +606,28 @@ def create_app() -> FastAPI:
         )
 
     return app
+
+
+def _require_run_folder(supervisor: Supervisor, run_id: str) -> Path:
+    if not _valid_run_id(run_id):
+        raise HTTPException(status_code=404, detail="Run not found")
+    folder = (supervisor.runs_root / run_id).resolve()
+    root = supervisor.runs_root.resolve()
+    if folder != root and root not in folder.parents:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not (folder / "run.json").is_file() or not (folder / "run.sqlite").is_file():
+        raise HTTPException(status_code=404, detail="Run not found")
+    return folder
+
+
+async def _json_object(request: Request, invalid: str) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail=invalid) from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail=invalid)
+    return payload
 
 
 async def _command(
