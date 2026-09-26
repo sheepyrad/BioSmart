@@ -2,7 +2,8 @@
 
 A worker accepts prepare, score, and flush and calls the Scorer seam. Each
 call is one JSON object per line. It serves no UI, runs no policy, and has
-no queue. It asks for no token.
+no queue. It asks for no token. A Scoring round's scores and Scorer working
+files go back to the host, and the worker then drops its scratch.
 
 On the tailnet the line is a TCP socket. Loopback is the CI stand-in for
 that address. A hostname is allowed when it resolves into loopback,
@@ -18,9 +19,11 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any
@@ -30,7 +33,7 @@ from pydantic import ValidationError
 from biosmart.pose_atoms import pose_from_payload, pose_to_json
 from biosmart.scoring import Candidate, FakeScorer, ScoreResult, ScorerFailed
 from biosmart.spec import PocketSpec, TargetSpec
-from biosmart.storage import flush_scorer_cache
+from biosmart.storage import flush_scorer_cache, write_json
 
 _OPS = frozenset({"prepare", "score", "flush"})
 _TAILNET_V4 = ipaddress.ip_network("100.64.0.0/10")
@@ -106,7 +109,15 @@ def _allowed(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 class WorkerAcceptor:
     """prepare, score, and flush for one host, via the Scorer seam."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, machine: str | None = None, scratch: Path | None = None) -> None:
+        if machine is not None and (not isinstance(machine, str) or not machine):
+            raise ValueError("machine must be a string")
+        if scratch is not None and not isinstance(scratch, Path):
+            raise TypeError("scratch must be a Path")
+        self._machine = machine
+        self._scratch = scratch
+        self._context_hash: str | None = None
+        self._drop_after_send = False
         self._scorer: Any = None
         self._lock = threading.Lock()
 
@@ -129,6 +140,7 @@ class WorkerAcceptor:
             scorer = _open_resident(kind, payload, seed=seed, ordinal=ordinal)
             context_hash = scorer.prepare(target, pocket)
             self._scorer = scorer
+            self._context_hash = context_hash
         return {
             "context_hash": context_hash,
             "scorer": scorer.name,
@@ -149,7 +161,23 @@ class WorkerAcceptor:
             if scorer is None:
                 raise ValueError("prepare before score")
             results = scorer.score(round_no, candidates)
-        return {"results": [_score_payload(result) for result in results], **_resident_facts(scorer)}
+            if self._scratch is not None:
+                if not self._machine or not self._context_hash:
+                    raise ValueError("prepare before score")
+                _write_round_scratch(
+                    self._scratch,
+                    round_no=round_no,
+                    scorer_name=scorer.name,
+                    scorer_version=scorer.version,
+                    context_hash=self._context_hash,
+                    machine=self._machine,
+                    results=results,
+                )
+            facts = _resident_facts(scorer)
+        body: dict[str, Any] = {"results": [_score_payload(result) for result in results], **facts}
+        if self._machine:
+            body["machine"] = self._machine
+        return body
 
     def flush(self) -> dict[str, Any]:
         with self._lock:
@@ -160,21 +188,48 @@ class WorkerAcceptor:
                 {"canonical_smiles": smiles, "reward": reward}
                 for smiles, reward in scorer.staged_entries()
             ]
+            working_files = _scratch_files(self._scratch) if self._scratch is not None else None
             written = scorer.flush()
             facts = _resident_facts(scorer)
-        return {"entries": written, "cache": cache, **facts}
+            if self._scratch is not None:
+                self._drop_after_send = True
+        body: dict[str, Any] = {"entries": written, "cache": cache, **facts}
+        if self._machine:
+            body["machine"] = self._machine
+        if working_files is not None:
+            body["working_files"] = working_files
+        return body
+
+    def release_scratch(self) -> None:
+        """Drop this round's scratch after the flush response has been sent."""
+        if not self._drop_after_send:
+            return
+        self._drop_after_send = False
+        scratch = self._scratch
+        if scratch is not None and scratch.exists():
+            shutil.rmtree(scratch)
 
 
 class WorkerScorer:
     """Host-side Scorer. Calls prepare, score, and flush on a worker. No token."""
 
-    def __init__(self, address: str, seed: int, *, cache_path: Path, ordinal: int = 0) -> None:
+    def __init__(
+        self,
+        address: str,
+        seed: int,
+        *,
+        cache_path: Path,
+        run_folder: Path,
+        ordinal: int = 0,
+    ) -> None:
         if not isinstance(address, str) or not address.strip():
             raise ValueError("worker address is required")
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise ValueError("seed must be an integer")
         if not isinstance(cache_path, Path):
             raise TypeError("cache_path must be a Path")
+        if not isinstance(run_folder, Path):
+            raise TypeError("run_folder must be a Path")
         if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
             raise ValueError("ordinal must be an integer >= 0")
         host, port = parse_listen(address.strip())
@@ -182,8 +237,10 @@ class WorkerScorer:
         self._port = port
         self.seed = seed
         self._cache_path = cache_path
+        self._run_folder = run_folder
         self._ordinal = ordinal
         self._context_hash: str | None = None
+        self.machine: str | None = None
         self.name = "fake"
         self.version = "0"
         self._sock: socket.socket | None = None
@@ -230,7 +287,12 @@ class WorkerScorer:
         raw_results = payload.get("results")
         if not isinstance(raw_results, list):
             raise ValueError("worker score did not return results")
-        return [_score_result(item) for item in raw_results]
+        results = [_score_result(item) for item in raw_results]
+        machine = payload.get("machine")
+        if not isinstance(machine, str) or not machine:
+            raise ValueError("worker score did not return the machine")
+        self.machine = machine
+        return results
 
     def flush(self) -> int:
         if self._context_hash is None:
@@ -242,6 +304,9 @@ class WorkerScorer:
             raise ValueError("worker flush did not return an entry count")
         if not isinstance(raw_cache, list) or len(raw_cache) != written:
             raise ValueError("worker flush did not return the cache entries")
+        raw_files = payload.get("working_files")
+        if not isinstance(raw_files, list):
+            raise ValueError("worker flush did not return Scorer working files")
         entries = [_cache_entry(item) for item in raw_cache]
         recorded = flush_scorer_cache(
             self._cache_path,
@@ -250,6 +315,7 @@ class WorkerScorer:
             context_hash=self._context_hash,
             entries=entries,
         )
+        _install_working_files(self._run_folder, raw_files)
         return recorded
 
     def _call(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -365,9 +431,12 @@ def serve(listen: str, ready_file: Path | None = None) -> None:
     host, port = parse_listen(listen)
     if ready_file is not None and not isinstance(ready_file, Path):
         raise TypeError("ready_file must be a Path")
-    acceptor = WorkerAcceptor()
     server = _bind_socket(host, port)
     bound = server.getsockname()
+    acceptor = WorkerAcceptor(
+        machine=_format_address(str(bound[0]), int(bound[1])),
+        scratch=_scratch_directory(),
+    )
     if ready_file is not None:
         ready_file.parent.mkdir(parents=True, exist_ok=True)
         ready_file.write_text(_format_address(str(bound[0]), int(bound[1])) + "\n", encoding="utf-8")
@@ -469,7 +538,9 @@ def _serve_connection(connection: socket.socket, acceptor: WorkerAcceptor) -> No
         for raw in reader:
             if not raw.strip():
                 continue
-            _write_line(writer, _dispatch(raw, acceptor))
+            response = _dispatch(raw, acceptor)
+            _write_line(writer, response)
+            acceptor.release_scratch()
     finally:
         reader.close()
         writer.close()
@@ -576,6 +647,97 @@ def _cache_entry(item: Any) -> tuple[str, float]:
     if isinstance(reward, bool) or not isinstance(reward, (int, float)):
         raise ValueError("worker flush cache entry is invalid")
     return smiles, float(reward)
+
+
+def _scratch_directory() -> Path:
+    raw = os.environ.get("BIOSMART_WORKER_SCRATCH", "").strip()
+    if not raw:
+        return Path(tempfile.gettempdir()) / f"biosmart-scratch-{os.getpid()}"
+    path = Path(raw)
+    if not path.is_absolute() or path == path.parent:
+        raise ValueError("worker scratch must be an absolute directory")
+    if path.exists() and not path.is_dir():
+        raise ValueError("worker scratch must be a directory")
+    return path
+
+
+def _write_round_scratch(
+    scratch: Path,
+    *,
+    round_no: int,
+    scorer_name: str,
+    scorer_version: str,
+    context_hash: str,
+    machine: str,
+    results: list[ScoreResult],
+) -> None:
+    if round_no < 1:
+        raise ValueError("round_no must be >= 1")
+    dest = scratch / "scorer" / f"round_{round_no}"
+    dest.mkdir(parents=True, exist_ok=True)
+    write_json(
+        dest / "round.json",
+        {
+            "round_no": round_no,
+            "scorer": scorer_name,
+            "scorer_version": scorer_version,
+            "context_hash": context_hash,
+            "machine": machine,
+            "candidates": [
+                {
+                    "candidate_id": result.candidate_id,
+                    "canonical_smiles": result.canonical_smiles,
+                    "status": result.status,
+                    "reward": result.reward,
+                }
+                for result in results
+            ],
+        },
+    )
+
+
+def _scratch_files(scratch: Path) -> list[dict[str, str]]:
+    if not scratch.is_dir():
+        return []
+    files: list[dict[str, str]] = []
+    for path in sorted(item for item in scratch.rglob("*") if item.is_file()):
+        files.append(
+            {
+                "path": path.relative_to(scratch).as_posix(),
+                "text": path.read_text(encoding="utf-8"),
+            }
+        )
+    return files
+
+
+def _install_working_files(run_folder: Path, files: list[Any]) -> None:
+    staged: list[tuple[Path, str]] = []
+    for item in files:
+        if not isinstance(item, dict):
+            raise ValueError("Scorer working file is invalid")
+        relative = item.get("path")
+        text = item.get("text")
+        if not isinstance(relative, str) or not isinstance(text, str):
+            raise ValueError("Scorer working file is invalid")
+        staged.append((_working_file_destination(run_folder, relative), text))
+    for destination, text in staged:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(text, encoding="utf-8")
+
+
+def _working_file_destination(root: Path, relative: str) -> Path:
+    path = Path(relative)
+    if (
+        not relative
+        or path.is_absolute()
+        or ".." in path.parts
+        or any(part in {"", "."} for part in path.parts)
+    ):
+        raise ValueError("Scorer working file path is invalid")
+    destination = root / path
+    if root not in destination.parents:
+        raise ValueError("Scorer working file path is invalid")
+    return destination
 
 
 def _score_result(item: Any) -> ScoreResult:

@@ -386,6 +386,7 @@ def _drive(
             )
             raise
         elapsed = time.perf_counter() - started
+        machine = _scoring_machine(scorer)
         _write_scorer_working_files(
             folder,
             round_no=round_no,
@@ -441,21 +442,21 @@ def _drive(
             candidates_per_iteration=budget.candidates_per_iteration,
             completed_iterations=iteration,
         )
-        append_event(
-            events_path,
-            {
-                "type": "round.finished",
-                "run_id": run_id,
-                "round_no": round_no,
-                "iteration": iteration,
-                "scorer": scorer.name,
-                "n_sent": len(candidates),
-                "n_ok": n_ok,
-                "n_failed": n_failed,
-                "secs": elapsed,
-                "eta_seconds": eta_seconds,
-            },
-        )
+        finished_round: dict[str, Any] = {
+            "type": "round.finished",
+            "run_id": run_id,
+            "round_no": round_no,
+            "iteration": iteration,
+            "scorer": scorer.name,
+            "n_sent": len(candidates),
+            "n_ok": n_ok,
+            "n_failed": n_failed,
+            "secs": elapsed,
+            "eta_seconds": eta_seconds,
+        }
+        if machine is not None:
+            finished_round["machine"] = machine
+        append_event(events_path, finished_round)
         insert_scoring_round(
             database_path,
             round_no=round_no,
@@ -464,6 +465,7 @@ def _drive(
             n_ok=n_ok,
             n_failed=n_failed,
             secs=elapsed,
+            machine=machine,
         )
         rewards = [result.reward for result in results if result.reward is not None]
         reward_avg = sum(rewards) / len(rewards) if rewards else None
@@ -719,6 +721,14 @@ def _budget(spec: RunSpec):
     return spec.budget
 
 
+def _scoring_machine(scorer: Scorer) -> str | None:
+    """The machine that scored this Scoring round, when a worker did."""
+    machine = getattr(scorer, "machine", None)
+    if isinstance(machine, str) and machine:
+        return machine
+    return None
+
+
 def _scorer_facts(scorer: Scorer) -> dict[str, Any]:
     facts: dict[str, Any] = {}
     gpu = getattr(scorer, "gpu", None)
@@ -774,6 +784,7 @@ def _open_scorer(spec: RunSpec, *, folder: Path, runs_root: Path, ordinal: int) 
             address,
             spec.seed,
             cache_path=cache,
+            run_folder=folder,
             ordinal=ordinal,
         )
     if spec.scorer == "fake":
