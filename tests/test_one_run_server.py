@@ -607,6 +607,24 @@ def test_restart_reattaches_to_the_run_in_progress(tmp_path: Path) -> None:
             _signal(pid, signal.SIGKILL)
 
 
+def test_importing_the_server_does_not_import_torch() -> None:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(BIOSMART_SRC) + os.pathsep + env.get("PYTHONPATH", "")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import biosmart.server; raise SystemExit('torch' in sys.modules)",
+        ],
+        cwd=REPO,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_server_listens_on_localhost_only(tmp_path: Path) -> None:
     with _serve(tmp_path, extra_env={"BIOSMART_SKIP_DOCTOR": "1"}) as server:
         listeners = _listening(server.pid)
