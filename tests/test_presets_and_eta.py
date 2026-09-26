@@ -124,6 +124,7 @@ def test_fake_run_eta_comes_from_scoring_rounds(tmp_path: Path) -> None:
     env["PYTHONPATH"] = str(BIOSMART_SRC)
     env["BIOSMART_RUNS_ROOT"] = str(runs_root)
     env["BIOSMART_REGISTRY"] = str(tmp_path / "registry.sqlite")
+    env["BIOSMART_SKIP_DOCTOR"] = "1"
     env["CUDA_VISIBLE_DEVICES"] = ""
     completed = subprocess.run(
         [sys.executable, "-m", "biosmart", "run", str(spec_path)],
@@ -159,6 +160,7 @@ def test_quick_preset_run_uses_100_by_16(tmp_path: Path) -> None:
     env["PYTHONPATH"] = str(BIOSMART_SRC)
     env["BIOSMART_RUNS_ROOT"] = str(runs_root)
     env["BIOSMART_REGISTRY"] = str(tmp_path / "registry.sqlite")
+    env["BIOSMART_SKIP_DOCTOR"] = "1"
     env["CUDA_VISIBLE_DEVICES"] = ""
     completed = subprocess.run(
         [sys.executable, "-m", "biosmart", "run", str(spec_path)],
