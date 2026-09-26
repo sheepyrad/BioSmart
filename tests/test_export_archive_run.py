@@ -32,7 +32,7 @@ if str(TESTS) not in sys.path:
     sys.path.insert(0, str(TESTS))
 
 from biosmart.index import RunFolderError
-from biosmart.transfer import _extract_run_folder
+from biosmart.transfer import _extract_run_folder, write_run_archive
 from test_candidate_index import _delete_index, _get, _index_rows
 from test_one_run_server import EXPECTED_CANDIDATES, EventStream, _read_events, _request, _serve, _spec
 
@@ -359,15 +359,15 @@ def _hostile_archive(kind: str) -> bytes:
             info.mode = 0o644
             tar.addfile(info)
         else:
-            payload = b"setuid"
+            payload = kind.encode("ascii")
             info.type = tarfile.REGTYPE
-            info.mode = 0o4755
+            info.mode = 0o2755 if kind == "setgid" else 0o4755
             info.size = len(payload)
             tar.addfile(info, io.BytesIO(payload))
     return _zstd_compress(buffer.getvalue())
 
 
-@pytest.mark.parametrize("kind", ["fifo", "setuid"])
+@pytest.mark.parametrize("kind", ["fifo", "setuid", "setgid"])
 def test_import_refuses_fifo_or_setuid_member(tmp_path: Path, kind: str) -> None:
     archive = tmp_path / f"{kind}.tar.zst"
     archive.write_bytes(_hostile_archive(kind))
@@ -384,3 +384,35 @@ def test_import_refuses_fifo_or_setuid_member(tmp_path: Path, kind: str) -> None
         assert not stat.S_ISCHR(mode)
         assert not stat.S_ISBLK(mode)
         assert mode & 0o6000 == 0
+
+
+def test_setgid_directory_round_trips(tmp_path: Path) -> None:
+    parent = tmp_path / "setgid-parent"
+    parent.mkdir()
+    os.chmod(parent, 0o2755)
+    run_id = "b" * 32
+    run_folder = parent / run_id
+    nested = run_folder / "scorer" / "round_1"
+    nested.mkdir(parents=True)
+    assert stat.S_ISGID(run_folder.stat().st_mode)
+    assert stat.S_ISGID(nested.stat().st_mode)
+    (run_folder / "run.json").write_text(json.dumps({"run_id": run_id}) + "\n", encoding="utf-8")
+    sqlite3.connect(run_folder / "run.sqlite").close()
+    (nested / "round.json").write_text("{}\n", encoding="utf-8")
+
+    archive = tmp_path / f"{run_id}.tar.zst"
+    write_run_archive(run_folder, archive)
+    with tarfile.open(fileobj=io.BytesIO(_zstd_decompress(archive)), mode="r:") as tar:
+        modes = {member.name: member.mode for member in tar.getmembers() if member.isdir()}
+    assert modes[run_id] & 0o2000
+    assert modes[f"{run_id}/scorer/round_1"] & 0o2000
+
+    work = tmp_path / "work"
+    work.mkdir()
+    extracted = _extract_run_folder(archive, work)
+    assert extracted == work / "unpacked" / run_id
+    assert (extracted / "run.json").read_text(encoding="utf-8") == json.dumps({"run_id": run_id}) + "\n"
+    assert (extracted / "run.sqlite").is_file()
+    assert (extracted / "scorer" / "round_1" / "round.json").read_text(encoding="utf-8") == "{}\n"
+    for path in (extracted, extracted / "scorer", extracted / "scorer" / "round_1"):
+        assert stat.S_IMODE(path.stat().st_mode) == 0o755

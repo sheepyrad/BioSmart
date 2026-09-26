@@ -24,7 +24,8 @@ from biosmart.storage import connect
 
 _FORMATS = frozenset({"sdf", "csv"})
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
-_SETUID_SETGID = 0o6000
+_SETUID = 0o4000
+_SETGID = 0o2000
 _COLUMNS = (
     "candidate_id",
     "canonical_smiles",
@@ -302,12 +303,19 @@ def _extract_run_folder(archive: Path, work: Path) -> Path:
 
 
 def _reject_unsafe_member(member: tarfile.TarInfo, destination: Path) -> None:
-    """Refuse links, special files, and setuid or setgid members before any write."""
+    """Refuse links, special files, and setuid or setgid regular files before any write.
+
+    A directory may carry the setgid bit. Linux copies that bit onto directories
+    created under a setgid parent, and the archive records it. Extraction still
+    writes the directory as mode ``0o755``.
+    """
     _reject_escaping_member(member, destination)
     if not member.isdir() and not member.isreg():
         raise RunFolderError("Archive member is not a Run folder file")
     mode = 0 if member.mode is None else member.mode
-    if mode & _SETUID_SETGID:
+    if member.isreg() and mode & (_SETUID | _SETGID):
+        raise RunFolderError("Archive member is not a Run folder file")
+    if member.isdir() and mode & _SETUID:
         raise RunFolderError("Archive member is not a Run folder file")
 
 
