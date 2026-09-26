@@ -91,7 +91,7 @@ hf_cache=${BIOSMART_HF_CACHE:-${HF_HUB_CACHE:-"$HOME/.cache/huggingface/hub"}}
 boltz_cache=${BIOSMART_BOLTZ_CACHE:-${BOLTZ_CACHE:-"$HOME/.boltz"}}
 inputs=${BIOSMART_INPUTS:-"$HOME/BioSmart/inputs"}
 tmp_dir=${BIOSMART_TMP:-"$HOME/BioSmart/tmp"}
-pose_ckpt=${BIOSMART_POSE_CKPT:-"$HOME/BioSmart/assets/cgflow_crossdock.ckpt"}
+pose_model=${BIOSMART_POSE_MODEL:-"$HOME/BioSmart/assets/cgflow_crossdock.ckpt"}
 fabind_dir=${BIOSMART_FABIND_DIR:-"$HOME/BioSmart/assets/fabind"}
 flashbind_dir=${BIOSMART_FLASHBIND_DIR:-"$HOME/BioSmart/assets/flashbind"}
 
@@ -103,16 +103,19 @@ mkdir -p \
     "$boltz_cache" \
     "$inputs" \
     "$tmp_dir" \
-    "$(dirname "$pose_ckpt")" \
+    "$(dirname "$pose_model")" \
     "$fabind_dir" \
     "$flashbind_dir" \
     "$HOME/.config/biosmart" \
     "$HOME/.local/share/applications" \
     "$HOME/.local/share/biosmart"
 
-if [ ! -f "$pose_ckpt" ]; then
-    echo "Pose model file is not at $pose_ckpt" >&2
-    echo "Set BIOSMART_POSE_CKPT, or run biosmart doctor fix weights after the host is up." >&2
+if [ -d "$pose_model" ]; then
+    echo "Pose model path is a directory at $pose_model" >&2
+    echo "Remove it, then run biosmart doctor fix weights." >&2
+elif [ ! -f "$pose_model" ]; then
+    echo "Pose model file is not at $pose_model" >&2
+    echo "Set BIOSMART_POSE_MODEL, or run biosmart doctor fix weights after the host is up." >&2
 fi
 
 env_file="$HOME/.config/biosmart/compose.env"
@@ -127,15 +130,29 @@ BIOSMART_BOLTZ_CACHE=$boltz_cache
 BIOSMART_INPUTS=$inputs
 BIOSMART_HOME_MOUNT=$home_mount
 BIOSMART_TMP=$tmp_dir
-BIOSMART_POSE_CKPT=$pose_ckpt
-BIOSMART_FABIND_DIR=$fabind_dir
-BIOSMART_FLASHBIND_DIR=$flashbind_dir
 EOF
 umask 022
 
+# shellcheck disable=SC1091
+. "$root/deploy/weight-mounts.sh"
+weights_file="$HOME/.config/biosmart/weights.yaml"
+mounts=$(weight_mount_lines "$pose_model" "$fabind_dir" "$flashbind_dir")
+if [ -n "$mounts" ]; then
+    umask 077
+    {
+        printf '%s\n' "services:" "  biosmart:" "    volumes:"
+        printf '%s\n' "$mounts"
+    } >"$weights_file"
+    umask 022
+fi
+
 echo "Building biosmart:lock from $root/pixi.lock"
 docker_cmd build -f deploy/Dockerfile -t biosmart:lock "$root"
-docker_cmd compose --env-file "$env_file" -f deploy/compose.yaml up -d
+if [ -n "$mounts" ]; then
+    docker_cmd compose --env-file "$env_file" -f deploy/compose.yaml -f "$weights_file" up -d
+else
+    docker_cmd compose --env-file "$env_file" -f deploy/compose.yaml up -d
+fi
 
 install -m 0755 deploy/open-host.sh "$HOME/.local/share/biosmart/open-host.sh"
 install -m 0644 deploy/biosmart.desktop "$HOME/.local/share/applications/biosmart.desktop"

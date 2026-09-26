@@ -31,6 +31,3 @@ services:
       - ${BIOSMART_INPUTS:?}:/biosmart/inputs:ro
       - ${BIOSMART_HOME_MOUNT:?}:/biosmart/home
       - ${BIOSMART_TMP:?}:/biosmart/tmp
-      - ${BIOSMART_POSE_CKPT:?}:/opt/biosmart/cgflow/weights/cgflow_crossdock.ckpt:ro
-      - ${BIOSMART_FABIND_DIR:?}:/opt/biosmart/cgflow/src/FlashBind/FABind_plus/ckpt:ro
-      - ${BIOSMART_FLASHBIND_DIR:?}:/opt/biosmart/cgflow/src/FlashBind/checkpoints:ro

@@ -92,7 +92,8 @@ def worker_environment() -> dict[str, str]:
             env["LIBRARY_PATH"] = prefix + (os.pathsep + current if current else "")
     tmp = Path(env["TMPDIR"])
     tmp.mkdir(parents=True, exist_ok=True)
-    env.setdefault("TRITON_CACHE_DIR", str(tmp.parent / "triton_cache"))
+    # TMPDIR is the writable volume. A sibling path is not mounted.
+    env.setdefault("TRITON_CACHE_DIR", str(tmp / "triton_cache"))
     Path(env["TRITON_CACHE_DIR"]).mkdir(parents=True, exist_ok=True)
     return env
 

@@ -6,6 +6,7 @@ runs as the invoking user and starts at boot. A launcher opens the localhost hos
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,60 @@ def test_localhost_host_page(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "This host is on localhost." in response.text
+
+
+def test_missing_pose_model_path_is_not_mounted_as_a_directory(tmp_path: Path) -> None:
+    compose = (REPO / "deploy" / "compose.yaml").read_text(encoding="utf-8")
+    install = (REPO / "deploy" / "install.sh").read_text(encoding="utf-8")
+    assert "cgflow_crossdock.ckpt" not in compose
+    assert "BIOSMART_POSE_CKPT" not in install
+    assert "pose_ckpt" not in install
+    assert "BIOSMART_POSE_MODEL" in install
+
+    pose_model = tmp_path / "assets" / "cgflow_crossdock.ckpt"
+    pose_model.parent.mkdir(parents=True)
+    fabind = tmp_path / "fabind"
+    flashbind = tmp_path / "flashbind"
+    fabind.mkdir()
+    flashbind.mkdir()
+    lines = _weight_mount_lines(pose_model, fabind, flashbind)
+    rendered = "\n".join(lines)
+
+    assert not pose_model.exists()
+    assert not pose_model.is_dir()
+    assert str(pose_model) not in rendered
+    assert "/opt/biosmart/cgflow/weights/cgflow_crossdock.ckpt" not in rendered
+    assert f"{pose_model.parent}:/opt/biosmart/cgflow/weights" in rendered
+    assert ":ro" not in rendered
+    assert f"{fabind}:/opt/biosmart/cgflow/src/FlashBind/FABind_plus/ckpt" in rendered
+
+    pose_model.write_bytes(b"pose-model")
+    present = _weight_mount_lines(pose_model, fabind, flashbind)
+    assert any(
+        line.endswith(f"{pose_model}:/opt/biosmart/cgflow/weights/cgflow_crossdock.ckpt")
+        for line in present
+    )
+    assert not any(line.endswith(":/opt/biosmart/cgflow/weights") for line in present)
+    assert all(":ro" not in line for line in present)
+
+
+def _weight_mount_lines(pose_model: Path, fabind: Path, flashbind: Path) -> list[str]:
+    script = REPO / "deploy" / "weight-mounts.sh"
+    completed = subprocess.run(
+        [
+            "sh",
+            "-c",
+            '. "$0"; weight_mount_lines "$1" "$2" "$3"',
+            str(script),
+            str(pose_model),
+            str(fabind),
+            str(flashbind),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
 
 
 def test_later_scoring_round_reuses_scores_from_this_run(tmp_path: Path) -> None:
