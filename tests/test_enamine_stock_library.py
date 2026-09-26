@@ -212,6 +212,7 @@ def _start_run(tmp_path: Path, libraries_root: Path, library_id: str) -> subproc
     env["BIOSMART_RUNS_ROOT"] = str(tmp_path / "runs")
     env["BIOSMART_REGISTRY"] = str(tmp_path / "registry.sqlite")
     env["BIOSMART_LIBRARIES_ROOT"] = str(libraries_root)
+    env["BIOSMART_SKIP_DOCTOR"] = "1"
     env["CUDA_VISIBLE_DEVICES"] = ""
     return subprocess.run(
         [sys.executable, "-m", "biosmart", "run", str(spec_path)],
@@ -335,6 +336,7 @@ def test_unset_libraries_root_still_warns_for_an_old_default_library(tmp_path: P
     run_env = dict(env)
     run_env["BIOSMART_RUNS_ROOT"] = str(tmp_path / "runs")
     run_env["BIOSMART_REGISTRY"] = str(tmp_path / "registry.sqlite")
+    run_env["BIOSMART_SKIP_DOCTOR"] = "1"
     result = subprocess.run(
         [sys.executable, "-m", "biosmart", "run", str(spec_path)],
         cwd=REPO,
