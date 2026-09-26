@@ -102,6 +102,53 @@ def _allocated_run_id() -> str:
     return raw
 
 
+def candidate_route(canonical_smiles: str, library_id: str) -> list[dict[str, str]]:
+    """Synthesis route recorded for one Candidate from the Building-block library."""
+    if not canonical_smiles or not library_id:
+        raise ValueError("A Candidate route needs SMILES and a Building-block library")
+    return [
+        {
+            "action": "Firstblock",
+            "block": canonical_smiles,
+            "smiles": canonical_smiles,
+            "library": library_id,
+        }
+    ]
+
+
+def _route_json(canonical_smiles: str, library_id: str) -> str:
+    return json.dumps(
+        candidate_route(canonical_smiles, library_id),
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _write_scorer_working_files(
+    folder: Path,
+    *,
+    round_no: int,
+    scorer_name: str,
+    scorer_version: str,
+    context_hash: str,
+    candidates: list[dict[str, Any]],
+    failure_reason: str | None = None,
+) -> None:
+    """Keep this Scoring round's Scorer output inside the Run folder."""
+    dest = folder / "scorer" / f"round_{round_no}"
+    dest.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "round_no": round_no,
+        "scorer": scorer_name,
+        "scorer_version": scorer_version,
+        "context_hash": context_hash,
+        "candidates": candidates,
+    }
+    if failure_reason is not None:
+        payload["failure_reason"] = failure_reason
+    write_json(dest / "round.json", payload)
+
+
 def load_spec(spec_path: Path) -> RunSpec:
     if not spec_path.is_file():
         raise FileNotFoundError(f"Run spec not found: {spec_path}")
@@ -287,6 +334,23 @@ def _drive(
             results = scorer.score(round_no, candidates)
         except ScorerFailed as exc:
             elapsed = time.perf_counter() - started
+            _write_scorer_working_files(
+                folder,
+                round_no=round_no,
+                scorer_name=scorer.name,
+                scorer_version=scorer.version,
+                context_hash=context_hash,
+                failure_reason=str(exc),
+                candidates=[
+                    {
+                        "candidate_id": candidate.candidate_id,
+                        "canonical_smiles": candidate.canonical_smiles,
+                        "status": "failed",
+                        "reward": None,
+                    }
+                    for candidate in candidates
+                ],
+            )
             _record_failed_scoring_round(
                 events_path,
                 database_path,
@@ -297,6 +361,7 @@ def _drive(
                 scorer_name=scorer.name,
                 reason=str(exc),
                 secs=elapsed,
+                library_id=spec.library.id,
             )
             _finish_failed(
                 folder,
@@ -310,7 +375,24 @@ def _drive(
             )
             raise
         elapsed = time.perf_counter() - started
+        _write_scorer_working_files(
+            folder,
+            round_no=round_no,
+            scorer_name=scorer.name,
+            scorer_version=scorer.version,
+            context_hash=context_hash,
+            candidates=[
+                {
+                    "candidate_id": result.candidate_id,
+                    "canonical_smiles": result.canonical_smiles,
+                    "status": result.status,
+                    "reward": result.reward,
+                }
+                for result in results
+            ],
+        )
         for result in results:
+            route = candidate_route(result.canonical_smiles, spec.library.id)
             append_event(
                 events_path,
                 {
@@ -322,6 +404,7 @@ def _drive(
                     "canonical_smiles": result.canonical_smiles,
                     "status": result.status,
                     "reward": result.reward,
+                    "route": route,
                 },
             )
             insert_candidate(
@@ -334,6 +417,7 @@ def _drive(
                 reward=result.reward,
                 failure_reason=result.failure_reason,
                 scorer=scorer.name,
+                route_json=_route_json(result.canonical_smiles, spec.library.id),
             )
         n_ok = sum(result.status == "scored" for result in results)
         n_failed = sum(result.status == "failed" for result in results)
@@ -485,8 +569,10 @@ def _record_failed_scoring_round(
     scorer_name: str,
     reason: str,
     secs: float,
+    library_id: str,
 ) -> None:
     for candidate in candidates:
+        route = candidate_route(candidate.canonical_smiles, library_id)
         append_event(
             events_path,
             {
@@ -499,6 +585,7 @@ def _record_failed_scoring_round(
                 "status": "failed",
                 "reward": None,
                 "failure_reason": reason,
+                "route": route,
             },
         )
         insert_candidate(
@@ -511,6 +598,7 @@ def _record_failed_scoring_round(
             reward=None,
             failure_reason=reason,
             scorer=scorer_name,
+            route_json=_route_json(candidate.canonical_smiles, library_id),
         )
     n_failed = len(candidates)
     append_event(
