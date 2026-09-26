@@ -10,9 +10,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import signal
 import sqlite3
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
@@ -24,6 +26,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 
+from biosmart.doctor import apply_fix, examine, report_payload
 from biosmart.index import (
     IndexNotFound,
     IndexQueryError,
@@ -32,12 +35,27 @@ from biosmart.index import (
     page_candidates,
     search_candidates,
 )
+from biosmart.inputs import TargetNotFound, TargetRejected, inputs_dir, list_targets, resolve_target, store_target
+from biosmart.libraries import (
+    LibraryBuildError,
+    build_stock_library,
+    default_libraries_root,
+    describe_libraries,
+)
 from biosmart.spec import RunSpec
 from biosmart.storage import connect
 from biosmart.transfer import ExportError, export_top, import_run_archive, write_run_archive
+from biosmart.uploads import MultipartError, parse_multipart
 
 LOCALHOST = "127.0.0.1"
 _RUN_ID = "0123456789abcdef"
+_CHECK_ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_SUPPLIER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,160}$")
+_LIBRARY_SOURCES = {"stock": "Enamine Stock", "catalog": "Enamine Catalog", "smiles": "SMILES list"}
+_LIBRARY_UPLOAD_LIMIT = 8 * 1024 * 1024 * 1024
+_TARGET_UPLOAD_LIMIT = 64 * 1024 * 1024
+_HOST_PAGE = (Path(__file__).resolve().parent / "host_page.html").read_text(encoding="utf-8")
+_FONT_DIR = Path(__file__).resolve().parent / "fonts"
 
 
 class DoctorRefused(Exception):
@@ -401,6 +419,56 @@ def _new_events(path: Path, offset: int) -> tuple[int, list[str]]:
     return offset + len(complete), lines
 
 
+def _host_font(name: str) -> Response:
+    if not re.fullmatch(r"[a-z0-9-]+\.woff2", name):
+        raise HTTPException(status_code=404, detail="Font not found")
+    path = _FONT_DIR / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Font not found")
+    return Response(content=path.read_bytes(), media_type="font/woff2")
+
+
+async def _read_limited(request: Request, limit: int) -> bytes:
+    total = 0
+    chunks: list[bytes] = []
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(status_code=413, detail="Upload is too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _form(content_type: str, body: bytes) -> tuple[dict[str, str], tuple[str, bytes] | None]:
+    try:
+        parts = parse_multipart(content_type, body)
+    except MultipartError as exc:
+        raise HTTPException(status_code=422, detail="Upload a file") from exc
+    fields: dict[str, str] = {}
+    file_part: tuple[str, bytes] | None = None
+    for name, filename, payload in parts:
+        if filename is None:
+            fields[name] = payload.decode("utf-8", errors="replace").strip()
+            continue
+        if file_part is not None:
+            raise HTTPException(status_code=422, detail="Upload one file")
+        file_part = (filename, payload)
+    return fields, file_part
+
+
+def _supplier_name(filename: str) -> str:
+    base = Path(filename).name
+    if base != filename or _SUPPLIER_NAME.fullmatch(base) is None:
+        raise HTTPException(status_code=422, detail="Supplier file name must be a plain file name")
+    suffix = Path(base).suffix.lower()
+    if suffix not in {".zip", ".sdf", ".smi"}:
+        raise HTTPException(
+            status_code=422,
+            detail="A Building-block library is built from an Enamine Stock .zip or .sdf",
+        )
+    return base
+
+
 def create_app() -> FastAPI:
     runs_root_env = os.environ.get("BIOSMART_RUNS_ROOT")
     if not runs_root_env:
@@ -420,20 +488,122 @@ def create_app() -> FastAPI:
 
     app = FastAPI(lifespan=lifespan)
     app.state.supervisor = supervisor
+    app.state.chosen_target_id = None
 
     @app.get("/")
     async def localhost_host() -> Response:
         """The page the desktop launcher opens on localhost."""
-        body = """<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><title>BioSmart</title></head>
-<body>
-<h1>BioSmart</h1>
-<p>This host is on localhost.</p>
-</body>
-</html>
-"""
-        return Response(content=body, media_type="text/html; charset=utf-8")
+        return Response(
+            content=_HOST_PAGE,
+            media_type="text/html; charset=utf-8",
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    @app.get("/fonts/{name}")
+    async def font_file(name: str) -> Response:
+        return _host_font(name)
+
+    @app.get("/api/v1/doctor")
+    async def read_doctor() -> dict[str, Any]:
+        report = await asyncio.to_thread(examine)
+        return report_payload(report)
+
+    @app.post("/api/v1/doctor/fix/{check_id}")
+    async def fix_doctor(check_id: str) -> dict[str, Any]:
+        if _CHECK_ID.fullmatch(check_id) is None:
+            raise HTTPException(status_code=422, detail=f"Doctor check {check_id!r} has no automated fix")
+        try:
+            report = await asyncio.to_thread(apply_fix, check_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        payload = report_payload(report)
+        payload["applied"] = check_id
+        return payload
+
+    @app.get("/api/v1/libraries")
+    async def read_libraries() -> dict[str, Any]:
+        described = await asyncio.to_thread(describe_libraries, default_libraries_root())
+        return described
+
+    @app.post("/api/v1/libraries/build", status_code=201)
+    async def build_library(request: Request) -> dict[str, Any]:
+        body = await _read_limited(request, _LIBRARY_UPLOAD_LIMIT)
+        fields, file_part = _form(request.headers.get("content-type", ""), body)
+        if file_part is None:
+            raise HTTPException(status_code=422, detail="Upload one supplier file")
+        source = fields.get("source", "")
+        if source not in _LIBRARY_SOURCES:
+            raise HTTPException(
+                status_code=422,
+                detail="Library source must be Enamine Catalog, Enamine Stock, or a SMILES list",
+            )
+        if source != "stock":
+            raise HTTPException(
+                status_code=422,
+                detail="This command builds a Building-block library from Enamine Stock.",
+            )
+        filename, payload = file_part
+        safe_name = _supplier_name(filename)
+        druglike = fields.get("druglike", "false").lower() in {"1", "true", "on", "yes"}
+        root = default_libraries_root()
+        root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="biosmart-supplier-", dir=root) as tmp:
+            supplier = Path(tmp) / safe_name
+            supplier.write_bytes(payload)
+            try:
+                library = await asyncio.to_thread(
+                    build_stock_library,
+                    supplier,
+                    root,
+                    druglike=druglike,
+                )
+            except LibraryBuildError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        described = describe_libraries(root)
+        built = next(
+            (item for item in described["libraries"] if isinstance(item, dict) and item.get("id") == library.id),
+            None,
+        )
+        if not isinstance(built, dict):
+            raise HTTPException(status_code=500, detail="Building-block library was not recorded")
+        return {"library": built, "default_id": described["default_id"]}
+
+    @app.get("/api/v1/inputs")
+    async def read_inputs() -> dict[str, Any]:
+        root = inputs_dir()
+        targets = list_targets(root)
+        chosen = app.state.chosen_target_id
+        if not isinstance(chosen, str) or chosen not in {item["id"] for item in targets}:
+            chosen = None
+            app.state.chosen_target_id = None
+        return {"chosen_id": chosen, "targets": targets}
+
+    @app.post("/api/v1/inputs", status_code=201)
+    async def upload_target(request: Request) -> dict[str, Any]:
+        body = await _read_limited(request, _TARGET_UPLOAD_LIMIT)
+        _fields, file_part = _form(request.headers.get("content-type", ""), body)
+        if file_part is None:
+            raise HTTPException(status_code=422, detail="Upload a Target")
+        filename, payload = file_part
+        try:
+            stored = store_target(inputs_dir(), filename, payload)
+        except TargetRejected as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        app.state.chosen_target_id = stored["id"]
+        return {"target": stored, "chosen_id": stored["id"]}
+
+    @app.post("/api/v1/inputs/{target_id}/choose")
+    async def choose_target(target_id: str) -> dict[str, Any]:
+        try:
+            target = resolve_target(inputs_dir(), target_id)
+        except TargetRejected as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except TargetNotFound as exc:
+            raise HTTPException(status_code=404, detail="Target not found") from exc
+        app.state.chosen_target_id = target["id"]
+        return {"target": target, "chosen_id": target["id"]}
 
     @app.post("/api/v1/runs", status_code=201)
     async def start_run(request: Request) -> JSONResponse:

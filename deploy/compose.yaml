@@ -16,6 +16,7 @@ services:
       BIOSMART_REGISTRY: /biosmart/runs/registry.sqlite
       BIOSMART_LIBRARIES_ROOT: /biosmart/libraries
       BIOSMART_PORT: "8000"
+      BIOSMART_INPUTS: /biosmart/inputs
       HF_HUB_CACHE: /biosmart/hf
       HF_HOME: /biosmart/hf
       HUGGINGFACE_HUB_CACHE: /biosmart/hf
@@ -28,6 +29,6 @@ services:
       - ${BIOSMART_LIBRARIES_ROOT:?}:/biosmart/libraries
       - ${BIOSMART_HF_CACHE:?}:/biosmart/hf
       - ${BIOSMART_BOLTZ_CACHE:?}:/biosmart/boltz
-      - ${BIOSMART_INPUTS:?}:/biosmart/inputs:ro
+      - ${BIOSMART_INPUTS:?}:/biosmart/inputs
       - ${BIOSMART_HOME_MOUNT:?}:/biosmart/home
       - ${BIOSMART_TMP:?}:/biosmart/tmp
