@@ -42,6 +42,8 @@ rdkit = ">=2024.3"
 fastapi = ">=0.115"
 uvicorn = ">=0.32"
 pydantic = ">=2"
+# Archive and import compress the Run folder with this module.
+zstandard = ">=0.23"
 # Editable path package. Torch stays off this environment: serve and the
 # engine child both use this interpreter.
 biosmart = { path = "biosmart", editable = true }

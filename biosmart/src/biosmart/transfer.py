@@ -10,6 +10,8 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
+import shutil
 import sqlite3
 import subprocess
 import tarfile
@@ -22,6 +24,7 @@ from biosmart.storage import connect
 
 _FORMATS = frozenset({"sdf", "csv"})
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+_SETUID_SETGID = 0o6000
 _COLUMNS = (
     "candidate_id",
     "canonical_smiles",
@@ -284,11 +287,9 @@ def _extract_run_folder(archive: Path, work: Path) -> Path:
                 raise RunFolderError("Archive must contain one Run folder")
             root_name = next(iter(tops))
             for member in members:
-                _reject_escaping_member(member, unpacked)
-            try:
-                tar.extractall(unpacked, filter="data")
-            except TypeError:
-                tar.extractall(unpacked)
+                _reject_unsafe_member(member, unpacked)
+            for member in members:
+                _extract_member(tar, member, unpacked)
     except tarfile.TarError as exc:
         raise RunFolderError("Archive is not a compressed Run folder") from exc
     extracted = unpacked / root_name
@@ -298,6 +299,36 @@ def _extract_run_folder(archive: Path, work: Path) -> Path:
     if manifest["run_id"] != root_name:
         raise RunFolderError("Archive Run folder does not match its manifest")
     return extracted
+
+
+def _reject_unsafe_member(member: tarfile.TarInfo, destination: Path) -> None:
+    """Refuse links, special files, and setuid or setgid members before any write."""
+    _reject_escaping_member(member, destination)
+    if not member.isdir() and not member.isreg():
+        raise RunFolderError("Archive member is not a Run folder file")
+    mode = 0 if member.mode is None else member.mode
+    if mode & _SETUID_SETGID:
+        raise RunFolderError("Archive member is not a Run folder file")
+
+
+def _extract_member(tar: tarfile.TarFile, member: tarfile.TarInfo, destination: Path) -> None:
+    """Write one directory or regular file. Archive mode bits are not applied."""
+    target = (destination / member.name).resolve()
+    root = destination.resolve()
+    if target != root and root not in target.parents:
+        raise RunFolderError("Archive member escapes the Run folder")
+    if member.isdir():
+        target.mkdir(parents=True, exist_ok=True)
+        os.chmod(target, 0o755)
+        return
+    source = tar.extractfile(member)
+    if source is None:
+        raise RunFolderError("Archive member is not a Run folder file")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with source, target.open("wb") as handle:
+        shutil.copyfileobj(source, handle)
+    executable = bool((0 if member.mode is None else member.mode) & 0o111)
+    os.chmod(target, 0o755 if executable else 0o644)
 
 
 def _reject_escaping_member(member: tarfile.TarInfo, destination: Path) -> None:

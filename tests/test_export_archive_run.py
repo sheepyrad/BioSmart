@@ -12,8 +12,10 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tarfile
@@ -29,6 +31,8 @@ TESTS = Path(__file__).resolve().parent
 if str(TESTS) not in sys.path:
     sys.path.insert(0, str(TESTS))
 
+from biosmart.index import RunFolderError
+from biosmart.transfer import _extract_run_folder
 from test_candidate_index import _delete_index, _get, _index_rows
 from test_one_run_server import EXPECTED_CANDIDATES, EventStream, _read_events, _request, _serve, _spec
 
@@ -326,3 +330,57 @@ def test_export_archive_and_import_rebuild_the_index(tmp_path: Path) -> None:
         assert listed == 200, page
         assert [row["canonical_smiles"] for row in page["candidates"]] == ["CCN", "CC(=O)O"]
         assert [path for path in runs_root.iterdir() if path.is_dir()] == [runs_root / run_id]
+
+
+def _zstd_compress(data: bytes) -> bytes:
+    try:
+        import zstandard
+    except ImportError:
+        zstandard = None
+    if zstandard is not None:
+        return bytes(zstandard.ZstdCompressor(level=3).compress(data))
+    completed = subprocess.run(
+        ["zstd", "-q", "-c"],
+        input=data,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout
+
+
+def _hostile_archive(kind: str) -> bytes:
+    run_id = "a" * 32
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        info = tarfile.TarInfo(name=f"{run_id}/hostile")
+        if kind == "fifo":
+            info.type = tarfile.FIFOTYPE
+            info.mode = 0o644
+            tar.addfile(info)
+        else:
+            payload = b"setuid"
+            info.type = tarfile.REGTYPE
+            info.mode = 0o4755
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+    return _zstd_compress(buffer.getvalue())
+
+
+@pytest.mark.parametrize("kind", ["fifo", "setuid"])
+def test_import_refuses_fifo_or_setuid_member(tmp_path: Path, kind: str) -> None:
+    archive = tmp_path / f"{kind}.tar.zst"
+    archive.write_bytes(_hostile_archive(kind))
+    work = tmp_path / "work"
+    work.mkdir()
+    with pytest.raises(RunFolderError, match="not a Run folder file"):
+        _extract_run_folder(archive, work)
+    hostile = work / "unpacked" / ("a" * 32) / "hostile"
+    assert not hostile.exists()
+    assert not hostile.is_fifo()
+    for path in (work / "unpacked").rglob("*"):
+        mode = path.lstat().st_mode
+        assert not stat.S_ISFIFO(mode)
+        assert not stat.S_ISCHR(mode)
+        assert not stat.S_ISBLK(mode)
+        assert mode & 0o6000 == 0
