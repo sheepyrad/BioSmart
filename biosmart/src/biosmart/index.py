@@ -224,6 +224,10 @@ def page_candidates(
     max_mw: float | None = None,
     min_logp: float | None = None,
     max_logp: float | None = None,
+    min_qed: float | None = None,
+    max_qed: float | None = None,
+    min_sa: float | None = None,
+    max_sa: float | None = None,
 ) -> dict[str, Any]:
     """Page and filter one Run's Candidates from the Index."""
     if not isinstance(registry, Path):
@@ -241,6 +245,10 @@ def page_candidates(
     max_mw = _number("max_mw", max_mw)
     min_logp = _number("min_logp", min_logp)
     max_logp = _number("max_logp", max_logp)
+    min_qed = _number("min_qed", min_qed)
+    max_qed = _number("max_qed", max_qed)
+    min_sa = _number("min_sa", min_sa)
+    max_sa = _number("max_sa", max_sa)
     decoded = _decode_cursor(cursor)
     if decoded is not None:
         if decoded.get("kind") != "page" or decoded.get("sort") != sort:
@@ -269,6 +277,18 @@ def page_candidates(
     if max_logp is not None:
         where.append("p.logp <= ?")
         params.append(max_logp)
+    if min_qed is not None:
+        where.append("p.qed >= ?")
+        params.append(min_qed)
+    if max_qed is not None:
+        where.append("p.qed <= ?")
+        params.append(max_qed)
+    if min_sa is not None:
+        where.append("p.sa >= ?")
+        params.append(min_sa)
+    if max_sa is not None:
+        where.append("p.sa <= ?")
+        params.append(max_sa)
     order_by = _page_order(sort)
     if decoded is not None:
         clause, cursor_params = _page_after(sort, decoded)

@@ -122,7 +122,11 @@ def test_wizard_order_is_target_pocket_preset_scorer_start(host) -> None:
     assert 'id="wizard-start"' in page
     assert "checkpoint" not in page.lower()
     assert "boltz" not in page.lower()
-    assert not re.search(r'type\s*=\s*"(text|search|url)"', page, flags=re.IGNORECASE)
+    assert not re.search(r'type\s*=\s*"(search|url)"', page, flags=re.IGNORECASE)
+    text_inputs = re.findall(r'<input\b[^>]*type\s*=\s*"text"[^>]*>', page, flags=re.IGNORECASE)
+    assert len(text_inputs) == 1
+    assert "candidate-query" in text_inputs[0]
+    assert "path" not in text_inputs[0].lower()
 
 
 def test_residues_come_from_the_target_without_a_path(host, tmp_path: Path) -> None:

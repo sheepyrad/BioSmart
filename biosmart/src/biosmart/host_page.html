@@ -300,7 +300,7 @@ button.choose[aria-pressed="true"], #pocket-residues[aria-pressed="true"], #pock
 details { margin-top: 1rem; }
 summary { cursor: pointer; font-family: "Fraunces", Palatino, serif; font-weight: 700; }
 #advanced-fields { display: grid; gap: 0.8rem; margin-top: 0.8rem; }
-textarea, input[type="number"] {
+textarea, input[type="number"], input[type="text"] {
   font: inherit;
   color: var(--ink);
   background: var(--sheet);
@@ -336,6 +336,58 @@ textarea, input[type="number"] {
   letter-spacing: -0.03em;
 }
 .eta { margin: 0 0 1rem; color: var(--brass); font-weight: 600; }
+.inspect-tools, .page-nav { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: end; margin: 0.8rem 0 1rem; }
+.ledger-wrap { overflow-x: auto; }
+.ledger { width: 100%; border-collapse: collapse; }
+.ledger th {
+  font-family: "Fraunces", Palatino, serif;
+  font-size: 0.78rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--brass);
+  border-bottom: 2px solid var(--ink);
+  padding: 0.35rem 0.6rem 0.45rem 0;
+}
+.ledger td { border-bottom: 1px solid var(--rule); padding: 0.45rem 0.6rem 0.5rem 0; vertical-align: baseline; }
+.ledger tr[aria-selected="true"] { background: rgba(157, 52, 24, 0.08); }
+.ledger button.link {
+  background: transparent;
+  color: var(--ink);
+  padding: 0;
+  font-family: "Newsreader", Palatino, serif;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.ledger button.link:hover { background: transparent; color: var(--oxide); }
+#parallel-plate {
+  height: 22rem;
+  margin: 0.4rem 0 1rem;
+  border: 1px solid var(--ink);
+  background:
+    linear-gradient(180deg, rgba(138, 90, 18, 0.08), transparent 28%),
+    var(--sheet);
+}
+.pose-well {
+  position: relative;
+  height: 22rem;
+  margin-top: 0.6rem;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(230, 220, 200, 0.08), transparent 55%),
+    var(--ink);
+  overflow: hidden;
+}
+.pose-well canvas { width: 100%; height: 100%; display: block; cursor: grab; }
+.pose-caption {
+  position: absolute;
+  left: 0.9rem;
+  right: 0.9rem;
+  bottom: 0.75rem;
+  margin: 0;
+  color: var(--paper);
+  font-family: "Fraunces", Palatino, serif;
+  font-size: 1.15rem;
+}
 @media (max-width: 800px) {
   .rail { position: static; width: auto; height: auto; border-right: 0; border-bottom: 1px solid var(--rule); }
   .rail span { writing-mode: horizontal-tb; transform: none; padding: 0.7rem 1rem; letter-spacing: 0.28em; }
@@ -471,8 +523,73 @@ textarea, input[type="number"] {
       <p id="run-eta" class="eta" role="status"></p>
       <div id="run-list" class="run-list"></div>
     </section>
+    <section id="candidates" aria-labelledby="candidates-title">
+      <p class="index">06</p>
+      <h2 id="candidates-title">Candidates</h2>
+      <p class="intro">Page through Candidates, with scores and filter reasons. Drag a band on the parallel coordinates to narrow the set. Choose a Candidate to see its pose in the Pocket.</p>
+      <p id="inspect-run" class="chosen">No Run open.</p>
+      <div id="parallel-plate" role="img" aria-label="Parallel coordinates"></div>
+      <p id="parallel-note" class="quiet"></p>
+      <div id="status-filters" class="inspect-tools">
+        <button type="button" data-filter="" aria-pressed="true">All</button>
+        <button type="button" data-filter="scored" aria-pressed="false">Scored</button>
+        <button type="button" data-filter="filtered" aria-pressed="false">Filtered</button>
+        <button type="button" data-filter="failed" aria-pressed="false">Failed</button>
+        <button type="button" id="clear-brush">Clear parallel coordinates</button>
+      </div>
+      <form id="search-form">
+        <label>Search
+          <select id="search-kind">
+            <option value="smarts" selected>Substructure</option>
+            <option value="similar">Similarity</option>
+          </select>
+        </label>
+        <label>Query
+          <input id="candidate-query" name="query" type="text" autocomplete="off" spellcheck="false" placeholder="SMARTS or SMILES">
+        </label>
+        <button type="submit" id="search-run">Search</button>
+        <button type="button" id="search-clear">Clear search</button>
+      </form>
+      <div class="ledger-wrap">
+        <table class="ledger">
+          <thead>
+            <tr>
+              <th>Candidate</th>
+              <th>SMILES</th>
+              <th>Score</th>
+              <th>Status</th>
+              <th>Filter reason</th>
+            </tr>
+          </thead>
+          <tbody id="candidate-rows"></tbody>
+        </table>
+      </div>
+      <div class="page-nav">
+        <button type="button" id="page-prev" disabled>Previous</button>
+        <button type="button" id="page-next" disabled>Next</button>
+        <p id="page-status" class="quiet"></p>
+      </div>
+      <div class="pose-well">
+        <canvas id="pose-stage" width="640" height="352" aria-label="Candidate pose in the Pocket"></canvas>
+        <p id="pose-caption" class="pose-caption">Choose a Candidate.</p>
+      </div>
+      <div class="inspect-tools">
+        <label>Top
+          <select id="export-top">
+            <option value="10" selected>10</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+        <button type="button" id="export-sdf" disabled>Export SDF</button>
+        <button type="button" id="export-csv" disabled>Export CSV</button>
+        <button type="button" id="archive-run" disabled>Archive</button>
+      </div>
+      <p id="inspect-status" class="action-status" role="status"></p>
+    </section>
   </div>
 </main>
+<script src="/vendor/echarts.min.js"></script>
 <script>
 const wizard = {
   step: "target",
@@ -1097,6 +1214,18 @@ function renderRuns(payload) {
     }
     const action = runAction(run);
     if (action) article.append(action);
+    if (run.status === "paused" || run.status === "finished" || run.status === "failed") {
+      const inspectButton = document.createElement("button");
+      inspectButton.type = "button";
+      inspectButton.className = "choose";
+      inspectButton.dataset.action = "inspect";
+      inspectButton.dataset.runId = run.run_id || "";
+      inspectButton.textContent = "Inspect";
+      inspectButton.addEventListener("click", () => {
+        openCandidates(run.run_id).catch(showInspectError);
+      });
+      article.append(inspectButton);
+    }
     root.append(article);
   }
   const progress = document.getElementById("run-progress");
@@ -1270,6 +1399,487 @@ runEvents.onmessage = () => {
 setInterval(() => {
   refreshRuns().catch(() => {});
 }, 500);
+
+const inspect = {
+  runId: "",
+  cursors: [null],
+  page: 0,
+  status: "",
+  ranges: {},
+  chart: null,
+  searching: false,
+  ignoreBrush: false,
+  pose: null,
+};
+const AXIS_NAMES = ["score", "mw", "logp", "qed", "sa"];
+const PAGE_SIZE = 25;
+
+function showInspectError(error) {
+  document.getElementById("inspect-status").textContent = error instanceof Error ? error.message : "The host refused the request.";
+}
+
+function formatScore(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "—";
+  return numeric.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function statusWord(status) {
+  if (status === "scored") return "Scored";
+  if (status === "filtered") return "Filtered";
+  if (status === "failed") return "Failed";
+  return status || "";
+}
+
+function setExportEnabled(enabled) {
+  document.getElementById("export-sdf").disabled = !enabled;
+  document.getElementById("export-csv").disabled = !enabled;
+  document.getElementById("archive-run").disabled = !enabled;
+}
+
+function candidateQuery() {
+  const params = new URLSearchParams({ limit: String(PAGE_SIZE), sort: "candidate_id" });
+  if (inspect.status) params.set("filter", inspect.status);
+  const names = {
+    score: ["min_score", "max_score"],
+    mw: ["min_mw", "max_mw"],
+    logp: ["min_logp", "max_logp"],
+    qed: ["min_qed", "max_qed"],
+    sa: ["min_sa", "max_sa"],
+  };
+  for (const key of AXIS_NAMES) {
+    const range = inspect.ranges[key];
+    if (!range) continue;
+    params.set(names[key][0], String(range[0]));
+    params.set(names[key][1], String(range[1]));
+  }
+  const cursor = inspect.cursors[inspect.page];
+  if (cursor) params.set("cursor", cursor);
+  return params;
+}
+
+function renderCandidateRows(candidates) {
+  const body = document.getElementById("candidate-rows");
+  body.replaceChildren();
+  if (!candidates.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 5;
+    cell.textContent = "No Candidates on this page.";
+    row.append(cell);
+    body.append(row);
+    return;
+  }
+  for (const candidate of candidates) {
+    const row = document.createElement("tr");
+    row.dataset.candidateId = candidate.candidate_id || "";
+    row.dataset.runId = candidate.run_id || inspect.runId;
+    const idCell = document.createElement("td");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "link";
+    button.textContent = candidate.candidate_id || "";
+    button.addEventListener("click", () => {
+      showPose(row.dataset.runId, candidate.candidate_id).catch(showInspectError);
+    });
+    idCell.append(button);
+    const smiles = document.createElement("td");
+    smiles.textContent = candidate.canonical_smiles || "";
+    const score = document.createElement("td");
+    score.textContent = formatScore(candidate.best_score);
+    const status = document.createElement("td");
+    status.textContent = statusWord(candidate.status);
+    const reason = document.createElement("td");
+    reason.textContent = candidate.failure_reason || "—";
+    row.append(idCell, smiles, score, status, reason);
+    body.append(row);
+  }
+}
+
+async function loadTable() {
+  if (!inspect.runId) return;
+  const payload = await readJson(await fetch("/api/v1/runs/" + encodeURIComponent(inspect.runId) + "/candidates?" + candidateQuery()));
+  const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+  renderCandidateRows(candidates);
+  const next = payload.next_cursor || null;
+  if (next) inspect.cursors[inspect.page + 1] = next;
+  else inspect.cursors = inspect.cursors.slice(0, inspect.page + 1);
+  document.getElementById("page-prev").disabled = inspect.page === 0;
+  document.getElementById("page-next").disabled = !next;
+  document.getElementById("page-status").textContent = "Page " + (inspect.page + 1);
+  if (!inspect.searching && !inspect.pose && candidates.length) {
+    showPose(inspect.runId, candidates[0].candidate_id).catch(showInspectError);
+  }
+}
+
+function numericRows(candidates) {
+  return candidates.filter((candidate) =>
+    ["best_score", "mw", "logp", "qed", "sa"].every((key) => Number.isFinite(Number(candidate[key])))
+  );
+}
+
+function axisRange(values) {
+  let min = values[0];
+  let max = values[0];
+  for (const value of values) {
+    if (value < min) min = value;
+    if (value > max) max = value;
+  }
+  if (min === max) return [min - 1, max + 1];
+  const pad = (max - min) * 0.05;
+  return [min - pad, max + pad];
+}
+
+function readBrush(chart) {
+  const model = chart.getModel();
+  const ranges = {};
+  for (let index = 0; index < AXIS_NAMES.length; index += 1) {
+    const axis = model.getComponent("parallelAxis", index);
+    const intervals = axis && axis.activeIntervals;
+    if (!intervals || !intervals.length) continue;
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const interval of intervals) {
+      lo = Math.min(lo, Number(interval[0]));
+      hi = Math.max(hi, Number(interval[1]));
+    }
+    if (Number.isFinite(lo) && Number.isFinite(hi)) ranges[AXIS_NAMES[index]] = [lo, hi];
+  }
+  return ranges;
+}
+
+function renderParallel(candidates) {
+  const plate = document.getElementById("parallel-plate");
+  const note = document.getElementById("parallel-note");
+  const rows = numericRows(candidates);
+  if (!window.echarts) {
+    note.textContent = "Parallel coordinates did not load.";
+    return;
+  }
+  if (!rows.length) {
+    if (inspect.chart) {
+      inspect.chart.clear();
+    }
+    note.textContent = "No scored Candidates for parallel coordinates.";
+    return;
+  }
+  note.textContent = "Drag along an axis to narrow the set.";
+  if (!inspect.chart) {
+    inspect.chart = window.echarts.init(plate);
+    inspect.chart.on("axisareaselected", () => {
+      if (inspect.ignoreBrush) return;
+      inspect.ranges = readBrush(inspect.chart);
+      inspect.searching = false;
+      inspect.cursors = [null];
+      inspect.page = 0;
+      loadTable().catch(showInspectError);
+    });
+  }
+  const columns = [
+    rows.map((row) => Number(row.best_score)),
+    rows.map((row) => Number(row.mw)),
+    rows.map((row) => Number(row.logp)),
+    rows.map((row) => Number(row.qed)),
+    rows.map((row) => Number(row.sa)),
+  ];
+  const labels = ["Score", "MW", "logP", "QED", "SA"];
+  inspect.ignoreBrush = true;
+  inspect.chart.setOption({
+    animation: false,
+    textStyle: { fontFamily: "Newsreader, Palatino, serif", color: "#1c1712" },
+    parallel: {
+      left: 48,
+      right: 28,
+      top: 36,
+      bottom: 28,
+      parallelAxisDefault: {
+        type: "value",
+        nameLocation: "end",
+        nameGap: 12,
+        nameTextStyle: { color: "#8a5a12", fontFamily: "Fraunces, Palatino, serif", fontSize: 13 },
+        axisLabel: { color: "#5c5146", fontSize: 11 },
+        axisLine: { lineStyle: { color: "#1c1712" } },
+        areaSelectStyle: { width: 16, borderWidth: 1, borderColor: "#9d3418", color: "rgba(157, 52, 24, 0.28)" },
+      },
+    },
+    parallelAxis: labels.map((label, index) => {
+      const range = axisRange(columns[index]);
+      return { dim: index, name: label, id: AXIS_NAMES[index], min: range[0], max: range[1] };
+    }),
+    series: [{
+      type: "parallel",
+      lineStyle: { width: 1.2, color: "#9d3418", opacity: 0.45 },
+      inactiveOpacity: 0.05,
+      activeOpacity: 0.95,
+      data: rows.map((row) => [Number(row.best_score), Number(row.mw), Number(row.logp), Number(row.qed), Number(row.sa)]),
+    }],
+  }, true);
+  inspect.ignoreBrush = false;
+}
+
+async function loadParallel() {
+  const payload = await readJson(await fetch(
+    "/api/v1/runs/" + encodeURIComponent(inspect.runId) + "/candidates?limit=200&sort=best_score"
+  ));
+  renderParallel(Array.isArray(payload.candidates) ? payload.candidates : []);
+}
+
+async function openCandidates(runId) {
+  inspect.runId = runId;
+  inspect.cursors = [null];
+  inspect.page = 0;
+  inspect.status = "";
+  inspect.ranges = {};
+  inspect.searching = false;
+  inspect.pose = null;
+  document.getElementById("inspect-run").textContent = "Run " + runId;
+  document.getElementById("inspect-status").textContent = "";
+  document.getElementById("candidate-query").value = "";
+  setExportEnabled(true);
+  for (const button of document.querySelectorAll("#status-filters [data-filter]")) {
+    button.setAttribute("aria-pressed", button.dataset.filter === "" ? "true" : "false");
+  }
+  document.getElementById("candidates").scrollIntoView({ behavior: "smooth", block: "start" });
+  await loadParallel();
+  await loadTable();
+}
+
+function project(atom, yaw, pitch) {
+  const cy = Math.cos(yaw);
+  const sy = Math.sin(yaw);
+  const cp = Math.cos(pitch);
+  const sp = Math.sin(pitch);
+  const x = atom.x * cy - atom.z * sy;
+  const z = atom.x * sy + atom.z * cy;
+  const y = atom.y * cp - z * sp;
+  const depth = atom.y * sp + z * cp;
+  return { x, y, depth };
+}
+
+function drawPose(payload) {
+  const canvas = document.getElementById("pose-stage");
+  const well = canvas.parentElement;
+  const width = Math.max(320, well.clientWidth);
+  const height = Math.max(220, well.clientHeight);
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  context.clearRect(0, 0, width, height);
+  const pose = Array.isArray(payload.pose) ? payload.pose : [];
+  const pocketAtoms = Array.isArray(payload.pocket_atoms) ? payload.pocket_atoms : [];
+  const residues = payload.pocket && Array.isArray(payload.pocket.residues) ? payload.pocket.residues : [];
+  const points = pose.concat(pocketAtoms);
+  const yaw = canvas.dataset.yaw ? Number(canvas.dataset.yaw) : 0.7;
+  const pitch = canvas.dataset.pitch ? Number(canvas.dataset.pitch) : 0.35;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  const projected = points.map((atom) => {
+    const point = project(atom, yaw, pitch);
+    minX = Math.min(minX, point.x);
+    maxX = Math.max(maxX, point.x);
+    minY = Math.min(minY, point.y);
+    maxY = Math.max(maxY, point.y);
+    return point;
+  });
+  const span = Math.max(maxX - minX, maxY - minY, 1);
+  const scale = Math.min(width, height) * 0.62 / span;
+  const originX = width / 2 - ((minX + maxX) / 2) * scale;
+  const originY = height / 2 + ((minY + maxY) / 2) * scale;
+  function place(index) {
+    const point = projected[index];
+    return { x: originX + point.x * scale, y: originY - point.y * scale, depth: point.depth };
+  }
+  for (let index = 0; index < pose.length; index += 1) {
+    const start = place(index);
+    for (let other = index + 1; other < pose.length; other += 1) {
+      const dx = pose[index].x - pose[other].x;
+      const dy = pose[index].y - pose[other].y;
+      const dz = pose[index].z - pose[other].z;
+      if (dx * dx + dy * dy + dz * dz > 3.24) continue;
+      const end = place(other);
+      context.strokeStyle = "rgba(230, 220, 200, 0.85)";
+      context.lineWidth = 2;
+      context.beginPath();
+      context.moveTo(start.x, start.y);
+      context.lineTo(end.x, end.y);
+      context.stroke();
+    }
+  }
+  const colors = { C: "#e6dcc8", N: "#7dcea0", O: "#e07a5f", S: "#e6c15a", F: "#8ecae6", CL: "#8ecae6", BR: "#c47b4a" };
+  pocketAtoms.forEach((atom, offset) => {
+    const point = place(pose.length + offset);
+    context.beginPath();
+    context.strokeStyle = "rgba(138, 90, 18, 0.85)";
+    context.lineWidth = 1.5;
+    context.arc(point.x, point.y, atom.name === "CA" ? 7 : 4, 0, Math.PI * 2);
+    context.stroke();
+  });
+  pose.forEach((atom, index) => {
+    const point = place(index);
+    context.beginPath();
+    context.fillStyle = colors[String(atom.element || "C").toUpperCase()] || "#e6dcc8";
+    context.arc(point.x, point.y, atom.element === "C" ? 7 : 8, 0, Math.PI * 2);
+    context.fill();
+  });
+  const caption = document.getElementById("pose-caption");
+  const pocketText = residues.length ? residues.join(", ") : "Pocket";
+  const reason = payload.failure_reason ? " Filter reason: " + payload.failure_reason + "." : "";
+  caption.textContent = "Pose of Candidate " + payload.candidate_id + " in the Pocket " + pocketText + "." + reason;
+  for (const row of document.querySelectorAll("#candidate-rows tr")) {
+    row.setAttribute("aria-selected", row.dataset.candidateId === payload.candidate_id ? "true" : "false");
+  }
+}
+
+async function showPose(runId, candidateId) {
+  if (!runId || !candidateId) return;
+  const payload = await readJson(await fetch(
+    "/api/v1/runs/" + encodeURIComponent(runId) + "/candidates/" + encodeURIComponent(candidateId) + "/pose"
+  ));
+  inspect.pose = payload;
+  drawPose(payload);
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function exportCandidates(format) {
+  if (!inspect.runId) return;
+  const top = document.getElementById("export-top").value;
+  const response = await fetch(
+    "/api/v1/runs/" + encodeURIComponent(inspect.runId) + "/export?format=" + encodeURIComponent(format) + "&top=" + encodeURIComponent(top)
+  );
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.detail || "Export failed.");
+  }
+  downloadBlob(await response.blob(), inspect.runId + "-top-" + top + "." + format);
+  document.getElementById("inspect-status").textContent = format === "sdf" ? "SDF exported." : "CSV exported.";
+}
+
+async function archiveCandidates() {
+  if (!inspect.runId) return;
+  const response = await fetch("/api/v1/runs/" + encodeURIComponent(inspect.runId) + "/archive");
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.detail || "Archive failed.");
+  }
+  downloadBlob(await response.blob(), inspect.runId + ".tar.zst");
+  document.getElementById("inspect-status").textContent = "Run archived.";
+}
+
+document.getElementById("status-filters").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-filter]");
+  if (!button || !inspect.runId) return;
+  inspect.status = button.dataset.filter || "";
+  inspect.searching = false;
+  inspect.cursors = [null];
+  inspect.page = 0;
+  for (const item of document.querySelectorAll("#status-filters [data-filter]")) {
+    item.setAttribute("aria-pressed", item === button ? "true" : "false");
+  }
+  loadTable().catch(showInspectError);
+});
+
+document.getElementById("clear-brush").addEventListener("click", () => {
+  inspect.ignoreBrush = true;
+  if (inspect.chart) {
+    for (const name of AXIS_NAMES) {
+      inspect.chart.dispatchAction({ type: "axisAreaSelect", parallelAxisId: name, intervals: [] });
+    }
+  }
+  inspect.ignoreBrush = false;
+  inspect.ranges = {};
+  inspect.searching = false;
+  inspect.cursors = [null];
+  inspect.page = 0;
+  if (inspect.runId) loadTable().catch(showInspectError);
+});
+
+document.getElementById("page-prev").addEventListener("click", () => {
+  if (inspect.page === 0) return;
+  inspect.page -= 1;
+  inspect.searching = false;
+  loadTable().catch(showInspectError);
+});
+
+document.getElementById("page-next").addEventListener("click", () => {
+  if (!inspect.cursors[inspect.page + 1]) return;
+  inspect.page += 1;
+  inspect.searching = false;
+  loadTable().catch(showInspectError);
+});
+
+document.getElementById("search-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = document.getElementById("candidate-query").value.trim();
+  const status = document.getElementById("inspect-status");
+  if (!query) {
+    status.textContent = "Enter SMARTS or SMILES.";
+    return;
+  }
+  const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
+  if (document.getElementById("search-kind").value === "similar") params.set("similar_to", query);
+  else params.set("smarts", query);
+  try {
+    const payload = await readJson(await fetch("/api/v1/search?" + params));
+    inspect.searching = true;
+    renderCandidateRows(Array.isArray(payload.candidates) ? payload.candidates : []);
+    document.getElementById("page-status").textContent = "Search";
+    document.getElementById("page-prev").disabled = true;
+    document.getElementById("page-next").disabled = true;
+    status.textContent = "";
+  } catch (error) {
+    showInspectError(error);
+  }
+});
+
+document.getElementById("search-clear").addEventListener("click", () => {
+  document.getElementById("candidate-query").value = "";
+  inspect.searching = false;
+  inspect.cursors = [null];
+  inspect.page = 0;
+  if (inspect.runId) loadTable().catch(showInspectError);
+});
+
+document.getElementById("export-sdf").addEventListener("click", () => {
+  exportCandidates("sdf").catch(showInspectError);
+});
+document.getElementById("export-csv").addEventListener("click", () => {
+  exportCandidates("csv").catch(showInspectError);
+});
+document.getElementById("archive-run").addEventListener("click", () => {
+  archiveCandidates().catch(showInspectError);
+});
+
+const poseCanvas = document.getElementById("pose-stage");
+poseCanvas.dataset.yaw = "0.7";
+poseCanvas.dataset.pitch = "0.35";
+poseCanvas.addEventListener("pointerdown", (event) => {
+  poseCanvas.setPointerCapture(event.pointerId);
+  poseCanvas.dataset.dragX = String(event.clientX);
+  poseCanvas.dataset.dragY = String(event.clientY);
+});
+poseCanvas.addEventListener("pointermove", (event) => {
+  if (!poseCanvas.hasPointerCapture(event.pointerId)) return;
+  const lastX = Number(poseCanvas.dataset.dragX || event.clientX);
+  const lastY = Number(poseCanvas.dataset.dragY || event.clientY);
+  poseCanvas.dataset.yaw = String(Number(poseCanvas.dataset.yaw) + (event.clientX - lastX) * 0.01);
+  poseCanvas.dataset.pitch = String(Number(poseCanvas.dataset.pitch) + (event.clientY - lastY) * 0.01);
+  poseCanvas.dataset.dragX = String(event.clientX);
+  poseCanvas.dataset.dragY = String(event.clientY);
+  if (inspect.pose) drawPose(inspect.pose);
+});
 
 Promise.all([loadDoctor(), loadLibraries(), loadTargets(), loadScorers(), loadPresets(), loadSchema(), refreshRuns()]).catch((error) => {
   const status = document.getElementById("doctor-status");

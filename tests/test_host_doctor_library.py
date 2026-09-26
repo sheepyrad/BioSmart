@@ -72,10 +72,15 @@ def test_host_page_shows_doctor_library_and_target_without_a_path_field(host) ->
     assert "<textarea" not in page.lower()
     tags = re.findall(r"<input\b[^>]*>", page, flags=re.IGNORECASE)
     assert tags
+    text_inputs = []
     for tag in tags:
-        assert re.search(r'type\s*=\s*"(file|checkbox)"', tag, flags=re.IGNORECASE)
         assert "path" not in tag.lower()
-    assert not re.search(r'type\s*=\s*"(text|search|url)"', page, flags=re.IGNORECASE)
+        if re.search(r'id\s*=\s*"candidate-query"', tag, flags=re.IGNORECASE):
+            assert re.search(r'type\s*=\s*"text"', tag, flags=re.IGNORECASE)
+            text_inputs.append(tag)
+            continue
+        assert re.search(r'type\s*=\s*"(file|checkbox)"', tag, flags=re.IGNORECASE)
+    assert text_inputs == [tag for tag in tags if "candidate-query" in tag]
 
 
 def test_font_is_served_from_the_host(host) -> None:
