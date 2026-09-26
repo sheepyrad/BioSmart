@@ -47,6 +47,7 @@ class ScoreResult:
     status: str
     reward: float | None
     failure_reason: str | None = None
+    raw: dict[str, object] | None = None
 
 
 class Scorer(Protocol):
