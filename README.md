@@ -19,6 +19,16 @@ CGFlow is part of this repo. One `pixi.lock` defines four environments that are 
 pixi install
 ```
 
+### Container
+
+The scientist's install is one image built from this `pixi.lock`. The container runs as the invoking user, starts at boot, and a desktop launcher opens the localhost host.
+
+```bash
+./deploy/install.sh
+```
+
+On Ubuntu, `./deploy/install.sh --with-docker` installs Docker and the NVIDIA Container Toolkit when they are missing.
+
 Pose weights under `cgflow/weights/` are not in git. See `cgflow/README.md`.
 
 Prepare data, environment files, and pretrained CGFlow pose weights per `cgflow/README.md` and `cgflow/experiments/README.md`.

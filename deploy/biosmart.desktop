@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=BioSmart
+Comment=Open the BioSmart localhost host
+Exec=xdg-open http://127.0.0.1:8000
+Terminal=false
+Categories=Science;
+StartupNotify=true

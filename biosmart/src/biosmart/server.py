@@ -421,6 +421,20 @@ def create_app() -> FastAPI:
     app = FastAPI(lifespan=lifespan)
     app.state.supervisor = supervisor
 
+    @app.get("/")
+    async def localhost_host() -> Response:
+        """The page the desktop launcher opens on localhost."""
+        body = """<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>BioSmart</title></head>
+<body>
+<h1>BioSmart</h1>
+<p>This host is on localhost.</p>
+</body>
+</html>
+"""
+        return Response(content=body, media_type="text/html; charset=utf-8")
+
     @app.post("/api/v1/runs", status_code=201)
     async def start_run(request: Request) -> JSONResponse:
         try:
