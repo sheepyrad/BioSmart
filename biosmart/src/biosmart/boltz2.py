@@ -1,4 +1,4 @@
-"""Resident Boltz-2 Scorer. Models load once and score a batch per Scoring round.
+"""Resident Boltz-2 Scorer. Models load once and score the Candidates of one Scoring round.
 
 The worker acceptor imports this module inside the pixi default process.
 The engine does not.
