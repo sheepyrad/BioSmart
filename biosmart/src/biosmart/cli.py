@@ -21,7 +21,7 @@ from biosmart.libraries import (
 )
 from biosmart.scoring import ScorerFailed
 from biosmart.start import StartRefused, execute_guarded, prepare_run_process
-from biosmart.worker import serve
+from biosmart.worker import serve, serve_stdio
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -40,9 +40,15 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument("--port", type=int, default=8000)
     worker_parser = subcommands.add_parser(
         "worker",
-        help="Accept prepare, score, and flush from a host on the tailnet",
+        help="Accept prepare, score, and flush",
     )
-    worker_parser.add_argument("--listen", required=True)
+    mode = worker_parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--listen", help="Tailnet address, host:port")
+    mode.add_argument(
+        "--stdio",
+        action="store_true",
+        help="JSON-lines on stdin and stdout for one local Scorer worker",
+    )
     worker_parser.add_argument("--ready-file", type=Path)
 
     library = subcommands.add_parser("library", help="Building-block libraries")
@@ -77,6 +83,9 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             return _run(args.spec)
         if args.command == "worker":
+            if args.stdio:
+                serve_stdio()
+                return 0
             return _worker(args.listen, args.ready_file)
         if args.command == "library" and args.library_command == "build":
             return _build(args)

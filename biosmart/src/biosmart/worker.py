@@ -1,20 +1,26 @@
 """Worker acceptor.
 
-A worker accepts prepare, score, and flush from a host on its tailnet
-address and calls the Scorer seam. Each call is one JSON object per line
-on a TCP socket. It serves no UI, runs no policy, and has no queue. It
-does not listen on a public LAN address and it asks for no token.
+A worker accepts prepare, score, and flush and calls the Scorer seam. Each
+call is one JSON object per line. It serves no UI, runs no policy, and has
+no queue. It asks for no token.
 
-Loopback is the CI stand-in for that tailnet address. A hostname is
-allowed when it resolves into loopback, Tailscale IPv4, or Tailscale IPv6.
+On the tailnet the line is a TCP socket. Loopback is the CI stand-in for
+that address. A hostname is allowed when it resolves into loopback,
+Tailscale IPv4, or Tailscale IPv6. The worker does not listen on a public
+LAN address.
+
+A local Scorer worker uses the same JSON-lines on stdin and stdout. Models
+stay loaded in that process until the host closes the pipe.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import signal
 import socket
+import subprocess
 import threading
 from pathlib import Path
 from typing import Any
@@ -100,7 +106,7 @@ class WorkerAcceptor:
     """prepare, score, and flush for one host, via the Scorer seam."""
 
     def __init__(self) -> None:
-        self._scorer: FakeScorer | None = None
+        self._scorer: Any = None
         self._lock = threading.Lock()
 
     def prepare(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -115,11 +121,19 @@ class WorkerAcceptor:
             pocket = PocketSpec.model_validate(payload["pocket"])
         except (KeyError, ValidationError) as exc:
             raise ValueError("prepare requires a Target and a Pocket") from exc
+        kind = payload.get("scorer", "fake")
+        if not isinstance(kind, str) or not kind:
+            raise ValueError("scorer must be a string")
         with self._lock:
-            scorer = FakeScorer(seed, ordinal=ordinal)
+            scorer = _open_resident(kind, payload, seed=seed, ordinal=ordinal)
             context_hash = scorer.prepare(target, pocket)
             self._scorer = scorer
-        return {"context_hash": context_hash, "scorer": scorer.name, "version": scorer.version}
+        return {
+            "context_hash": context_hash,
+            "scorer": scorer.name,
+            "version": scorer.version,
+            **_resident_facts(scorer),
+        }
 
     def score(self, payload: dict[str, Any]) -> dict[str, Any]:
         round_no = payload.get("round_no")
@@ -134,7 +148,7 @@ class WorkerAcceptor:
             if scorer is None:
                 raise ValueError("prepare before score")
             results = scorer.score(round_no, candidates)
-        return {"results": [_score_payload(result) for result in results]}
+        return {"results": [_score_payload(result) for result in results], **_resident_facts(scorer)}
 
     def flush(self) -> dict[str, Any]:
         with self._lock:
@@ -146,7 +160,8 @@ class WorkerAcceptor:
                 for smiles, reward in scorer.staged_entries()
             ]
             written = scorer.flush()
-        return {"entries": written, "cache": cache}
+            facts = _resident_facts(scorer)
+        return {"entries": written, "cache": cache, **facts}
 
 
 class WorkerScorer:
@@ -276,6 +291,75 @@ class WorkerScorer:
         self._writer = sock.makefile("wb")
 
 
+class StdioWorker:
+    """One persistent Scorer process. JSON-lines on stdin and stdout."""
+
+    def __init__(self, argv: list[str], *, env: dict[str, str], log_path: Path) -> None:
+        if not argv:
+            raise ValueError("Scorer worker command is empty")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._log = log_path.open("ab")
+        self._proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=self._log,
+            env=env,
+            text=True,
+            bufsize=1,
+            start_new_session=True,
+        )
+        self.argv = list(argv)
+
+    def running(self) -> bool:
+        return self._proc.poll() is None
+
+    def call(self, payload: dict[str, Any]) -> dict[str, Any]:
+        op = payload.get("op")
+        if op not in _OPS:
+            raise ValueError("worker accepts only prepare, score, and flush")
+        if self._proc.poll() is not None:
+            raise ScorerFailed("Scorer worker is not running")
+        stdin = self._proc.stdin
+        stdout = self._proc.stdout
+        if stdin is None or stdout is None:
+            raise ScorerFailed("Scorer worker pipes are closed")
+        stdin.write(json.dumps(payload, allow_nan=False) + "\n")
+        stdin.flush()
+        line = stdout.readline()
+        if not line:
+            raise ScorerFailed("Scorer worker closed its protocol stream")
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError("worker response is not a JSON line") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("worker response must be an object")
+        if parsed.get("scorer_failed") is True:
+            message = parsed.get("error")
+            raise ScorerFailed(message if isinstance(message, str) and message else "Scorer failed")
+        if parsed.get("ok") is False:
+            message = parsed.get("error")
+            raise ValueError(message if isinstance(message, str) and message else "worker rejected the call")
+        return parsed
+
+    def close(self) -> None:
+        if self._proc.poll() is None:
+            if self._proc.stdin is not None:
+                self._proc.stdin.close()
+            try:
+                self._proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                os.killpg(self._proc.pid, signal.SIGTERM)
+                try:
+                    self._proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(self._proc.pid, signal.SIGKILL)
+                    self._proc.wait(timeout=10)
+        if not self._log.closed:
+            self._log.close()
+
+
 def serve(listen: str, ready_file: Path | None = None) -> None:
     host, port = parse_listen(listen)
     if ready_file is not None and not isinstance(ready_file, Path):
@@ -313,6 +397,51 @@ def serve(listen: str, ready_file: Path | None = None) -> None:
         server.close()
 
 
+def serve_stdio() -> None:
+    """prepare, score, and flush on stdin/stdout. Logs stay on stderr."""
+    protocol_fd = os.dup(1)
+    os.dup2(2, 1)
+    protocol = os.fdopen(protocol_fd, "wb", buffering=0)
+    acceptor = WorkerAcceptor()
+    try:
+        for raw in sys_stdin_buffer():
+            if not raw.strip():
+                continue
+            _write_line(protocol, _dispatch(raw, acceptor))
+    finally:
+        protocol.close()
+
+
+def sys_stdin_buffer():
+    import sys
+
+    return sys.stdin.buffer
+
+
+def _dispatch(raw: bytes, acceptor: WorkerAcceptor) -> dict[str, Any]:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"ok": False, "error": "invalid json"}
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "payload must be an object"}
+    op = payload.get("op")
+    try:
+        if op == "prepare":
+            result = acceptor.prepare(payload)
+        elif op == "score":
+            result = acceptor.score(payload)
+        elif op == "flush":
+            result = acceptor.flush()
+        else:
+            return {"ok": False, "error": "not found"}
+    except ScorerFailed as exc:
+        return {"ok": False, "scorer_failed": True, "error": str(exc)}
+    except (TypeError, ValueError) as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, **result}
+
+
 def _bind_socket(host: str, port: int) -> socket.socket:
     address = ipaddress.ip_address(host)
     family = socket.AF_INET6 if isinstance(address, ipaddress.IPv6Address) else socket.AF_INET
@@ -339,38 +468,46 @@ def _serve_connection(connection: socket.socket, acceptor: WorkerAcceptor) -> No
         for raw in reader:
             if not raw.strip():
                 continue
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError:
-                _write_line(writer, {"ok": False, "error": "invalid json"})
-                continue
-            if not isinstance(payload, dict):
-                _write_line(writer, {"ok": False, "error": "payload must be an object"})
-                continue
-            op = payload.get("op")
-            try:
-                if op == "prepare":
-                    result = acceptor.prepare(payload)
-                elif op == "score":
-                    result = acceptor.score(payload)
-                elif op == "flush":
-                    result = acceptor.flush()
-                else:
-                    _write_line(writer, {"ok": False, "error": "not found"})
-                    continue
-            except ScorerFailed as exc:
-                # The line is the score failure. Re-raising here would close
-                # the socket before the host records the Scoring round.
-                _write_line(writer, {"ok": False, "scorer_failed": True, "error": str(exc)})
-                continue
-            except (TypeError, ValueError) as exc:
-                _write_line(writer, {"ok": False, "error": str(exc)})
-                continue
-            _write_line(writer, {"ok": True, **result})
+            _write_line(writer, _dispatch(raw, acceptor))
     finally:
         reader.close()
         writer.close()
         connection.close()
+
+
+def _open_resident(kind: str, payload: dict[str, Any], *, seed: int, ordinal: int) -> Any:
+    if kind == "fake":
+        return FakeScorer(seed, ordinal=ordinal)
+    if kind == "boltz2":
+        cache_dir = payload.get("cache_dir")
+        work_dir = payload.get("work_dir")
+        if not isinstance(cache_dir, str) or not cache_dir:
+            raise ValueError("Boltz-2 prepare needs a cache directory")
+        if not isinstance(work_dir, str) or not work_dir:
+            raise ValueError("Boltz-2 prepare needs a work directory")
+        from biosmart.boltz2 import Boltz2Scorer
+
+        return Boltz2Scorer(
+            seed=seed,
+            ordinal=ordinal,
+            cache_dir=Path(cache_dir),
+            work_dir=Path(work_dir),
+        )
+    raise ValueError(f"Unknown Scorer {kind}")
+
+
+def _resident_facts(scorer: Any) -> dict[str, Any]:
+    facts: dict[str, Any] = {}
+    model_loads = getattr(scorer, "model_loads", None)
+    prediction_calls = getattr(scorer, "prediction_calls", None)
+    gpu = getattr(scorer, "gpu", None)
+    if isinstance(model_loads, int):
+        facts["model_loads"] = model_loads
+    if isinstance(prediction_calls, int):
+        facts["prediction_calls"] = prediction_calls
+    if isinstance(gpu, str):
+        facts["gpu"] = gpu
+    return facts
 
 
 def _write_line(writer: Any, payload: dict[str, Any]) -> None:
@@ -414,13 +551,16 @@ def _candidate_payload(candidate: Candidate) -> dict[str, Any]:
 
 
 def _score_payload(result: ScoreResult) -> dict[str, Any]:
-    return {
+    payload = {
         "candidate_id": result.candidate_id,
         "canonical_smiles": result.canonical_smiles,
         "status": result.status,
         "reward": result.reward,
         "failure_reason": result.failure_reason,
     }
+    if result.raw is not None:
+        payload["raw"] = result.raw
+    return payload
 
 
 def _cache_entry(item: Any) -> tuple[str, float]:
@@ -440,12 +580,14 @@ def _score_result(item: Any) -> ScoreResult:
         raise ValueError("score result must be an object")
     try:
         reward = item["reward"]
+        raw = item.get("raw")
         return ScoreResult(
             candidate_id=str(item["candidate_id"]),
             canonical_smiles=str(item["canonical_smiles"]),
             status=str(item["status"]),
             reward=None if reward is None else float(reward),
             failure_reason=None if item.get("failure_reason") is None else str(item["failure_reason"]),
+            raw=raw if isinstance(raw, dict) else None,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("worker score result is invalid") from exc

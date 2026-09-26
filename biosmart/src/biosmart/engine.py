@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import time
 import uuid
@@ -12,11 +13,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from biosmart.eta import estimate_eta_seconds
 from biosmart.flashbind import FlashBindScorer
+from biosmart.index import rebuild_index
 from biosmart.libraries import default_libraries_root, recorded_library
 from biosmart.scoring import Candidate, FakeScorer, Scorer, ScorerFailed, candidate_smiles
 from biosmart.spec import RunSpec
-from biosmart.index import rebuild_index
 from biosmart.storage import (
     append_event,
     init_run_database,
@@ -51,31 +53,6 @@ def _stop_signals() -> Iterator[None]:
         yield
     finally:
         signal.signal(signal.SIGTERM, previous)
-
-
-def _open_scorer(
-    spec: RunSpec,
-    runs_root: Path,
-    run_folder: Path,
-    *,
-    ordinal: int = 0,
-) -> FakeScorer | WorkerScorer | FlashBindScorer:
-    """Local Scorer, or a worker when the host was given its tailnet address.
-
-    FlashBind scores on this host. Its Pose provider is FABind+. The worker
-    path stays the FakeScorer used to test the host.
-    """
-    if spec.scorer == "flashbind":
-        return FlashBindScorer(cache_path=_scorer_cache_path(runs_root), work_dir=run_folder)
-    address = os.environ.get("BIOSMART_WORKER", "").strip()
-    if address:
-        return WorkerScorer(
-            address,
-            spec.seed,
-            cache_path=_scorer_cache_path(runs_root),
-            ordinal=ordinal,
-        )
-    return FakeScorer(spec.seed, cache_path=_scorer_cache_path(runs_root), ordinal=ordinal)
 
 
 def _scorer_cache_path(runs_root: Path) -> Path:
@@ -182,14 +159,14 @@ def execute_run(spec_path: Path, runs_root: Path, registry: Path) -> Path:
     run_id = _allocated_run_id()
     folder = runs_root / run_id
     folder.mkdir()
-    (folder / "spec.json").write_bytes(spec_path.read_bytes())
+    write_json(folder / "spec.json", spec.model_dump(mode="json", exclude_none=True))
     events_path = folder / "events.jsonl"
     database_path = folder / "run.sqlite"
     init_run_database(database_path)
     _write_manifest(folder, run_id=run_id, status="running", scorer=spec.scorer, seed=spec.seed)
 
     _record_used_library(folder, spec, events_path, run_id)
-    scorer = _open_scorer(spec, runs_root, folder)
+    scorer = _open_scorer(spec, folder=folder, runs_root=runs_root, ordinal=0)
     with _stop_signals():
         try:
             _drive(
@@ -210,6 +187,8 @@ def execute_run(spec_path: Path, runs_root: Path, registry: Path) -> Path:
             append_event(events_path, {"type": "run.failed", "run_id": run_id})
             _write_manifest(folder, run_id=run_id, status="failed", scorer=spec.scorer, seed=spec.seed)
             raise
+        finally:
+            _close_scorer(scorer)
     return folder
 
 
@@ -245,12 +224,12 @@ def resume_run(folder: Path, runs_root: Path, registry: Path) -> Path:
     spec = load_spec(folder / "spec.json")
     if checkpoint.get("seed") != spec.seed:
         raise ValueError("Policy checkpoint does not match this Run")
-    if completed > spec.budget.iterations:
+    if completed > _budget(spec).iterations:
         raise ValueError("Policy checkpoint is past the Budget")
     events_path = folder / "events.jsonl"
     database_path = folder / "run.sqlite"
     _write_manifest(folder, run_id=run_id, status="running", scorer=spec.scorer, seed=spec.seed)
-    scorer = _open_scorer(spec, runs_root, folder, ordinal=scored)
+    scorer = _open_scorer(spec, folder=folder, runs_root=runs_root, ordinal=scored)
     with _stop_signals():
         try:
             _drive(
@@ -271,6 +250,8 @@ def resume_run(folder: Path, runs_root: Path, registry: Path) -> Path:
             append_event(events_path, {"type": "run.failed", "run_id": run_id})
             _write_manifest(folder, run_id=run_id, status="failed", scorer=spec.scorer, seed=spec.seed)
             raise
+        finally:
+            _close_scorer(scorer)
     return folder
 
 
@@ -287,25 +268,27 @@ def _drive(
     ordinal: int,
     announce: bool,
 ) -> None:
+    budget = _budget(spec)
     context_hash = scorer.prepare(spec.target, spec.pocket)
     if announce:
-        append_event(
-            events_path,
-            {
-                "type": "run.started",
-                "run_id": run_id,
-                "scorer": spec.scorer,
-                "seed": spec.seed,
-                "iterations": spec.budget.iterations,
-                "candidates_per_iteration": spec.budget.candidates_per_iteration,
-            },
-        )
-    total = spec.budget.iterations * spec.budget.candidates_per_iteration
+        started: dict[str, Any] = {
+            "type": "run.started",
+            "run_id": run_id,
+            "scorer": spec.scorer,
+            "seed": spec.seed,
+            "iterations": budget.iterations,
+            "candidates_per_iteration": budget.candidates_per_iteration,
+        }
+        if spec.preset is not None:
+            started["preset"] = spec.preset
+        append_event(events_path, started)
+    total = budget.iterations * budget.candidates_per_iteration
     smiles = candidate_smiles(spec.seed, total)
     cursor = ordinal
     completed_iteration = start_iteration - 1
     completed_round = start_iteration - 1
-    for iteration in range(start_iteration, spec.budget.iterations + 1):
+    observed_rounds: list[tuple[int, float]] = []
+    for iteration in range(start_iteration, budget.iterations + 1):
         round_no = iteration
         if _hold_for_stop(round_no):
             _pause(
@@ -321,7 +304,7 @@ def _drive(
                 candidates_scored=cursor,
             )
             return
-        count = spec.budget.candidates_per_iteration
+        count = budget.candidates_per_iteration
         round_smiles = smiles[cursor : cursor + count]
         candidates = [
             Candidate(
@@ -431,9 +414,17 @@ def _drive(
                 failure_reason=result.failure_reason,
                 scorer=scorer.name,
                 route_json=_route_json(result.canonical_smiles, spec.library.id),
+                raw=result.raw,
             )
         n_ok = sum(result.status == "scored" for result in results)
         n_failed = sum(result.status == "failed" for result in results)
+        observed_rounds.append((len(candidates), elapsed))
+        eta_seconds = estimate_eta_seconds(
+            observed_rounds,
+            iterations=budget.iterations,
+            candidates_per_iteration=budget.candidates_per_iteration,
+            completed_iterations=iteration,
+        )
         append_event(
             events_path,
             {
@@ -446,6 +437,7 @@ def _drive(
                 "n_ok": n_ok,
                 "n_failed": n_failed,
                 "secs": elapsed,
+                "eta_seconds": eta_seconds,
             },
         )
         insert_scoring_round(
@@ -468,6 +460,7 @@ def _drive(
                 "n_valid": n_ok,
                 "reward_avg": reward_avg,
                 "secs": elapsed,
+                "eta_seconds": eta_seconds,
             },
         )
         insert_iteration(
@@ -499,11 +492,11 @@ def _drive(
         folder,
         run_id=run_id,
         spec=spec,
-            scorer_name=scorer.name,
-            scorer_version=scorer.version,
-            context_hash=context_hash,
-            pose_provider=_pose_provider_name(scorer),
-        )
+        scorer_name=scorer.name,
+        scorer_version=scorer.version,
+        context_hash=context_hash,
+        extras=_scorer_facts(scorer),
+    )
     rebuild_index(registry, folder)
     _write_manifest(folder, run_id=run_id, status="finished", scorer=spec.scorer, seed=spec.seed)
     append_event(events_path, {"type": "run.finished", "run_id": run_id})
@@ -557,7 +550,7 @@ def _pause(
         scorer_name=scorer.name,
         scorer_version=scorer.version,
         context_hash=context_hash,
-        pose_provider=_pose_provider_name(scorer),
+        extras=_scorer_facts(scorer),
     )
     rebuild_index(registry, folder)
     _write_manifest(folder, run_id=run_id, status="paused", scorer=spec.scorer, seed=spec.seed)
@@ -659,7 +652,7 @@ def _finish_failed(
         scorer_name=scorer_name,
         scorer_version=scorer_version,
         context_hash=context_hash,
-        pose_provider="fabind+" if spec.scorer == "flashbind" else None,
+        extras={"pose_provider": "fabind+"} if spec.scorer == "flashbind" else None,
     )
     rebuild_index(registry, folder)
     _write_manifest(folder, run_id=run_id, status="failed", scorer=spec.scorer, seed=spec.seed)
@@ -674,11 +667,6 @@ def _record_used_library(folder: Path, spec: RunSpec, events_path: Path, run_id:
         append_event(events_path, {"type": "warning", "run_id": run_id, "message": reminder})
 
 
-def _pose_provider_name(scorer: Scorer) -> str | None:
-    name = getattr(scorer, "pose_provider_name", None)
-    return name if isinstance(name, str) and name else None
-
-
 def _write_provenance(
     folder: Path,
     *,
@@ -687,7 +675,7 @@ def _write_provenance(
     scorer_name: str,
     scorer_version: str,
     context_hash: str,
-    pose_provider: str | None = None,
+    extras: dict[str, Any] | None = None,
 ) -> None:
     payload: dict[str, Any] = {
         "run_id": run_id,
@@ -704,9 +692,97 @@ def _write_provenance(
         "library": {"id": spec.library.id},
         "spec_sha256": spec_sha256(folder / "spec.json"),
     }
-    if pose_provider:
-        payload["pose_provider"] = pose_provider
+    if extras:
+        payload.update(extras)
     write_json(folder / "provenance.json", payload)
+
+
+def _budget(spec: RunSpec):
+    if spec.budget is None:
+        raise ValueError("A Run needs a Preset or a Budget")
+    return spec.budget
+
+
+def _scorer_facts(scorer: Scorer) -> dict[str, Any]:
+    facts: dict[str, Any] = {}
+    gpu = getattr(scorer, "gpu", None)
+    if isinstance(gpu, str):
+        facts["gpu"] = gpu
+    model_loads = getattr(scorer, "model_loads", None)
+    prediction_calls = getattr(scorer, "prediction_calls", None)
+    interpreter = getattr(scorer, "interpreter", None)
+    if scorer.name != "fake":
+        if isinstance(model_loads, int):
+            facts["model_loads"] = model_loads
+        if isinstance(prediction_calls, int):
+            facts["prediction_calls"] = prediction_calls
+        if isinstance(interpreter, str):
+            facts["interpreter"] = interpreter
+    pose_provider = _pose_provider_name(scorer)
+    if pose_provider:
+        facts["pose_provider"] = pose_provider
+    return facts
+
+
+def _pose_provider_name(scorer: Scorer) -> str | None:
+    name = getattr(scorer, "pose_provider_name", None)
+    return name if isinstance(name, str) and name else None
+
+
+def _close_scorer(scorer: Scorer) -> None:
+    close = getattr(scorer, "close", None)
+    if callable(close):
+        close()
+
+
+def _open_scorer(spec: RunSpec, *, folder: Path, runs_root: Path, ordinal: int) -> Scorer:
+    """Boltz-2 uses one local worker. FlashBind scores on this host.
+
+    FakeScorer uses the tailnet worker when the host was given its address.
+    """
+    cache = _scorer_cache_path(runs_root)
+    if spec.scorer == "flashbind":
+        return FlashBindScorer(cache_path=cache, work_dir=folder)
+    if spec.scorer == "boltz2":
+        from biosmart.boltz2_client import Boltz2WorkerScorer
+
+        return Boltz2WorkerScorer(
+            work_dir=folder / "scorer",
+            cache_path=cache,
+            msa=_stage_boltz_inputs(folder, spec),
+            seed=spec.seed,
+        )
+    address = os.environ.get("BIOSMART_WORKER", "").strip()
+    if address:
+        return WorkerScorer(
+            address,
+            spec.seed,
+            cache_path=cache,
+            ordinal=ordinal,
+        )
+    if spec.scorer == "fake":
+        return FakeScorer(spec.seed, cache_path=cache, ordinal=ordinal)
+    raise ValueError(f"Unknown Scorer {spec.scorer}")
+
+
+def _stage_boltz_inputs(folder: Path, spec: RunSpec) -> Path | None:
+    """Copy the Target sequence, Pocket, and MSA into the Run folder."""
+    target_dir = folder / "target"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    sequence = (spec.target.sequence or "").strip()
+    if sequence:
+        (target_dir / "sequence.txt").write_text(sequence + "\n", encoding="utf-8")
+    write_json(folder / "pocket.json", {"residues": list(spec.pocket.residues)})
+    staged = target_dir / "alignment.a3m"
+    if staged.is_file():
+        return staged
+    if not spec.target.msa:
+        return None
+    source = Path(spec.target.msa)
+    if not source.is_file():
+        raise FileNotFoundError(f"Target MSA not found: {source}")
+    shutil.copyfile(source, staged)
+    return staged
 
 
 def _write_manifest(folder: Path, *, run_id: str, status: str, scorer: str, seed: int) -> None:

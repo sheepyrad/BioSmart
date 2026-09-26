@@ -31,6 +31,7 @@ torch-sparse = "==0.6.18+pt26cu124"
 torch-cluster = "==1.6.3+pt26cu124"
 boltz = "==2.0.3"
 pytest = ">=8"
+pydantic = ">=2"
 cgflow = { path = "cgflow", editable = true }
 
 # Torch-free API environment. Does not include the default feature.
