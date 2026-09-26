@@ -175,7 +175,71 @@ def test_poses_come_from_fabind_plus(tmp_path: Path) -> None:
     assert seen["provider_calls_before_score"] == 1
     assert seen["pose_ids"] == ["000001"]
     assert results[0].reward == pytest.approx(0.25)
+    assert results[0].pose is None
     assert wired.flush() == 1
+
+
+def test_flashbind_keeps_a_pose_the_provider_wrote(tmp_path: Path) -> None:
+    from biosmart.pose_atoms import PoseAtom, write_pose_pdb
+
+    pose_path = tmp_path / "predicted.pdb"
+    written = (PoseAtom("C", 20.5, -1.25, 4.0), PoseAtom("O", 22.4, 0.6, 3.3))
+    write_pose_pdb(pose_path, written)
+
+    class _PosingProvider:
+        name = "fabind+"
+
+        def poses(
+            self,
+            *,
+            target: object,
+            pocket: object,
+            round_no: int,
+            candidates: list[object],
+            work_dir: Path,
+        ) -> PoseRound:
+            del target, pocket, round_no, work_dir
+            return PoseRound(
+                poses=[
+                    Pose(
+                        candidate_id=str(getattr(candidate, "candidate_id")),
+                        canonical_smiles=str(getattr(candidate, "canonical_smiles")),
+                        ligand_id=str(getattr(candidate, "candidate_id")),
+                        pose_path=pose_path,
+                    )
+                    for candidate in candidates
+                ],
+                ligand_lmdb=Path("ligand"),
+                pocket_indices_lmdb=Path("pocket-indices"),
+                protein_id="NS5",
+            )
+
+    def score_poses(round_no: int, candidates: list[Candidate], posed: PoseRound) -> list[ScoreResult]:
+        del round_no, posed
+        return [
+            ScoreResult(
+                candidate_id=candidate.candidate_id,
+                canonical_smiles=candidate.canonical_smiles,
+                status="scored",
+                reward=0.25,
+            )
+            for candidate in candidates
+        ]
+
+    scorer = FlashBindScorer(
+        work_dir=tmp_path / "run",
+        pose_provider=_PosingProvider(),
+        stack_probe=lambda: None,
+        score_poses=score_poses,
+    )
+    spec = RunSpec.model_validate(_flashbind_spec(tmp_path / "flash"))
+    scorer.prepare(spec.target, spec.pocket)
+    results = scorer.score(1, [Candidate("000001", 1, 1, "CCN")])
+    assert results[0].pose is not None
+    assert [(atom.element, atom.x, atom.y, atom.z) for atom in results[0].pose] == [
+        ("C", pytest.approx(20.5), pytest.approx(-1.25), pytest.approx(4.0)),
+        ("O", pytest.approx(22.4), pytest.approx(0.6), pytest.approx(3.3)),
+    ]
 
 
 def test_broken_stack_does_not_invent_scores(tmp_path: Path) -> None:

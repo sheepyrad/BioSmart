@@ -16,4 +16,4 @@ biosmart = "biosmart.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-biosmart = ["host_page.html", "fonts/*"]
+biosmart = ["host_page.html", "fonts/*", "vendor/*"]

@@ -230,6 +230,7 @@ def _serve(
     env.pop("BIOSMART_SKIP_DOCTOR", None)
     env.pop("BIOSMART_FAKE_SCORER_BLOCK_ROUND", None)
     env.pop("BIOSMART_FAKE_SCORER_RELEASE", None)
+    env.pop("BIOSMART_FAKE_SCORER_POSE", None)
     if extra_env:
         env.update(extra_env)
     proc = subprocess.Popen(

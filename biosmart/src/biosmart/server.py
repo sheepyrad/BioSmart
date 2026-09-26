@@ -36,6 +36,7 @@ from biosmart.index import (
     search_candidates,
 )
 from biosmart.inputs import TargetNotFound, TargetRejected, inputs_dir, list_targets, resolve_target, store_target
+from biosmart.inspect import PoseError, PoseMissing, candidate_pose
 from biosmart.libraries import (
     LibraryBuildError,
     build_stock_library,
@@ -69,6 +70,8 @@ _LIBRARY_UPLOAD_LIMIT = 8 * 1024 * 1024 * 1024
 _TARGET_UPLOAD_LIMIT = 64 * 1024 * 1024
 _HOST_PAGE = (Path(__file__).resolve().parent / "host_page.html").read_text(encoding="utf-8")
 _FONT_DIR = Path(__file__).resolve().parent / "fonts"
+_VENDOR_DIR = Path(__file__).resolve().parent / "vendor"
+_VENDOR_FILES = {"echarts.min.js": "text/javascript; charset=utf-8"}
 
 
 class DoctorRefused(Exception):
@@ -500,6 +503,16 @@ def _host_font(name: str) -> Response:
     return Response(content=path.read_bytes(), media_type="font/woff2")
 
 
+def _vendor_file(name: str) -> Response:
+    media_type = _VENDOR_FILES.get(name)
+    if media_type is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    path = _VENDOR_DIR / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return Response(content=path.read_bytes(), media_type=media_type)
+
+
 async def _read_limited(request: Request, limit: int) -> bytes:
     total = 0
     chunks: list[bytes] = []
@@ -574,6 +587,10 @@ def create_app() -> FastAPI:
     @app.get("/fonts/{name}")
     async def font_file(name: str) -> Response:
         return _host_font(name)
+
+    @app.get("/vendor/{name}")
+    async def vendor_file(name: str) -> Response:
+        return _vendor_file(name)
 
     @app.get("/api/v1/doctor")
     async def read_doctor() -> dict[str, Any]:
@@ -793,6 +810,10 @@ def create_app() -> FastAPI:
         max_mw: float | None = None,
         min_logp: float | None = None,
         max_logp: float | None = None,
+        min_qed: float | None = None,
+        max_qed: float | None = None,
+        min_sa: float | None = None,
+        max_sa: float | None = None,
     ) -> dict[str, Any]:
         if not _valid_run_id(run_id):
             raise HTTPException(status_code=404, detail="Run not found")
@@ -810,10 +831,29 @@ def create_app() -> FastAPI:
                 max_mw=max_mw,
                 min_logp=min_logp,
                 max_logp=max_logp,
+                min_qed=min_qed,
+                max_qed=max_qed,
+                min_sa=min_sa,
+                max_sa=max_sa,
             )
         except IndexNotFound as exc:
             raise HTTPException(status_code=404, detail="Run not found") from exc
         except IndexQueryError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/v1/runs/{run_id}/candidates/{candidate_id}/pose")
+    async def read_pose(run_id: str, candidate_id: str) -> dict[str, Any]:
+        folder = _require_run_folder(supervisor, run_id)
+        try:
+            return await asyncio.to_thread(
+                candidate_pose,
+                folder,
+                candidate_id,
+                inputs_root=inputs_dir(),
+            )
+        except PoseMissing as exc:
+            raise HTTPException(status_code=404, detail="Candidate not found") from exc
+        except PoseError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.get("/api/v1/runs/{run_id}/export")
@@ -833,6 +873,23 @@ def create_app() -> FastAPI:
             content=body,
             media_type=media_type,
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/api/v1/runs/{run_id}/archive")
+    async def download_archive(run_id: str) -> Response:
+        folder = _require_run_folder(supervisor, run_id)
+        archive_path = supervisor.runs_root / "archives" / f"{run_id}.tar.zst"
+        try:
+            if not archive_path.is_file():
+                written = await asyncio.to_thread(write_run_archive, folder, archive_path)
+            else:
+                written = archive_path
+        except RunFolderError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return Response(
+            content=written.read_bytes(),
+            media_type="application/zstd",
+            headers={"Content-Disposition": f'attachment; filename="{run_id}.tar.zst"'},
         )
 
     @app.post("/api/v1/runs/{run_id}/archive")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from biosmart.pose_atoms import pose_from_payload
 from biosmart.scoring import Candidate, ScoreResult
 from biosmart.worker import StdioWorker
 from biosmart.spec import PocketSpec, TargetSpec
@@ -196,6 +197,7 @@ class Boltz2WorkerScorer:
                     reward=None if item["reward"] is None else float(item["reward"]),
                     failure_reason=None if item.get("failure_reason") is None else str(item["failure_reason"]),
                     raw=raw if isinstance(raw, dict) else None,
+                    pose=pose_from_payload(item.get("pose")),
                 )
                 fresh[result.canonical_smiles] = result
                 if result.status == "scored" and result.reward is not None:
@@ -233,6 +235,7 @@ class Boltz2WorkerScorer:
                     reward=found.reward,
                     failure_reason=found.failure_reason,
                     raw=found.raw,
+                    pose=found.pose,
                 )
             )
         return results

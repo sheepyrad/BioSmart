@@ -27,6 +27,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from biosmart.pose_atoms import pose_from_payload, pose_to_json
 from biosmart.scoring import Candidate, FakeScorer, ScoreResult, ScorerFailed
 from biosmart.spec import PocketSpec, TargetSpec
 from biosmart.storage import flush_scorer_cache
@@ -560,6 +561,8 @@ def _score_payload(result: ScoreResult) -> dict[str, Any]:
     }
     if result.raw is not None:
         payload["raw"] = result.raw
+    if result.pose:
+        payload["pose"] = pose_to_json(result.pose)
     return payload
 
 
@@ -588,6 +591,7 @@ def _score_result(item: Any) -> ScoreResult:
             reward=None if reward is None else float(reward),
             failure_reason=None if item.get("failure_reason") is None else str(item["failure_reason"]),
             raw=raw if isinstance(raw, dict) else None,
+            pose=pose_from_payload(item.get("pose")),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("worker score result is invalid") from exc
