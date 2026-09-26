@@ -8,8 +8,10 @@ the Run folder restores the same Candidates.
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 import math
+import pickle
 import shutil
 import sqlite3
 from collections.abc import Iterator, Mapping
@@ -18,8 +20,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import rdkit
 from rdkit import Chem, DataStructs, RDLogger
-from rdkit.Chem import Descriptors, QED, rdFingerprintGenerator, rdMolDescriptors
+from rdkit.Chem import Descriptors, QED, RDConfig, rdFingerprintGenerator, rdMolDescriptors
 from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
 
 from biosmart.storage import connect
@@ -36,6 +39,7 @@ _DEFAULT_SIMILARITY = 0.5
 _MORGAN = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
 
 _PAINS: FilterCatalog | None = None
+_FRAGMENT_SCORES: dict[int, float] | None = None
 
 
 class IndexQueryError(ValueError):
@@ -439,8 +443,42 @@ def describe(smiles: str) -> Described | None:
     )
 
 
+def _fragment_score_path() -> Path:
+    candidates = (
+        Path(RDConfig.RDContribDir) / "SA_Score" / "fpscores.pkl.gz",
+        Path(rdkit.__file__).resolve().parent / "Contrib" / "SA_Score" / "fpscores.pkl.gz",
+    )
+    for path in candidates:
+        if path.is_file():
+            return path
+    raise FileNotFoundError("SA fragment scores are missing")
+
+
+def _fragment_scores() -> dict[int, float]:
+    """Ertl fragment contributions shipped with RDKit."""
+    global _FRAGMENT_SCORES
+    if _FRAGMENT_SCORES is not None:
+        return _FRAGMENT_SCORES
+    with gzip.open(_fragment_score_path(), "rb") as handle:
+        raw = pickle.load(handle)  # RDKit's fragment table is a pickle.
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("SA fragment scores are unreadable")
+    scores: dict[int, float] = {}
+    for row in raw:
+        if not isinstance(row, (list, tuple)) or len(row) < 2:
+            raise ValueError("SA fragment scores are unreadable")
+        value = float(row[0])
+        for bit in row[1:]:
+            scores[int(bit)] = value
+    if not scores:
+        raise ValueError("SA fragment scores are empty")
+    _FRAGMENT_SCORES = scores
+    return scores
+
+
 def _synthetic_accessibility(parsed: Chem.Mol) -> float:
-    """Ertl SA score. Unknown fragments use the published penalty of -4."""
+    """Ertl SA score using the RDKit fragment-score table."""
+    scores = _fragment_scores()
     try:
         fingerprint = rdMolDescriptors.GetMorganFingerprint(parsed, 2)
     except RuntimeError:
@@ -450,7 +488,7 @@ def _synthetic_accessibility(parsed: Chem.Mol) -> float:
     fragment_score = 0.0
     for bit_id, count in counts.items():
         fragment_count += count
-        fragment_score += -4.0 * count
+        fragment_score += scores.get(int(bit_id), -4.0) * count
     if fragment_count == 0:
         return 9.99
     fragment_score /= fragment_count

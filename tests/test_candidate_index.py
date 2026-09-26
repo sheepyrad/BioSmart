@@ -25,18 +25,19 @@ from test_one_run_server import EventStream, _read_events, _request, _serve
 # Seed 0 walks the catalog from index 0. Seed 3 walks it from index 3.
 # Rewards are ``-((seed * 10 + k) % 100) / 100``. Descriptor literals are the
 # RDKit values for those SMILES (average mass, Crippen logP, QED, InChIKey).
-# Morgan radius 2, 2048 bits: Tanimoto(CCO, CCC) is 3/7.
+# The last field is the Ertl SA score from RDKit's fragment-score table:
+# CCO is 1.980 and benzene is 1.0. Morgan radius 2, 2048 bits: Tanimoto(CCO, CCC) is 3/7.
 SEED_0 = (
-    ("000001", "CCO", 0.0, "LFQSCWFLJHTTHZ-UHFFFAOYSA-N", 46.069, -0.0014, 0.4068, 0),
-    ("000002", "CCN", -0.01, "QUSNBJAOOMFDIB-UHFFFAOYSA-N", 45.085, -0.035, 0.4062, 0),
-    ("000003", "CC(=O)O", -0.02, "QTBSBXVTEAMEQO-UHFFFAOYSA-N", 60.052, 0.0909, 0.4299, 0),
-    ("000004", "c1ccccc1", -0.03, "UHOVQNZJYSORNB-UHFFFAOYSA-N", 78.114, 1.6866, 0.4426, 1),
+    ("000001", "CCO", 0.0, "LFQSCWFLJHTTHZ-UHFFFAOYSA-N", 46.069, -0.0014, 0.4068, 0, 1.9803),
+    ("000002", "CCN", -0.01, "QUSNBJAOOMFDIB-UHFFFAOYSA-N", 45.085, -0.035, 0.4062, 0, 2.1742),
+    ("000003", "CC(=O)O", -0.02, "QTBSBXVTEAMEQO-UHFFFAOYSA-N", 60.052, 0.0909, 0.4299, 0, 1.5149),
+    ("000004", "c1ccccc1", -0.03, "UHOVQNZJYSORNB-UHFFFAOYSA-N", 78.114, 1.6866, 0.4426, 1, 1.0),
 )
 SEED_3 = (
-    ("000001", "c1ccccc1", -0.30, "UHOVQNZJYSORNB-UHFFFAOYSA-N", 78.114, 1.6866, 0.4426, 1),
-    ("000002", "CCC", -0.31, "ATUOYWHBWRKTHZ-UHFFFAOYSA-N", 44.097, 1.4163, 0.3855, 0),
-    ("000003", "CO", -0.32, "OKKJLVBELUTLKV-UHFFFAOYSA-N", 32.042, -0.3915, 0.3853, 0),
-    ("000004", "CCO", -0.33, "LFQSCWFLJHTTHZ-UHFFFAOYSA-N", 46.069, -0.0014, 0.4068, 0),
+    ("000001", "c1ccccc1", -0.30, "UHOVQNZJYSORNB-UHFFFAOYSA-N", 78.114, 1.6866, 0.4426, 1, 1.0),
+    ("000002", "CCC", -0.31, "ATUOYWHBWRKTHZ-UHFFFAOYSA-N", 44.097, 1.4163, 0.3855, 0, 1.7550),
+    ("000003", "CO", -0.32, "OKKJLVBELUTLKV-UHFFFAOYSA-N", 32.042, -0.3915, 0.3853, 0, 2.7010),
+    ("000004", "CCO", -0.33, "LFQSCWFLJHTTHZ-UHFFFAOYSA-N", 46.069, -0.0014, 0.4068, 0, 1.9803),
 )
 CCO_CCC_SIMILARITY = 0.4286
 
@@ -101,7 +102,7 @@ def _delete_index(registry: Path) -> None:
 
 
 def _assert_candidate(actual: dict[str, Any], expected: tuple[Any, ...], *, run_id: str) -> None:
-    candidate_id, smiles, score, inchikey, mw, logp, qed, rings = expected
+    candidate_id, smiles, score, inchikey, mw, logp, qed, rings, sa = expected
     assert actual["run_id"] == run_id
     assert actual["candidate_id"] == candidate_id
     assert actual["canonical_smiles"] == smiles
@@ -114,7 +115,7 @@ def _assert_candidate(actual: dict[str, Any], expected: tuple[Any, ...], *, run_
     assert actual["qed"] == pytest.approx(qed, abs=1e-3)
     assert actual["rings"] == rings
     assert actual["pains"] is False
-    assert 1.0 <= actual["sa"] <= 10.0
+    assert actual["sa"] == pytest.approx(sa, abs=1e-3)
 
 
 def _assert_pages(port: int, run_id: str, expected: tuple[tuple[Any, ...], ...]) -> None:
