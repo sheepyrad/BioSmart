@@ -9,7 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/usr/local/pixi/bin:${PATH}
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl bzip2 \
+    && apt-get install -y --no-install-recommends ca-certificates curl bzip2 git \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://pixi.sh/install.sh | bash \
